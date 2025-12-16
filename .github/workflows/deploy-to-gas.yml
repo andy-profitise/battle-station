@@ -30,11 +30,30 @@ jobs:
         env:
           CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
         run: |
+          echo "Secret length: ${#CLASPRC_JSON} characters"
+          if [ -z "$CLASPRC_JSON" ]; then
+            echo "ERROR: CLASPRC_JSON secret is empty!"
+            exit 1
+          fi
           printf '%s' "$CLASPRC_JSON" > ~/.clasprc.json
-          echo "Credentials file created, size: $(wc -c < ~/.clasprc.json) bytes"
+          echo "Credentials file created at ~/.clasprc.json"
+          echo "File size: $(wc -c < ~/.clasprc.json) bytes"
+          echo "File exists: $(test -f ~/.clasprc.json && echo 'yes' || echo 'no')"
+          echo "First 20 chars (sanitized): $(head -c 20 ~/.clasprc.json | tr -d '\n')..."
+
+      - name: Verify credentials file
+        run: |
+          echo "Home directory: $HOME"
+          echo "Checking ~/.clasprc.json:"
+          ls -la ~/.clasprc.json || echo "File not found!"
+          echo "Checking if valid JSON:"
+          cat ~/.clasprc.json | head -c 50
+          echo "..."
 
       - name: Push to Google Apps Script
-        run: clasp push --force
+        run: |
+          echo "Running clasp push..."
+          clasp push --force
 
       - name: Deployment complete
         run: echo "✅ Code deployed to Google Apps Script!"
