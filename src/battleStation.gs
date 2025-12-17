@@ -1506,7 +1506,9 @@ function loadVendorData(vendorIndex, options) {
     
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
-      bsSh.getRange(currentRow, 2).setValue(email.date).setNumberFormat('@'); // Force plain text
+      const emailDateCell = bsSh.getRange(currentRow, 2);
+      emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell.setValue(email.date);
       bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0'); // Force number format
       bsSh.getRange(currentRow, 4).setValue(email.labels);
       
@@ -1619,7 +1621,9 @@ function loadVendorData(vendorIndex, options) {
       // Status - append date if present (but not for Done tasks)
       const statusDisplay = (task.taskDate && !task.isDone) ? `${task.status} - ${task.taskDate}` : task.status;
       bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
-      bsSh.getRange(currentRow, 3).setValue(task.created).setWrap(true).setNumberFormat('@'); // Force plain text
+      const taskDateCell = bsSh.getRange(currentRow, 3);
+      taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      taskDateCell.setValue(task.created).setWrap(true);
       bsSh.getRange(currentRow, 4).setValue(task.project).setWrap(true);
       
       // Color coding for task status
@@ -3564,10 +3568,12 @@ function battleStationQuickRefresh() {
     
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
-      bsSh.getRange(currentRow, 2).setValue(email.date).setNumberFormat('@');
+      const emailDateCell2 = bsSh.getRange(currentRow, 2);
+      emailDateCell2.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell2.setValue(email.date);
       bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0');
       bsSh.getRange(currentRow, 4).setValue(email.labels);
-      
+
       if (email.link) {
         bsSh.getRange(currentRow, 1)
           .setFormula(`=HYPERLINK("${email.link}", "${email.subject.replace(/"/g, '""')}")`);
