@@ -184,11 +184,11 @@ function buildListWithGmailAndNotes() {
   // Write to List sheet
   const shOut = ensureSheet_(ss, SHEET_OUT);
 
-  // Clear all content first
+  // Clear all content and formatting first (removes green/yellow row highlighting)
   const lastRow = shOut.getMaxRows();
   const lastCol = shOut.getMaxColumns();
   if (lastRow > 0 && lastCol > 0) {
-    shOut.getRange(1, 1, lastRow, lastCol).clearContent();
+    shOut.getRange(1, 1, lastRow, lastCol).clear();
   }
 
   // Write headers

@@ -2233,10 +2233,7 @@ function searchGmailFromLink_(gmailLink, querySetName) {
       
       // Format date in Pacific timezone with leading zeros
       const tz = 'America/Los_Angeles';
-      const datePart = Utilities.formatDate(date, tz, 'yyyy-MM-dd');
-      const hours = Utilities.formatDate(date, tz, 'HH');
-      const mins = Utilities.formatDate(date, tz, 'mm');
-      const dateFormatted = `${datePart} ${hours}:${mins}`;
+      const dateFormatted = Utilities.formatDate(date, tz, 'yyyy-MM-dd HH:mm');
       
       emails.push({
         threadId: threadId,
