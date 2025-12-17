@@ -212,6 +212,7 @@ function onOpen() {
     .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
+    .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
@@ -4511,17 +4512,16 @@ function getBusinessHoursElapsed_(startDate) {
 function getChecksumsSheet_() {
   const ss = SpreadsheetApp.getActive();
   let sh = ss.getSheetByName(BS_CFG.CHECKSUMS_SHEET);
-  
+
   if (!sh) {
     sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
-    sh.getRange(1, 1, 1, 5).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed']]);
-    sh.getRange(1, 1, 1, 5).setFontWeight('bold');
+    sh.getRange(1, 1, 1, 6).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged']]);
+    sh.getRange(1, 1, 1, 6).setFontWeight('bold');
     sh.hideSheet();
   } else {
-    // Check if we need to add ModuleChecksums column (migration)
-    const headers = sh.getRange(1, 1, 1, 5).getValues()[0];
+    // Check if we need to add columns (migration)
+    const headers = sh.getRange(1, 1, 1, 6).getValues()[0];
     if (headers[3] !== 'ModuleChecksums') {
-      // Need to restructure - insert column if missing
       const numCols = sh.getLastColumn();
       if (numCols < 5) {
         sh.insertColumnAfter(3);
@@ -4529,9 +4529,83 @@ function getChecksumsSheet_() {
         sh.getRange(1, 5).setValue('Last Viewed').setFontWeight('bold');
       }
     }
+    // Add Flagged column if missing
+    if (headers[5] !== 'Flagged') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 6) {
+        sh.getRange(1, 6).setValue('Flagged').setFontWeight('bold');
+      }
+    }
   }
-  
+
   return sh;
+}
+
+/**
+ * Check if a vendor is flagged for review
+ */
+function isVendorFlagged_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return data[i][5] === true || data[i][5] === 'TRUE' || data[i][5] === 'true';
+    }
+  }
+  return false;
+}
+
+/**
+ * Set or clear the flag for a vendor
+ */
+function setVendorFlag_(vendor, flagged) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 6).setValue(flagged);
+      return true;
+    }
+  }
+
+  // Vendor not in checksums yet - add a row
+  if (flagged) {
+    const lastRow = sh.getLastRow();
+    sh.getRange(lastRow + 1, 1).setValue(vendor);
+    sh.getRange(lastRow + 1, 6).setValue(true);
+  }
+  return true;
+}
+
+/**
+ * Toggle flag for the currently displayed vendor
+ */
+function battleStationToggleFlag() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('Battle Station sheet not found.');
+    return;
+  }
+
+  // Get vendor name from row 2 (vendor name banner)
+  const vendor = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  if (!vendor) {
+    SpreadsheetApp.getUi().alert('No vendor currently displayed.');
+    return;
+  }
+
+  const currentlyFlagged = isVendorFlagged_(vendor);
+  setVendorFlag_(vendor, !currentlyFlagged);
+
+  if (!currentlyFlagged) {
+    ss.toast(`⚑ Flagged "${vendor}" - will stop here on next skip`, '⚑ Flagged', 3);
+  } else {
+    ss.toast(`Unflagged "${vendor}"`, '⚑ Unflagged', 3);
+  }
 }
 
 /**
@@ -4744,13 +4818,25 @@ function filterTasksBySource_(tasks, source) {
  *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
  */
 function checkVendorForChanges_(vendor, listRow, source) {
+  // Check if vendor is flagged - always stop on flagged vendors
+  if (isVendorFlagged_(vendor)) {
+    Logger.log(`${vendor}: flagged for review`);
+    // Clear the flag since we're stopping here
+    setVendorFlag_(vendor, false);
+    return {
+      hasChanges: true,
+      changeType: 'flagged',
+      data: null
+    };
+  }
+
   const storedData = getStoredChecksum_(vendor);
-  
+
   // If no stored data, this is a first view
   if (!storedData) {
     Logger.log(`${vendor}: no stored checksums - first view`);
-    return { 
-      hasChanges: true, 
+    return {
+      hasChanges: true,
       changeType: 'first view',
       data: null 
     };
