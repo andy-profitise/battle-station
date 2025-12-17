@@ -1009,10 +1009,10 @@ function loadVendorData(vendorIndex, options) {
       }
       
       bsSh.getRange(contractsRow, 7).setValue(contract.contractType || '').setHorizontalAlignment('left').setVerticalAlignment('top');
-      
+
       // Default blank status to "Waiting on Legal"
       const displayStatus = contract.status || 'Waiting on Legal';
-      bsSh.getRange(contractsRow, 8).setValue(displayStatus).setHorizontalAlignment('left').setVerticalAlignment('top');
+      bsSh.getRange(contractsRow, 8).setValue(displayStatus).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
       bsSh.getRange(contractsRow, 9).setValue(contract.notes || '').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
       
       // Color code by status
