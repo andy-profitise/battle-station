@@ -4418,19 +4418,22 @@ function generateEmailChecksum_(emails) {
 }
 
 /**
- * Check if an email is overdue (waiting/customer OR waiting/me label + >16 business hours old)
+ * Check if an email is overdue (priority + waiting label + >16 business hours old)
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
-  
+
+  // Must have 01.priority/1 label to be considered overdue
+  if (!email.labels.includes('01.priority/1')) return false;
+
   // Check emails with 02.waiting/customer OR 02.waiting/me label
   const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
   if (!isWaiting) return false;
-  
+
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
-  
+
   const businessHours = getBusinessHoursElapsed_(emailDate);
   return businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS;
 }
