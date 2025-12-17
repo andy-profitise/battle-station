@@ -160,7 +160,7 @@ function buildListWithGmailAndNotes() {
     r.notes = lookupNotes_(r.name, r.type, notesMaps);
   }
 
-  // HOT ZONE: Detect vendors with recent emails (last 7 days OR in inbox)
+  // HOT ZONE: Detect vendors with emails (label:00.received OR in inbox)
   console.log('Detecting hot vendors...');
   const hotVendorSet = getHotVendorsFromGmail_(all);
   console.log('Hot vendors found:', hotVendorSet.size);
@@ -175,6 +175,22 @@ function buildListWithGmailAndNotes() {
       normalZone.push(r);
     }
   }
+
+  // Sort HOT ZONE by: Status priority -> Buyers before Affiliates -> Alphabetical
+  hotZone.sort((a, b) => {
+    // 1. Status priority
+    const sA = STATUS_RANK[String(a.status || '').toLowerCase()] ?? STATUS_RANK['other'];
+    const sB = STATUS_RANK[String(b.status || '').toLowerCase()] ?? STATUS_RANK['other'];
+    if (sA !== sB) return sA - sB;
+
+    // 2. Buyers before Affiliates
+    const rankA = (a.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
+    const rankB = (b.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
+    if (rankA !== rankB) return rankA - rankB;
+
+    // 3. Alphabetical
+    return String(a.name).localeCompare(String(b.name));
+  });
 
   // Final list: Hot zone at top, then normal zone
   const finalList = [...hotZone, ...normalZone];
@@ -267,10 +283,10 @@ function buildListWithGmailAndNotes() {
 /**
  * Search Gmail for threads that indicate "hot" vendors
  * A vendor is "hot" if they have:
- *   1. Emails with label:00.received from last 7 days, OR
+ *   1. Emails with label:00.received, OR
  *   2. ANY emails currently in the inbox
  *
- * Return a Set of vendor names (lowercased) that have recent activity
+ * Return a Set of vendor names (lowercased) that have email activity
  *
  * Detection methods (in priority order):
  * 1. Gmail label "zzzVendors/<vendor_name>" (most accurate)
@@ -294,10 +310,10 @@ function getHotVendorsFromGmail_(allVendors) {
     let labelMatches = 0;
     let exactMatches = 0;
 
-    // SEARCH 1: Recent emails (last 7 days) with label:00.received
-    console.log('Searching for recent emails (last 7 days)...');
-    const recentThreads = GmailApp.search('label:00.received newer_than:7d', 0, 100);
-    console.log(`Found ${recentThreads.length} recent threads`);
+    // SEARCH 1: Emails with label:00.received (no time restriction)
+    console.log('Searching for emails with label:00.received...');
+    const recentThreads = GmailApp.search('label:00.received', 0, 200);
+    console.log(`Found ${recentThreads.length} threads with label:00.received`);
 
     // SEARCH 2: All inbox emails (regardless of age)
     console.log('Searching inbox for any vendor emails...');
