@@ -36,24 +36,32 @@ const BS_CFG = {
   HEADER_ROWS: 3,
   DATA_START_ROW: 5,
   
-  // Colors
-  COLOR_HEADER: '#4a86e8',
-  COLOR_SUBHEADER: '#6d9eeb',
-  COLOR_EMAIL: '#fff2cc',
-  COLOR_TASK: '#d9ead3',
-  COLOR_LINKS: '#e1d5e7',
-  COLOR_BUTTON: '#e8f0fe',
-  COLOR_WARNING: '#f4cccc',
-  COLOR_SUCCESS: '#d9ead3',
-  COLOR_SNOOZED: '#d0e8f2',
-  COLOR_WAITING: '#fff44f',
-  COLOR_MISSING: '#fce5cd',  // Light orange/red for missing data
-  COLOR_PHONEXA: '#f4a460',  // Sandy brown/coral for Phonexa waiting (highest priority)
-  COLOR_OVERDUE: '#f4cccc',  // Light red for overdue waiting/customer emails
-  
+  // Modern Color Palette - sleeker, more professional look
+  COLOR_HEADER: '#1a73e8',        // Google Blue - main header
+  COLOR_SUBHEADER: '#e8f0fe',     // Light blue - section headers
+  COLOR_EMAIL: '#fef7e0',         // Warm cream - email section
+  COLOR_TASK: '#e6f4ea',          // Fresh mint - tasks section
+  COLOR_LINKS: '#f3e8fd',         // Soft lavender - helpful links
+  COLOR_BUTTON: '#e8f0fe',        // Light blue - buttons
+  COLOR_WARNING: '#fce8e6',       // Soft coral - warnings
+  COLOR_SUCCESS: '#ceead6',       // Success green
+  COLOR_SNOOZED: '#e1f5fe',       // Ice blue - snoozed emails
+  COLOR_WAITING: '#fff8e1',       // Warm yellow - waiting
+  COLOR_MISSING: '#fff3e0',       // Light amber - missing data
+  COLOR_PHONEXA: '#ffe0b2',       // Peach - Phonexa waiting
+  COLOR_OVERDUE: '#ffcdd2',       // Light red - overdue
+
   // Row highlight colors for skip/traverse
-  COLOR_ROW_CHANGED: '#d9ead3',   // Green - vendor has changes, stopped here
-  COLOR_ROW_SKIPPED: '#fff2cc',   // Yellow - vendor unchanged, passed over
+  COLOR_ROW_CHANGED: '#c8e6c9',   // Green - vendor has changes
+  COLOR_ROW_SKIPPED: '#fff9c4',   // Yellow - vendor unchanged
+
+  // Section styling
+  COLOR_SECTION_BG: '#fafafa',    // Light gray for section backgrounds
+  COLOR_TABLE_HEADER: '#f5f5f5',  // Table header background
+  COLOR_TABLE_ALT: '#fafafa',     // Alternating row color
+  COLOR_BORDER: '#e0e0e0',        // Border color
+  COLOR_TEXT_MUTED: '#757575',    // Muted text
+  COLOR_TEXT_LINK: '#1a73e8',     // Link color
   
   // Overdue threshold: emails with "02.waiting/customer" or "02.waiting/me" older than this many business hours
   OVERDUE_BUSINESS_HOURS: 16,
@@ -212,6 +220,152 @@ function onOpen() {
     .addToUi();
 }
 
+/************************************************************
+ * STYLING HELPER FUNCTIONS
+ * Reduce repetitive styling code and ensure visual consistency
+ ************************************************************/
+
+/**
+ * Apply section header styling (main sections like VENDOR INFO, EMAILS)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ * @param {string} [bgColor] - Optional background color (defaults to SUBHEADER)
+ */
+function styleHeader_(range, text, bgColor) {
+  range.setValue(text)
+    .setBackground(bgColor || BS_CFG.COLOR_SUBHEADER)
+    .setFontWeight('bold')
+    .setFontSize(11)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+}
+
+/**
+ * Apply sub-section header styling (smaller headers within sections)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ */
+function styleSubHeader_(range, text) {
+  range.setValue(text)
+    .setBackground(BS_CFG.COLOR_SECTION_BG)
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor(BS_CFG.COLOR_TEXT_LINK)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+}
+
+/**
+ * Apply table header styling (column headers in tables)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ */
+function styleTableHeader_(range, text) {
+  range.setValue(text)
+    .setFontWeight('bold')
+    .setFontSize(9)
+    .setBackground(BS_CFG.COLOR_TABLE_HEADER)
+    .setHorizontalAlignment('left');
+}
+
+/**
+ * Apply link cell styling
+ * @param {Range} range - The range to style
+ * @param {string} url - URL for the hyperlink
+ * @param {string} displayText - Text to display
+ */
+function styleLink_(range, url, displayText) {
+  range.setFormula(`=HYPERLINK("${url}", "${displayText.replace(/"/g, '""')}")`)
+    .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+}
+
+/**
+ * Apply empty/no data styling
+ * @param {Range} range - The range to style
+ * @param {string} text - Text to display (e.g., "No data found")
+ */
+function styleEmpty_(range, text) {
+  range.setValue(text)
+    .setFontStyle('italic')
+    .setFontColor(BS_CFG.COLOR_TEXT_MUTED)
+    .setBackground(BS_CFG.COLOR_SECTION_BG)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+}
+
+/**
+ * Apply warning/missing data styling
+ * @param {Range} range - The range to style
+ * @param {string} text - Warning text
+ * @param {string} [linkUrl] - Optional link to fix the issue
+ */
+function styleWarning_(range, text, linkUrl) {
+  if (linkUrl) {
+    range.setFormula(`=HYPERLINK("${linkUrl}", "${text}")`)
+      .setBackground(BS_CFG.COLOR_MISSING)
+      .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+  } else {
+    range.setValue(text)
+      .setBackground(BS_CFG.COLOR_WARNING)
+      .setFontColor('#c62828');
+  }
+}
+
+/**
+ * Apply label styling (left column labels like "Vendor:", "Status:")
+ * @param {Range} range - The range to style
+ * @param {string} text - Label text
+ */
+function styleLabel_(range, text) {
+  range.setValue(text)
+    .setFontWeight('bold')
+    .setFontColor('#424242');
+}
+
+/**
+ * Set column divider styling (thin black separator)
+ * @param {Sheet} sheet - The sheet to style
+ * @param {number} col - Column number for the divider
+ * @param {number} startRow - Starting row
+ * @param {number} numRows - Number of rows
+ */
+function styleColumnDivider_(sheet, col, startRow, numRows) {
+  sheet.getRange(startRow, col, numRows, 1)
+    .setBackground('#424242');
+}
+
+/**
+ * Batch set multiple cell values and styles efficiently
+ * @param {Sheet} sheet - The sheet
+ * @param {Array} cells - Array of {row, col, value, styles} objects
+ *   styles can include: bg, fontWeight, fontSize, fontColor, align, wrap
+ */
+function batchStyleCells_(sheet, cells) {
+  for (const cell of cells) {
+    const range = sheet.getRange(cell.row, cell.col);
+
+    if (cell.value !== undefined) {
+      if (cell.formula) {
+        range.setFormula(cell.value);
+      } else {
+        range.setValue(cell.value);
+      }
+    }
+
+    const s = cell.styles || {};
+    if (s.bg) range.setBackground(s.bg);
+    if (s.fontWeight) range.setFontWeight(s.fontWeight);
+    if (s.fontSize) range.setFontSize(s.fontSize);
+    if (s.fontColor) range.setFontColor(s.fontColor);
+    if (s.align) range.setHorizontalAlignment(s.align);
+    if (s.vAlign) range.setVerticalAlignment(s.vAlign);
+    if (s.wrap) range.setWrap(s.wrap);
+    if (s.fontStyle) range.setFontStyle(s.fontStyle);
+    if (s.numberFormat) range.setNumberFormat(s.numberFormat);
+  }
+}
+
 /**
  * Helper function: Get current vendor index from the display row
  */
@@ -313,36 +467,50 @@ function loadVendorData(vendorIndex, options) {
   }
   
   let currentRow = 1;
-  
-  // Title - full width across all 9 columns
+
+  // Title - full width, modern blue header with subtle shadow effect
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(`⚡ BATTLE STATION — ${vendor}`)
-    .setFontSize(14).setFontWeight('bold')
+    .setValue(`⚡ BATTLE STATION`)
+    .setFontSize(16).setFontWeight('bold')
     .setBackground(BS_CFG.COLOR_HEADER)
     .setFontColor('white')
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle');
-  bsSh.setRowHeight(currentRow, 36);
+  bsSh.setRowHeight(currentRow, 40);
   currentRow++;
-  
-  // Navigation bar - full width, subtle
+
+  // Vendor name banner - prominent display
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(`◀ PREV  |  ${vendorIndex} of ${totalVendors}  |  NEXT ▶`)
+    .setValue(vendor)
+    .setFontSize(13).setFontWeight('bold')
+    .setBackground('#e3f2fd')
+    .setFontColor('#1565c0')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 32);
+  currentRow++;
+
+  // Navigation bar - cleaner, more modern
+  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶`;
+  bsSh.getRange(currentRow, 1, 1, 9).merge()
+    .setValue(navText)
     .setFontSize(10)
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
-    .setBackground('#e8f0fe')
-    .setFontColor('#5f6368');
-  bsSh.setRowHeight(currentRow, 24);
+    .setBackground('#fafafa')
+    .setFontColor(BS_CFG.COLOR_TEXT_MUTED);
+  bsSh.setRowHeight(currentRow, 22);
   currentRow++;
-  
+
   bsSh.setFrozenRows(currentRow - 1);
-  
-  // VENDOR INFO SECTION
-  bsSh.getRange(currentRow, 1, 1, 4).merge()
-    .setValue(`📊 VENDOR INFO`)
-    .setBackground(BS_CFG.COLOR_SUBHEADER)
-    .setFontWeight('bold')
+
+  // Spacer row
+  bsSh.setRowHeight(currentRow, 6);
+  currentRow++;
+
+  // VENDOR INFO SECTION - using helper
+  bsSh.getRange(currentRow, 1, 1, 4).merge();
+  styleHeader_(bsSh.getRange(currentRow, 1), `📊 VENDOR INFO`)
     .setFontSize(11)
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
