@@ -176,22 +176,7 @@ function buildListWithGmailAndNotes() {
     }
   }
 
-  // Sort HOT ZONE by: Status priority -> Buyers before Affiliates -> Alphabetical
-  hotZone.sort((a, b) => {
-    // 1. Status priority
-    const sA = STATUS_RANK[String(a.status || '').toLowerCase()] ?? STATUS_RANK['other'];
-    const sB = STATUS_RANK[String(b.status || '').toLowerCase()] ?? STATUS_RANK['other'];
-    if (sA !== sB) return sA - sB;
-
-    // 2. Buyers before Affiliates
-    const rankA = (a.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
-    const rankB = (b.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
-    if (rankA !== rankB) return rankA - rankB;
-
-    // 3. Alphabetical
-    return String(a.name).localeCompare(String(b.name));
-  });
-
+  // HOT ZONE keeps same sort order as NORMAL ZONE (already sorted in `all`)
   // Final list: Hot zone at top, then normal zone
   const finalList = [...hotZone, ...normalZone];
 
