@@ -4418,24 +4418,34 @@ function generateEmailChecksum_(emails) {
 }
 
 /**
- * Check if an email is overdue (priority + waiting label + >16 business hours old)
+ * Check if an email is overdue:
+ * - Priority + waiting/customer or waiting/me + >16 business hours, OR
+ * - waiting/phonexa + >7 days
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
-
-  // Must have 01.priority/1 label to be considered overdue
-  if (!email.labels.includes('01.priority/1')) return false;
-
-  // Check emails with 02.waiting/customer OR 02.waiting/me label
-  const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
-  if (!isWaiting) return false;
 
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
 
-  const businessHours = getBusinessHoursElapsed_(emailDate);
-  return businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS;
+  // Check for Phonexa waiting - 7 calendar days
+  if (email.labels.includes('02.waiting/phonexa')) {
+    const now = new Date();
+    const daysDiff = (now - emailDate) / (1000 * 60 * 60 * 24);
+    if (daysDiff > 7) return true;
+  }
+
+  // Check for priority + waiting/customer or waiting/me - 16 business hours
+  if (email.labels.includes('01.priority/1')) {
+    const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
+    if (isWaiting) {
+      const businessHours = getBusinessHoursElapsed_(emailDate);
+      if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
+    }
+  }
+
+  return false;
 }
 
 /**
