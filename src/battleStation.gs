@@ -5500,18 +5500,7 @@ function testGDriveSearch() {
  */
 function syncMondayComBoards() {
   const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-  
-  const response = ui.alert(
-    '🔄 Sync monday.com Data',
-    'This will update the "buyers monday.com" and "affiliates monday.com" sheets with the latest data from monday.com.\n\nThis may take a few minutes. Continue?',
-    ui.ButtonSet.YES_NO
-  );
-  
-  if (response !== ui.Button.YES) {
-    return;
-  }
-  
+
   ss.toast('Starting sync...', '🔄 Syncing', 30);
   
   try {
