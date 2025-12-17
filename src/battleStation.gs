@@ -487,9 +487,10 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 40);
   currentRow++;
 
-  // Vendor name banner - prominent display
+  // Vendor name banner - prominent display (with flag if flagged)
+  const vendorDisplay = isVendorFlagged_(vendor) ? `${vendor} ⚑` : vendor;
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(vendor)
+    .setValue(vendorDisplay)
     .setFontSize(13).setFontWeight('bold')
     .setBackground('#e3f2fd')
     .setFontColor('#1565c0')
@@ -4591,8 +4592,9 @@ function battleStationToggleFlag() {
     return;
   }
 
-  // Get vendor name from row 2 (vendor name banner)
-  const vendor = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  // Get vendor name from row 2 (vendor name banner) - remove any existing flag icon
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').trim();
   if (!vendor) {
     SpreadsheetApp.getUi().alert('No vendor currently displayed.');
     return;
@@ -4601,9 +4603,12 @@ function battleStationToggleFlag() {
   const currentlyFlagged = isVendorFlagged_(vendor);
   setVendorFlag_(vendor, !currentlyFlagged);
 
+  // Update the display with or without flag icon
   if (!currentlyFlagged) {
+    bsSh.getRange(2, 1).setValue(`${vendor} ⚑`);
     ss.toast(`⚑ Flagged "${vendor}" - will stop here on next skip`, '⚑ Flagged', 3);
   } else {
+    bsSh.getRange(2, 1).setValue(vendor);
     ss.toast(`Unflagged "${vendor}"`, '⚑ Unflagged', 3);
   }
 }
