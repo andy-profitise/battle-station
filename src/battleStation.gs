@@ -379,18 +379,18 @@ function batchStyleCells_(sheet, cells) {
 function getCurrentVendorIndex_() {
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
-  
+
   if (!bsSh) return null;
-  
-  // Navigation bar is in row 2, format: "◀ PREV  |  X of Y  |  NEXT ▶"
-  const cellValue = String(bsSh.getRange(2, 1).getValue() || '');
-  const match = cellValue.match(/\|\s*(\d+)\s*of\s*\d+\s*\|/);
-  
+
+  // Navigation bar is in row 3, format: "◀  X / Y  ▶"
+  const cellValue = String(bsSh.getRange(3, 1).getValue() || '');
+  const match = cellValue.match(/(\d+)\s*\/\s*\d+/);
+
   if (!match) {
     Logger.log(`Could not parse index from navigation: "${cellValue}"`);
     return null;
   }
-  
+
   return parseInt(match[1]);
 }
 
