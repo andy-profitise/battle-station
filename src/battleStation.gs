@@ -239,6 +239,7 @@ function styleHeader_(range, text, bgColor) {
     .setFontColor('#1a73e8')
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
+  return range;
 }
 
 /**
@@ -254,6 +255,7 @@ function styleSubHeader_(range, text) {
     .setFontColor(BS_CFG.COLOR_TEXT_LINK)
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
+  return range;
 }
 
 /**
@@ -267,6 +269,7 @@ function styleTableHeader_(range, text) {
     .setFontSize(9)
     .setBackground(BS_CFG.COLOR_TABLE_HEADER)
     .setHorizontalAlignment('left');
+  return range;
 }
 
 /**
@@ -278,6 +281,7 @@ function styleTableHeader_(range, text) {
 function styleLink_(range, url, displayText) {
   range.setFormula(`=HYPERLINK("${url}", "${displayText.replace(/"/g, '""')}")`)
     .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+  return range;
 }
 
 /**
@@ -292,6 +296,7 @@ function styleEmpty_(range, text) {
     .setBackground(BS_CFG.COLOR_SECTION_BG)
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
+  return range;
 }
 
 /**
@@ -310,6 +315,7 @@ function styleWarning_(range, text, linkUrl) {
       .setBackground(BS_CFG.COLOR_WARNING)
       .setFontColor('#c62828');
   }
+  return range;
 }
 
 /**
@@ -321,6 +327,7 @@ function styleLabel_(range, text) {
   range.setValue(text)
     .setFontWeight('bold')
     .setFontColor('#424242');
+  return range;
 }
 
 /**
