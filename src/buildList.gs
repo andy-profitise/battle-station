@@ -1,3 +1,9 @@
+/************************************************************
+ * BUILD LIST - Vendor list builder with Gmail and monday.com integration
+ *
+ * Last Updated: 2025-12-18
+ ************************************************************/
+
 /***** CONFIG *****/
 const SHEET_BUYERS_L1M       = 'Buyers L1M';
 const SHEET_BUYERS_L6M       = 'Buyers L6M';

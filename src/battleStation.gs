@@ -1,6 +1,8 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
- * 
+ *
+ * Last Updated: 2025-12-18
+ *
  * Features:
  * - Navigate through vendors sequentially via menu
  * - View vendor details, notes, status, contacts
@@ -10,7 +12,7 @@
  * - Mark vendors as reviewed/complete
  * - Email contacts directly from Battle Station
  * - Analyze emails with Claude AI (inline links)
- * 
+ *
  * UPDATED: Snoozed=highest priority, Helpful Links, inline Claude links
  * FIXED: Removed duplicate functions, fixed checksum functionality
  ************************************************************/
