@@ -15,10 +15,10 @@ const TTL_HEADER_CANDIDATES    = ['TTL , USD', 'TTL, USD', 'TTL USD'];
 
 // monday.com special columns (0-based indexes)
 const ALIAS_COL_INDEX = 15;           // Column P (1-based 16) -> 0-based 15
-const BUYERS_STATUS_INDEX = 18;       // Column S (1-based 19) -> 0-based 18
-const AFFILIATES_STATUS_INDEX = 18;   // Column S (1-based 19) -> 0-based 18
-const BUYERS_NOTES_INDEX = 3;         // Column D (1-based 4) -> 0-based 3
-const AFFILIATES_NOTES_INDEX = 3;     // Column D (1-based 4) -> 0-based 3
+
+// Header names to search for (will auto-detect column index)
+const STATUS_HEADER_CANDIDATES = ['Group', 'Status', 'Group Title'];
+const NOTES_HEADER_CANDIDATES = ['Notes', 'Note', 'Comments'];
 
 // Status priority used when TTL = 0
 const STATUS_PRIORITY = [
@@ -129,8 +129,8 @@ function buildListWithGmailAndNotes() {
 
   // Sort monday.com zero-TTL by status rank, then type, then alpha
   z_mon.sort((a, b) => {
-    const sA = STATUS_RANK[String(a.status || '').toLowerCase()] ?? STATUS_RANK['other'];
-    const sB = STATUS_RANK[String(b.status || '').toLowerCase()] ?? STATUS_RANK['other'];
+    const sA = getStatusRank_(a.status);
+    const sB = getStatusRank_(b.status);
     if (sA !== sB) return sA - sB;
     const rankA = (a.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
     const rankB = (b.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
@@ -406,10 +406,14 @@ function buildStatusMaps_(shMonB, shMonA) {
 
   if (shMonB) {
     const buyersData = shMonB.getDataRange().getValues();
+    const headers = buyersData[0].map(h => String(h || '').trim().toLowerCase());
+    const statusIdx = findHeaderIndex_(headers, STATUS_HEADER_CANDIDATES);
+    console.log(`[Buyers] Status column index: ${statusIdx} (header: ${statusIdx >= 0 ? buyersData[0][statusIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < buyersData.length; i++) { // Skip header
       const row = buyersData[i];
       const vendor = normalizeName_(row[0]);
-      const status = BUYERS_STATUS_INDEX < row.length ? String(row[BUYERS_STATUS_INDEX] || '').trim() : '';
+      const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
       if (vendor) {
         buyersMap.set(vendor.toLowerCase(), status);
       }
@@ -418,10 +422,14 @@ function buildStatusMaps_(shMonB, shMonA) {
 
   if (shMonA) {
     const affiliatesData = shMonA.getDataRange().getValues();
+    const headers = affiliatesData[0].map(h => String(h || '').trim().toLowerCase());
+    const statusIdx = findHeaderIndex_(headers, STATUS_HEADER_CANDIDATES);
+    console.log(`[Affiliates] Status column index: ${statusIdx} (header: ${statusIdx >= 0 ? affiliatesData[0][statusIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < affiliatesData.length; i++) { // Skip header
       const row = affiliatesData[i];
       const vendor = normalizeName_(row[0]);
-      const status = AFFILIATES_STATUS_INDEX < row.length ? String(row[AFFILIATES_STATUS_INDEX] || '').trim() : '';
+      const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
       if (vendor) {
         affiliatesMap.set(vendor.toLowerCase(), status);
       }
@@ -441,10 +449,14 @@ function buildNotesMaps_(shMonB, shMonA) {
 
   if (shMonB) {
     const buyersData = shMonB.getDataRange().getValues();
+    const headers = buyersData[0].map(h => String(h || '').trim().toLowerCase());
+    const notesIdx = findHeaderIndex_(headers, NOTES_HEADER_CANDIDATES);
+    console.log(`[Buyers] Notes column index: ${notesIdx} (header: ${notesIdx >= 0 ? buyersData[0][notesIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < buyersData.length; i++) { // Skip header
       const row = buyersData[i];
       const vendor = normalizeName_(row[0]);
-      const notes = BUYERS_NOTES_INDEX < row.length ? String(row[BUYERS_NOTES_INDEX] || '').trim() : '';
+      const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
       if (vendor) {
         buyersMap.set(vendor.toLowerCase(), notes);
       }
@@ -453,10 +465,14 @@ function buildNotesMaps_(shMonB, shMonA) {
 
   if (shMonA) {
     const affiliatesData = shMonA.getDataRange().getValues();
+    const headers = affiliatesData[0].map(h => String(h || '').trim().toLowerCase());
+    const notesIdx = findHeaderIndex_(headers, NOTES_HEADER_CANDIDATES);
+    console.log(`[Affiliates] Notes column index: ${notesIdx} (header: ${notesIdx >= 0 ? affiliatesData[0][notesIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < affiliatesData.length; i++) { // Skip header
       const row = affiliatesData[i];
       const vendor = normalizeName_(row[0]);
-      const notes = AFFILIATES_NOTES_INDEX < row.length ? String(row[AFFILIATES_NOTES_INDEX] || '').trim() : '';
+      const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
       if (vendor) {
         affiliatesMap.set(vendor.toLowerCase(), notes);
       }
@@ -468,23 +484,24 @@ function buildNotesMaps_(shMonB, shMonA) {
 
 /**
  * Lookup status for a vendor from the status maps
+ * Returns the raw Group/Status value (not normalized)
  */
 function lookupStatus_(name, type, statusMaps) {
   const key = name.toLowerCase();
   const isBuyer = (type || '').toLowerCase().startsWith('buyer');
 
   if (isBuyer && statusMaps.buyers.has(key)) {
-    return normalizeStatus_(statusMaps.buyers.get(key));
+    return statusMaps.buyers.get(key);
   }
   if (!isBuyer && statusMaps.affiliates.has(key)) {
-    return normalizeStatus_(statusMaps.affiliates.get(key));
+    return statusMaps.affiliates.get(key);
   }
   // Try the other map as fallback
   if (statusMaps.buyers.has(key)) {
-    return normalizeStatus_(statusMaps.buyers.get(key));
+    return statusMaps.buyers.get(key);
   }
   if (statusMaps.affiliates.has(key)) {
-    return normalizeStatus_(statusMaps.affiliates.get(key));
+    return statusMaps.affiliates.get(key);
   }
   return '';
 }
@@ -597,6 +614,7 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   if (allValues.length < 2) return []; // Need at least header + 1 row
 
   const headers = allValues[0].map(h => String(h || '').trim());
+  const headersLower = headers.map(h => h.toLowerCase());
   console.log(`[${sourceLabel}] Total rows:`, allValues.length - 1);
 
   // For monday.com exports: name is always in column A (index 0)
@@ -607,11 +625,11 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   );
   const typeIdx = headers.findIndex(h => eq_(h, 'Type'));
 
-  // Status is in column S (index 18) for both buyers and affiliates
-  const statusIdx = BUYERS_STATUS_INDEX; // Use same index for both (18)
-
-  // Notes is in column D (index 3) for both
-  const notesIdx = BUYERS_NOTES_INDEX; // Use same index for both (3)
+  // Auto-detect Status/Group and Notes columns by header name
+  const statusIdx = findHeaderIndex_(headersLower, STATUS_HEADER_CANDIDATES);
+  const notesIdx = findHeaderIndex_(headersLower, NOTES_HEADER_CANDIDATES);
+  console.log(`[${sourceLabel}] Status column: ${statusIdx >= 0 ? headers[statusIdx] : 'NOT FOUND'} (idx ${statusIdx})`);
+  console.log(`[${sourceLabel}] Notes column: ${notesIdx >= 0 ? headers[notesIdx] : 'NOT FOUND'} (idx ${notesIdx})`)
 
   const out = [];
   let skippedBlacklist = 0;
@@ -659,9 +677,9 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
     const ttl = (ttlIdx !== -1 && ttlIdx < row.length) ? toNumber_(row[ttlIdx]) : 0;
     const explicitType = (typeIdx !== -1 && typeIdx < row.length) ? String(row[typeIdx] || '').trim() : '';
     const finalType = explicitType || type;
-    const statusRaw = (statusIdx != null && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
-    const status = normalizeStatus_(statusRaw);
-    const notes = (notesIdx != null && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
+    // Use raw status value (Group name) instead of normalizing
+    const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
+    const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
 
     out.push({ name, ttl, type: finalType, source: sourceLabel, status, notes });
     existingSet.add(key);
@@ -677,6 +695,22 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   console.log(`[${sourceLabel}] END READ\n`);
 
   return dedupeKeepMaxTTL_(out);
+}
+
+/** Get status rank for sorting (maps raw status to priority rank) */
+function getStatusRank_(rawStatus) {
+  const v = String(rawStatus || '').trim().toLowerCase();
+  if (!v) return STATUS_RANK['other'];
+
+  if (v.includes('live')) return STATUS_RANK['live'];
+  if (v.includes('onboard')) return STATUS_RANK['onboarding'];
+  if (v.includes('pause')) return STATUS_RANK['paused'];
+  if (v.includes('pre')) return STATUS_RANK['preonboarding'];
+  if (v.includes('early')) return STATUS_RANK['early talks'];
+  if (v.includes('top') && v.includes('500')) return STATUS_RANK['top 500 remodelers'];
+  if (v.includes('dead') || (v.includes('no') && v.includes('go')) || v.includes('closed')) return STATUS_RANK['dead'];
+
+  return STATUS_RANK['other'];
 }
 
 /** Normalize buyer or affiliate status to our buckets */
@@ -784,6 +818,16 @@ function firstExistingHeader_(columns, candidates, sheetName, purpose) {
 function findHeaderOptionalIndex_(columns, header) {
   const idx = columns.findIndex(col => eq_(col, header));
   return idx === -1 ? null : idx;
+}
+
+/** Find the first matching header index from a list of candidates (lowercased headers) */
+function findHeaderIndex_(headersLower, candidates) {
+  for (const candidate of candidates) {
+    const candidateLower = candidate.toLowerCase();
+    const idx = headersLower.findIndex(h => h === candidateLower || h.includes(candidateLower));
+    if (idx >= 0) return idx;
+  }
+  return -1;
 }
 
 /** Ensure a sheet exists, create if not */
