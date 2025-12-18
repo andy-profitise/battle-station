@@ -4809,15 +4809,17 @@ function generateContactsChecksum_(contacts) {
 
 /**
  * Generate checksum for meetings data
+ * Only includes future meetings - past meetings falling off shouldn't trigger changes
  * @param {array} meetings - Array of meeting objects
  * @returns {string} Hash string
  */
 function generateMeetingsChecksum_(meetings) {
-  return hashString_(JSON.stringify((meetings || []).map(m => ({ 
-    title: m.title, 
-    date: m.date, 
-    time: m.time, 
-    isPast: m.isPast 
+  // Filter to only future meetings for checksum
+  const futureMeetings = (meetings || []).filter(m => !m.isPast);
+  return hashString_(JSON.stringify(futureMeetings.map(m => ({
+    title: m.title,
+    date: m.date,
+    time: m.time
   }))));
 }
 
