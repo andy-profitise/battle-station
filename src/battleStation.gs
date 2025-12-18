@@ -1595,14 +1595,45 @@ function loadVendorData(vendorIndex, options) {
   currentRow++;
   
   if (tasks.length === 0) {
-    bsSh.getRange(currentRow, 1, 1, 4).merge()
-      .setValue('No tasks found')
-      .setFontStyle('italic')
-      .setBackground('#fafafa')
-      .setHorizontalAlignment('center')
-      .setVerticalAlignment('middle');
-    bsSh.setRowHeight(currentRow, 25);
-    currentRow++;
+    // Check if vendor is Live/Paused/Onboarding - should have tasks
+    const statusLower = (liveStatus || '').toLowerCase();
+    const needsTasksWarning = statusLower.includes('live') ||
+                               statusLower.includes('onboarding') ||
+                               statusLower.includes('paused');
+
+    if (needsTasksWarning) {
+      // Show warning with link to Claude task generator
+      const vendorType = source.toLowerCase().includes('affiliate') ? 'Affiliate' : 'Buyer';
+      const claudeChatUrl = 'https://claude.ai/chat/33d0e36c-23ad-4e7d-b354-bd6cf3692f3f';
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
+        .setFontColor('#d32f2f')
+        .setBackground('#ffebee')
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+
+      // Add copy/paste line for vendor name and type
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`${vendor} (${vendorType})`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 22);
+      currentRow++;
+    } else {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue('No tasks found')
+        .setFontStyle('italic')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+    }
   } else {
     bsSh.getRange(currentRow, 1).setValue('Task').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 2).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3');
