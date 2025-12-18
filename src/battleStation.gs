@@ -36,24 +36,32 @@ const BS_CFG = {
   HEADER_ROWS: 3,
   DATA_START_ROW: 5,
   
-  // Colors
-  COLOR_HEADER: '#4a86e8',
-  COLOR_SUBHEADER: '#6d9eeb',
-  COLOR_EMAIL: '#fff2cc',
-  COLOR_TASK: '#d9ead3',
-  COLOR_LINKS: '#e1d5e7',
-  COLOR_BUTTON: '#e8f0fe',
-  COLOR_WARNING: '#f4cccc',
-  COLOR_SUCCESS: '#d9ead3',
-  COLOR_SNOOZED: '#d0e8f2',
-  COLOR_WAITING: '#fff44f',
-  COLOR_MISSING: '#fce5cd',  // Light orange/red for missing data
-  COLOR_PHONEXA: '#f4a460',  // Sandy brown/coral for Phonexa waiting (highest priority)
-  COLOR_OVERDUE: '#f4cccc',  // Light red for overdue waiting/customer emails
-  
+  // Modern Color Palette - sleeker, more professional look
+  COLOR_HEADER: '#1a73e8',        // Google Blue - main header
+  COLOR_SUBHEADER: '#e8f0fe',     // Light blue - section headers
+  COLOR_EMAIL: '#fef7e0',         // Warm cream - email section
+  COLOR_TASK: '#e6f4ea',          // Fresh mint - tasks section
+  COLOR_LINKS: '#f3e8fd',         // Soft lavender - helpful links
+  COLOR_BUTTON: '#e8f0fe',        // Light blue - buttons
+  COLOR_WARNING: '#fce8e6',       // Soft coral - warnings
+  COLOR_SUCCESS: '#ceead6',       // Success green
+  COLOR_SNOOZED: '#e1f5fe',       // Ice blue - snoozed emails
+  COLOR_WAITING: '#fff8e1',       // Warm yellow - waiting
+  COLOR_MISSING: '#fff3e0',       // Light amber - missing data
+  COLOR_PHONEXA: '#ffe0b2',       // Peach - Phonexa waiting
+  COLOR_OVERDUE: '#ffcdd2',       // Light red - overdue
+
   // Row highlight colors for skip/traverse
-  COLOR_ROW_CHANGED: '#d9ead3',   // Green - vendor has changes, stopped here
-  COLOR_ROW_SKIPPED: '#fff2cc',   // Yellow - vendor unchanged, passed over
+  COLOR_ROW_CHANGED: '#c8e6c9',   // Green - vendor has changes
+  COLOR_ROW_SKIPPED: '#fff9c4',   // Yellow - vendor unchanged
+
+  // Section styling
+  COLOR_SECTION_BG: '#fafafa',    // Light gray for section backgrounds
+  COLOR_TABLE_HEADER: '#f5f5f5',  // Table header background
+  COLOR_TABLE_ALT: '#fafafa',     // Alternating row color
+  COLOR_BORDER: '#e0e0e0',        // Border color
+  COLOR_TEXT_MUTED: '#757575',    // Muted text
+  COLOR_TEXT_LINK: '#1a73e8',     // Link color
   
   // Overdue threshold: emails with "02.waiting/customer" or "02.waiting/me" older than this many business hours
   OVERDUE_BUSINESS_HOURS: 16,
@@ -204,6 +212,7 @@ function onOpen() {
     .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
+    .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
@@ -212,24 +221,177 @@ function onOpen() {
     .addToUi();
 }
 
+/************************************************************
+ * STYLING HELPER FUNCTIONS
+ * Reduce repetitive styling code and ensure visual consistency
+ ************************************************************/
+
+/**
+ * Apply section header styling (main sections like VENDOR INFO, EMAILS)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ * @param {string} [bgColor] - Optional background color (defaults to SUBHEADER)
+ */
+function styleHeader_(range, text, bgColor) {
+  range.setValue(text)
+    .setBackground(bgColor || BS_CFG.COLOR_SUBHEADER)
+    .setFontWeight('bold')
+    .setFontSize(11)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  return range;
+}
+
+/**
+ * Apply sub-section header styling (smaller headers within sections)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ */
+function styleSubHeader_(range, text) {
+  range.setValue(text)
+    .setBackground(BS_CFG.COLOR_SECTION_BG)
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor(BS_CFG.COLOR_TEXT_LINK)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  return range;
+}
+
+/**
+ * Apply table header styling (column headers in tables)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ */
+function styleTableHeader_(range, text) {
+  range.setValue(text)
+    .setFontWeight('bold')
+    .setFontSize(9)
+    .setBackground(BS_CFG.COLOR_TABLE_HEADER)
+    .setHorizontalAlignment('left');
+  return range;
+}
+
+/**
+ * Apply link cell styling
+ * @param {Range} range - The range to style
+ * @param {string} url - URL for the hyperlink
+ * @param {string} displayText - Text to display
+ */
+function styleLink_(range, url, displayText) {
+  range.setFormula(`=HYPERLINK("${url}", "${displayText.replace(/"/g, '""')}")`)
+    .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+  return range;
+}
+
+/**
+ * Apply empty/no data styling
+ * @param {Range} range - The range to style
+ * @param {string} text - Text to display (e.g., "No data found")
+ */
+function styleEmpty_(range, text) {
+  range.setValue(text)
+    .setFontStyle('italic')
+    .setFontColor(BS_CFG.COLOR_TEXT_MUTED)
+    .setBackground(BS_CFG.COLOR_SECTION_BG)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  return range;
+}
+
+/**
+ * Apply warning/missing data styling
+ * @param {Range} range - The range to style
+ * @param {string} text - Warning text
+ * @param {string} [linkUrl] - Optional link to fix the issue
+ */
+function styleWarning_(range, text, linkUrl) {
+  if (linkUrl) {
+    range.setFormula(`=HYPERLINK("${linkUrl}", "${text}")`)
+      .setBackground(BS_CFG.COLOR_MISSING)
+      .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+  } else {
+    range.setValue(text)
+      .setBackground(BS_CFG.COLOR_WARNING)
+      .setFontColor('#c62828');
+  }
+  return range;
+}
+
+/**
+ * Apply label styling (left column labels like "Vendor:", "Status:")
+ * @param {Range} range - The range to style
+ * @param {string} text - Label text
+ */
+function styleLabel_(range, text) {
+  range.setValue(text)
+    .setFontWeight('bold')
+    .setFontColor('#424242');
+  return range;
+}
+
+/**
+ * Set column divider styling (thin black separator)
+ * @param {Sheet} sheet - The sheet to style
+ * @param {number} col - Column number for the divider
+ * @param {number} startRow - Starting row
+ * @param {number} numRows - Number of rows
+ */
+function styleColumnDivider_(sheet, col, startRow, numRows) {
+  sheet.getRange(startRow, col, numRows, 1)
+    .setBackground('#424242');
+}
+
+/**
+ * Batch set multiple cell values and styles efficiently
+ * @param {Sheet} sheet - The sheet
+ * @param {Array} cells - Array of {row, col, value, styles} objects
+ *   styles can include: bg, fontWeight, fontSize, fontColor, align, wrap
+ */
+function batchStyleCells_(sheet, cells) {
+  for (const cell of cells) {
+    const range = sheet.getRange(cell.row, cell.col);
+
+    if (cell.value !== undefined) {
+      if (cell.formula) {
+        range.setFormula(cell.value);
+      } else {
+        range.setValue(cell.value);
+      }
+    }
+
+    const s = cell.styles || {};
+    if (s.bg) range.setBackground(s.bg);
+    if (s.fontWeight) range.setFontWeight(s.fontWeight);
+    if (s.fontSize) range.setFontSize(s.fontSize);
+    if (s.fontColor) range.setFontColor(s.fontColor);
+    if (s.align) range.setHorizontalAlignment(s.align);
+    if (s.vAlign) range.setVerticalAlignment(s.vAlign);
+    if (s.wrap) range.setWrap(s.wrap);
+    if (s.fontStyle) range.setFontStyle(s.fontStyle);
+    if (s.numberFormat) range.setNumberFormat(s.numberFormat);
+  }
+}
+
 /**
  * Helper function: Get current vendor index from the display row
  */
 function getCurrentVendorIndex_() {
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
-  
+
   if (!bsSh) return null;
-  
-  // Navigation bar is in row 2, format: "◀ PREV  |  X of Y  |  NEXT ▶"
-  const cellValue = String(bsSh.getRange(2, 1).getValue() || '');
-  const match = cellValue.match(/\|\s*(\d+)\s*of\s*\d+\s*\|/);
-  
+
+  // Navigation bar is in row 3, format: "◀  X / Y  ▶"
+  const cellValue = String(bsSh.getRange(3, 1).getValue() || '');
+  const match = cellValue.match(/(\d+)\s*\/\s*\d+/);
+
   if (!match) {
     Logger.log(`Could not parse index from navigation: "${cellValue}"`);
     return null;
   }
-  
+
   return parseInt(match[1]);
 }
 
@@ -313,36 +475,51 @@ function loadVendorData(vendorIndex, options) {
   }
   
   let currentRow = 1;
-  
-  // Title - full width across all 9 columns
+
+  // Title - full width, modern blue header with subtle shadow effect
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(`⚡ BATTLE STATION — ${vendor}`)
-    .setFontSize(14).setFontWeight('bold')
+    .setValue(`⚡ BATTLE STATION`)
+    .setFontSize(16).setFontWeight('bold')
     .setBackground(BS_CFG.COLOR_HEADER)
     .setFontColor('white')
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle');
-  bsSh.setRowHeight(currentRow, 36);
+  bsSh.setRowHeight(currentRow, 40);
   currentRow++;
-  
-  // Navigation bar - full width, subtle
+
+  // Vendor name banner - prominent display (with flag if flagged)
+  const vendorDisplay = isVendorFlagged_(vendor) ? `${vendor} ⚑` : vendor;
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(`◀ PREV  |  ${vendorIndex} of ${totalVendors}  |  NEXT ▶`)
+    .setValue(vendorDisplay)
+    .setFontSize(13).setFontWeight('bold')
+    .setBackground('#e3f2fd')
+    .setFontColor('#1565c0')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 32);
+  currentRow++;
+
+  // Navigation bar - cleaner, more modern
+  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶`;
+  bsSh.getRange(currentRow, 1, 1, 9).merge()
+    .setValue(navText)
     .setFontSize(10)
     .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
-    .setBackground('#e8f0fe')
-    .setFontColor('#5f6368');
-  bsSh.setRowHeight(currentRow, 24);
+    .setBackground('#fafafa')
+    .setFontColor(BS_CFG.COLOR_TEXT_MUTED);
+  bsSh.setRowHeight(currentRow, 22);
   currentRow++;
-  
+
   bsSh.setFrozenRows(currentRow - 1);
-  
-  // VENDOR INFO SECTION
-  bsSh.getRange(currentRow, 1, 1, 4).merge()
-    .setValue(`📊 VENDOR INFO`)
-    .setBackground(BS_CFG.COLOR_SUBHEADER)
-    .setFontWeight('bold')
+
+  // Spacer row
+  bsSh.setRowHeight(currentRow, 6);
+  currentRow++;
+
+  // VENDOR INFO SECTION - using helper
+  bsSh.getRange(currentRow, 1, 1, 4).merge();
+  styleHeader_(bsSh.getRange(currentRow, 1), `📊 VENDOR INFO`)
     .setFontSize(11)
     .setHorizontalAlignment('left')
     .setVerticalAlignment('middle');
@@ -832,10 +1009,10 @@ function loadVendorData(vendorIndex, options) {
       }
       
       bsSh.getRange(contractsRow, 7).setValue(contract.contractType || '').setHorizontalAlignment('left').setVerticalAlignment('top');
-      
+
       // Default blank status to "Waiting on Legal"
       const displayStatus = contract.status || 'Waiting on Legal';
-      bsSh.getRange(contractsRow, 8).setValue(displayStatus).setHorizontalAlignment('left').setVerticalAlignment('top');
+      bsSh.getRange(contractsRow, 8).setValue(displayStatus).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
       bsSh.getRange(contractsRow, 9).setValue(contract.notes || '').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
       
       // Color code by status
@@ -1331,7 +1508,9 @@ function loadVendorData(vendorIndex, options) {
     
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
-      bsSh.getRange(currentRow, 2).setValue(email.date).setNumberFormat('@'); // Force plain text
+      const emailDateCell = bsSh.getRange(currentRow, 2);
+      emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell.setValue(email.date);
       bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0'); // Force number format
       bsSh.getRange(currentRow, 4).setValue(email.labels);
       
@@ -1416,14 +1595,45 @@ function loadVendorData(vendorIndex, options) {
   currentRow++;
   
   if (tasks.length === 0) {
-    bsSh.getRange(currentRow, 1, 1, 4).merge()
-      .setValue('No tasks found')
-      .setFontStyle('italic')
-      .setBackground('#fafafa')
-      .setHorizontalAlignment('center')
-      .setVerticalAlignment('middle');
-    bsSh.setRowHeight(currentRow, 25);
-    currentRow++;
+    // Check if vendor is Live/Paused/Onboarding - should have tasks
+    const statusLower = (liveStatus || '').toLowerCase();
+    const needsTasksWarning = statusLower.includes('live') ||
+                               statusLower.includes('onboarding') ||
+                               statusLower.includes('paused');
+
+    if (needsTasksWarning) {
+      // Show warning with link to Claude task generator
+      const vendorType = source.toLowerCase().includes('affiliate') ? 'Affiliate' : 'Buyer';
+      const claudeChatUrl = 'https://claude.ai/chat/33d0e36c-23ad-4e7d-b354-bd6cf3692f3f';
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
+        .setFontColor('#d32f2f')
+        .setBackground('#ffebee')
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+
+      // Add copy/paste line for vendor name and type
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`${vendor} (${vendorType})`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 22);
+      currentRow++;
+    } else {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue('No tasks found')
+        .setFontStyle('italic')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('center')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+    }
   } else {
     bsSh.getRange(currentRow, 1).setValue('Task').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 2).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3');
@@ -1444,7 +1654,9 @@ function loadVendorData(vendorIndex, options) {
       // Status - append date if present (but not for Done tasks)
       const statusDisplay = (task.taskDate && !task.isDone) ? `${task.status} - ${task.taskDate}` : task.status;
       bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
-      bsSh.getRange(currentRow, 3).setValue(task.created).setWrap(true).setNumberFormat('@'); // Force plain text
+      const taskDateCell = bsSh.getRange(currentRow, 3);
+      taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      taskDateCell.setValue(task.created).setWrap(true);
       bsSh.getRange(currentRow, 4).setValue(task.project).setWrap(true);
       
       // Color coding for task status
@@ -2058,10 +2270,7 @@ function searchGmailFromLink_(gmailLink, querySetName) {
       
       // Format date in Pacific timezone with leading zeros
       const tz = 'America/Los_Angeles';
-      const datePart = Utilities.formatDate(date, tz, 'yyyy-MM-dd');
-      const hours = Utilities.formatDate(date, tz, 'HH');
-      const mins = Utilities.formatDate(date, tz, 'mm');
-      const dateFormatted = `${datePart} ${hours}:${mins}`;
+      const dateFormatted = Utilities.formatDate(date, tz, 'yyyy-MM-dd HH:mm');
       
       emails.push({
         threadId: threadId,
@@ -3392,10 +3601,12 @@ function battleStationQuickRefresh() {
     
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
-      bsSh.getRange(currentRow, 2).setValue(email.date).setNumberFormat('@');
+      const emailDateCell2 = bsSh.getRange(currentRow, 2);
+      emailDateCell2.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell2.setValue(email.date);
       bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0');
       bsSh.getRange(currentRow, 4).setValue(email.labels);
-      
+
       if (email.link) {
         bsSh.getRange(currentRow, 1)
           .setFormula(`=HYPERLINK("${email.link}", "${email.subject.replace(/"/g, '""')}")`);
@@ -4240,21 +4451,34 @@ function generateEmailChecksum_(emails) {
 }
 
 /**
- * Check if an email is overdue (waiting/customer OR waiting/me label + >16 business hours old)
+ * Check if an email is overdue:
+ * - Priority + waiting/customer or waiting/me + >16 business hours, OR
+ * - waiting/phonexa + >7 days
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
-  
-  // Check emails with 02.waiting/customer OR 02.waiting/me label
-  const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
-  if (!isWaiting) return false;
-  
+
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
-  
-  const businessHours = getBusinessHoursElapsed_(emailDate);
-  return businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS;
+
+  // Check for Phonexa waiting - 7 calendar days
+  if (email.labels.includes('02.waiting/phonexa')) {
+    const now = new Date();
+    const daysDiff = (now - emailDate) / (1000 * 60 * 60 * 24);
+    if (daysDiff > 7) return true;
+  }
+
+  // Check for priority + waiting/customer or waiting/me - 16 business hours
+  if (email.labels.includes('01.priority/1')) {
+    const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
+    if (isWaiting) {
+      const businessHours = getBusinessHoursElapsed_(emailDate);
+      if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -4320,17 +4544,16 @@ function getBusinessHoursElapsed_(startDate) {
 function getChecksumsSheet_() {
   const ss = SpreadsheetApp.getActive();
   let sh = ss.getSheetByName(BS_CFG.CHECKSUMS_SHEET);
-  
+
   if (!sh) {
     sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
-    sh.getRange(1, 1, 1, 5).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed']]);
-    sh.getRange(1, 1, 1, 5).setFontWeight('bold');
+    sh.getRange(1, 1, 1, 6).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged']]);
+    sh.getRange(1, 1, 1, 6).setFontWeight('bold');
     sh.hideSheet();
   } else {
-    // Check if we need to add ModuleChecksums column (migration)
-    const headers = sh.getRange(1, 1, 1, 5).getValues()[0];
+    // Check if we need to add columns (migration)
+    const headers = sh.getRange(1, 1, 1, 6).getValues()[0];
     if (headers[3] !== 'ModuleChecksums') {
-      // Need to restructure - insert column if missing
       const numCols = sh.getLastColumn();
       if (numCols < 5) {
         sh.insertColumnAfter(3);
@@ -4338,9 +4561,87 @@ function getChecksumsSheet_() {
         sh.getRange(1, 5).setValue('Last Viewed').setFontWeight('bold');
       }
     }
+    // Add Flagged column if missing
+    if (headers[5] !== 'Flagged') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 6) {
+        sh.getRange(1, 6).setValue('Flagged').setFontWeight('bold');
+      }
+    }
   }
-  
+
   return sh;
+}
+
+/**
+ * Check if a vendor is flagged for review
+ */
+function isVendorFlagged_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return data[i][5] === true || data[i][5] === 'TRUE' || data[i][5] === 'true';
+    }
+  }
+  return false;
+}
+
+/**
+ * Set or clear the flag for a vendor
+ */
+function setVendorFlag_(vendor, flagged) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 6).setValue(flagged);
+      return true;
+    }
+  }
+
+  // Vendor not in checksums yet - add a row
+  if (flagged) {
+    const lastRow = sh.getLastRow();
+    sh.getRange(lastRow + 1, 1).setValue(vendor);
+    sh.getRange(lastRow + 1, 6).setValue(true);
+  }
+  return true;
+}
+
+/**
+ * Toggle flag for the currently displayed vendor
+ */
+function battleStationToggleFlag() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('Battle Station sheet not found.');
+    return;
+  }
+
+  // Get vendor name from row 2 (vendor name banner) - remove any existing flag icon
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').trim();
+  if (!vendor) {
+    SpreadsheetApp.getUi().alert('No vendor currently displayed.');
+    return;
+  }
+
+  const currentlyFlagged = isVendorFlagged_(vendor);
+  setVendorFlag_(vendor, !currentlyFlagged);
+
+  // Update the display with or without flag icon
+  if (!currentlyFlagged) {
+    bsSh.getRange(2, 1).setValue(`${vendor} ⚑`);
+    ss.toast(`⚑ Flagged "${vendor}" - will stop here on next skip`, '⚑ Flagged', 3);
+  } else {
+    bsSh.getRange(2, 1).setValue(vendor);
+    ss.toast(`Unflagged "${vendor}"`, '⚑ Unflagged', 3);
+  }
 }
 
 /**
@@ -4553,13 +4854,25 @@ function filterTasksBySource_(tasks, source) {
  *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
  */
 function checkVendorForChanges_(vendor, listRow, source) {
+  // Check if vendor is flagged - always stop on flagged vendors
+  if (isVendorFlagged_(vendor)) {
+    Logger.log(`${vendor}: flagged for review`);
+    // Clear the flag since we're stopping here
+    setVendorFlag_(vendor, false);
+    return {
+      hasChanges: true,
+      changeType: 'flagged',
+      data: null
+    };
+  }
+
   const storedData = getStoredChecksum_(vendor);
-  
+
   // If no stored data, this is a first view
   if (!storedData) {
     Logger.log(`${vendor}: no stored checksums - first view`);
-    return { 
-      hasChanges: true, 
+    return {
+      hasChanges: true,
       changeType: 'first view',
       data: null 
     };
@@ -5328,18 +5641,7 @@ function testGDriveSearch() {
  */
 function syncMondayComBoards() {
   const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-  
-  const response = ui.alert(
-    '🔄 Sync monday.com Data',
-    'This will update the "buyers monday.com" and "affiliates monday.com" sheets with the latest data from monday.com.\n\nThis may take a few minutes. Continue?',
-    ui.ButtonSet.YES_NO
-  );
-  
-  if (response !== ui.Button.YES) {
-    return;
-  }
-  
+
   ss.toast('Starting sync...', '🔄 Syncing', 30);
   
   try {
