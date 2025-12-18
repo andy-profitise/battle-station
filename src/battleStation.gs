@@ -1778,8 +1778,19 @@ function loadVendorData(vendorIndex, options) {
       Logger.log(`First view for ${vendor} - no previous checksums`);
     }
     
-    // Store the new checksums including module checksums
-    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums);
+    // Create email summary data for change tracking
+    const emailData = (emails || []).map(e => ({
+      subject: (e.subject || '').substring(0, 60),
+      date: e.date
+    }));
+
+    // Log email changes if emails module changed
+    if (changedModules.includes('emails') && storedData && storedData.emailData) {
+      logEmailChanges_(storedData.emailData, emailData, vendor);
+    }
+
+    // Store the new checksums including module checksums and email data
+    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums, emailData);
     Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}`);
   } catch (e) {
     Logger.log(`Error with checksum: ${e.message}`);
@@ -4547,12 +4558,12 @@ function getChecksumsSheet_() {
 
   if (!sh) {
     sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
-    sh.getRange(1, 1, 1, 6).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged']]);
-    sh.getRange(1, 1, 1, 6).setFontWeight('bold');
+    sh.getRange(1, 1, 1, 7).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData']]);
+    sh.getRange(1, 1, 1, 7).setFontWeight('bold');
     sh.hideSheet();
   } else {
     // Check if we need to add columns (migration)
-    const headers = sh.getRange(1, 1, 1, 6).getValues()[0];
+    const headers = sh.getRange(1, 1, 1, 7).getValues()[0];
     if (headers[3] !== 'ModuleChecksums') {
       const numCols = sh.getLastColumn();
       if (numCols < 5) {
@@ -4566,6 +4577,13 @@ function getChecksumsSheet_() {
       const numCols = sh.getLastColumn();
       if (numCols < 6) {
         sh.getRange(1, 6).setValue('Flagged').setFontWeight('bold');
+      }
+    }
+    // Add EmailData column if missing
+    if (headers[6] !== 'EmailData') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 7) {
+        sh.getRange(1, 7).setValue('EmailData').setFontWeight('bold');
       }
     }
   }
@@ -4708,15 +4726,16 @@ function getBoxBlacklist_() {
 
 /**
  * Get stored checksum for a vendor
- * Returns object with { checksum, emailChecksum, moduleChecksums }
+ * Returns object with { checksum, emailChecksum, moduleChecksums, emailData }
  */
 function getStoredChecksum_(vendor) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
-  
+
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
       let moduleChecksums = null;
+      let emailData = null;
       try {
         if (data[i][3]) {
           moduleChecksums = JSON.parse(data[i][3]);
@@ -4724,36 +4743,95 @@ function getStoredChecksum_(vendor) {
       } catch (e) {
         // Invalid JSON, ignore
       }
+      try {
+        if (data[i][6]) {
+          emailData = JSON.parse(data[i][6]);
+        }
+      } catch (e) {
+        // Invalid JSON, ignore
+      }
       return {
         checksum: data[i][1],
         emailChecksum: data[i][2] || null,
-        moduleChecksums: moduleChecksums
+        moduleChecksums: moduleChecksums,
+        emailData: emailData
       };
     }
   }
-  
+
   return null;
 }
 
 /**
- * Store checksum for a vendor (including module sub-checksums)
+ * Store checksum for a vendor (including module sub-checksums and email data)
  */
-function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums) {
+function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailData) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
   const now = new Date();
   const moduleJson = moduleChecksums ? JSON.stringify(moduleChecksums) : '';
-  
+  const emailDataJson = emailData ? JSON.stringify(emailData) : '';
+
   // Look for existing row
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      // Update columns 2-5 (Checksum, EmailChecksum, ModuleChecksums, Last Viewed) and column 7 (EmailData)
       sh.getRange(i + 1, 2, 1, 4).setValues([[checksum, emailChecksum || '', moduleJson, now]]);
+      sh.getRange(i + 1, 7).setValue(emailDataJson);
       return;
     }
   }
-  
+
   // Add new row
-  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now]);
+  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now, '', emailDataJson]);
+}
+
+/**
+ * Log what changed in emails by comparing old and new email data
+ */
+function logEmailChanges_(oldEmails, newEmails, vendor) {
+  // Create maps for comparison using subject+date as key
+  const oldMap = new Map((oldEmails || []).map(e => [`${e.subject}|${e.date}`, e]));
+  const newMap = new Map((newEmails || []).map(e => [`${e.subject}|${e.date}`, e]));
+
+  const added = [];
+  const removed = [];
+
+  // Find added emails (in new but not in old)
+  for (const [key, email] of newMap) {
+    if (!oldMap.has(key)) {
+      added.push(email);
+    }
+  }
+
+  // Find removed emails (in old but not in new)
+  for (const [key, email] of oldMap) {
+    if (!newMap.has(key)) {
+      removed.push(email);
+    }
+  }
+
+  // Log the changes
+  if (added.length > 0 || removed.length > 0) {
+    Logger.log(`📧 Email changes for ${vendor}:`);
+    if (added.length > 0) {
+      Logger.log(`  ➕ ADDED (${added.length}):`);
+      for (const e of added.slice(0, 5)) {
+        Logger.log(`     - "${e.subject}" (${e.date})`);
+      }
+      if (added.length > 5) Logger.log(`     ... and ${added.length - 5} more`);
+    }
+    if (removed.length > 0) {
+      Logger.log(`  ➖ REMOVED (${removed.length}):`);
+      for (const e of removed.slice(0, 5)) {
+        Logger.log(`     - "${e.subject}" (${e.date})`);
+      }
+      if (removed.length > 5) Logger.log(`     ... and ${removed.length - 5} more`);
+    }
+  } else {
+    // If no added/removed but checksum changed, might be label changes
+    Logger.log(`📧 Email changes for ${vendor}: Labels or other metadata changed (same threads)`);
+  }
 }
 
 /************************************************************
