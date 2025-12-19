@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-18 23:07 PST
+ * Last Updated: 2025-12-19 07:24 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2283,7 +2283,7 @@ function searchGmailFromLink_(gmailLink, querySetName) {
       const lastMessage = messages[messages.length - 1]; // Most recent message
       const subject = thread.getFirstMessageSubject();
       const date = lastMessage.getDate(); // Use last message date
-      const labels = thread.getLabels().map(label => label.getName()).join(', ');
+      const labels = thread.getLabels().map(label => label.getName()).sort().join(', ');
       const threadId = thread.getId();
       const threadLink = `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
       
@@ -5668,119 +5668,66 @@ function cancelSkip5Session() {
 }
 
 /**
- * Auto-traverse through all vendors, loading each one to record checksums
- * Processes in batches and asks to continue after each batch
+ * Auto-traverse through all vendors, skipping unchanged and stopping on changes
+ * Colors List rows like Skip Unchanged (yellow=skipped, green=changed)
  */
 function autoTraverseVendors() {
   const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!listSh) {
-    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    ss.toast('List sheet not found.', '❌ Error', 3);
     return;
   }
-  
-  const totalVendors = listSh.getLastRow() - 1;
+
+  const listData = listSh.getDataRange().getValues();
+  const totalVendors = listData.length - 1;
   let currentIdx = (getCurrentVendorIndex_() || 0) + 1; // Start on NEXT vendor
-  
+
   // Make sure we don't start past the end
   if (currentIdx > totalVendors) {
-    ui.alert('End of List', 'Already at the last vendor.', ui.ButtonSet.OK);
+    ss.toast('Already at the last vendor.', '🔁 Auto-Traverse', 3);
     return;
   }
-  
-  // Ask for batch size
-  const response = ui.prompt(
-    '🔁 Auto-Traverse Vendors',
-    `Starting from vendor ${currentIdx} of ${totalVendors}.\n\nHow many vendors to process before pausing?\n(Enter a number, or "all" for no pausing)\n\nYou can also cancel the script from the Apps Script editor if needed.`,
-    ui.ButtonSet.OK_CANCEL
-  );
-  
-  if (response.getSelectedButton() !== ui.Button.OK) {
-    return;
-  }
-  
-  const inputText = response.getResponseText().trim().toLowerCase();
-  let batchSize = 25; // Default batch size
-  let noPause = false;
-  
-  if (inputText === 'all') {
-    noPause = true;
-    batchSize = totalVendors;
-  } else {
-    const parsed = parseInt(inputText);
-    if (!isNaN(parsed) && parsed > 0) {
-      batchSize = parsed;
-    }
-  }
-  
-  let processedCount = 0;
-  let totalProcessed = 0;
+
+  let skippedCount = 0;
   const startTime = new Date();
-  
+
   while (currentIdx <= totalVendors) {
-    const vendor = listSh.getRange(currentIdx + 1, 1).getValue();
-    
-    ss.toast(`Processing ${currentIdx} of ${totalVendors}: ${vendor}`, '🔁 Auto-Traverse', 2);
-    
-    try {
-      // Load vendor data (this will record checksums)
+    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+    const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
+    const listRow = currentIdx + 1;
+
+    ss.toast(`Checking ${vendor}... (${skippedCount} skipped)`, '🔁 Auto-Traverse', -1);
+
+    // Use the centralized change detection helper
+    const changeResult = checkVendorForChanges_(vendor, listRow, source);
+
+    if (changeResult.hasChanges) {
+      // Show what changed in a toast BEFORE loading modules
+      const changeLabel = formatChangeType_(changeResult.changeType);
+      ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
+
       loadVendorData(currentIdx, { forceChanged: true });
-      processedCount++;
-      totalProcessed++;
-      
-      Logger.log(`Auto-traverse: Processed ${vendor} (${currentIdx}/${totalVendors})`);
-    } catch (e) {
-      Logger.log(`Auto-traverse error on ${vendor}: ${e.message}`);
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
+      return; // Stop on changed vendor
     }
-    
+
+    // No changes - mark as skipped (yellow)
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+    skippedCount++;
     currentIdx++;
-    
-    // Check if we've completed a batch
-    if (!noPause && processedCount >= batchSize && currentIdx <= totalVendors) {
-      const elapsed = Math.round((new Date() - startTime) / 1000);
-      const remaining = totalVendors - currentIdx + 1;
-      
-      const continueResponse = ui.alert(
-        '🔁 Batch Complete',
-        `Processed ${totalProcessed} vendors (${processedCount} in this batch).\n` +
-        `Time elapsed: ${elapsed} seconds\n` +
-        `Current position: ${currentIdx} of ${totalVendors}\n` +
-        `Remaining: ${remaining} vendors\n\n` +
-        `Continue with next batch?`,
-        ui.ButtonSet.YES_NO
-      );
-      
-      if (continueResponse !== ui.Button.YES) {
-        ss.toast(`Stopped at vendor ${currentIdx}. Processed ${totalProcessed} total.`, '⏹️ Stopped', 5);
-        return;
-      }
-      
-      processedCount = 0; // Reset batch counter
-    }
-    
+
     // Safety check - Apps Script has a 6 minute timeout
     const elapsedMs = new Date() - startTime;
     if (elapsedMs > 5 * 60 * 1000) { // 5 minutes
-      ui.alert(
-        '⏱️ Time Limit',
-        `Approaching Apps Script time limit.\n` +
-        `Processed ${totalProcessed} vendors.\n` +
-        `Stopped at vendor ${currentIdx}.\n\n` +
-        `Run Auto-Traverse again to continue from here.`,
-        ui.ButtonSet.OK
-      );
+      ss.toast(`Time limit reached. Skipped ${skippedCount}. Run again to continue.`, '⏱️ Time Limit', 5);
       return;
     }
   }
-  
-  const totalTime = Math.round((new Date() - startTime) / 1000);
-  ui.alert(
-    '✅ Complete!',
-    `Auto-traverse finished!\n\nProcessed ${totalProcessed} vendors in ${totalTime} seconds.`,
-    ui.ButtonSet.OK
-  );
+
+  // Reached the end
+  ss.toast(`Finished! Skipped ${skippedCount} unchanged vendors.`, '✅ Complete', 5);
 }
 
 /**
