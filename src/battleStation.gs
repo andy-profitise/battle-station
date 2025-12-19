@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-18 16:45 PST
+ * Last Updated: 2025-12-18 19:43 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -5203,6 +5203,25 @@ function checkVendorForChanges_(vendor, listRow, source) {
 }
 
 /**
+ * Format change type for display in toast notifications
+ * @param {string} changeType - Raw change type from checkVendorForChanges_
+ * @return {string} Formatted change type with emoji
+ */
+function formatChangeType_(changeType) {
+  const typeMap = {
+    'flagged': '⚑ Flagged for review',
+    'first view': '🆕 First time viewing',
+    'emails changed': '📧 New or updated emails',
+    'tasks changed': '📋 Tasks changed on monday.com',
+    'notes changed': '📝 Notes updated',
+    'status changed': '🔄 Status changed',
+    'contacts changed': '👤 Contacts updated',
+    'meetings changed': '📅 Meetings changed'
+  };
+  return typeMap[changeType] || changeType;
+}
+
+/**
  * Set row background color in List sheet
  * @param {Sheet} listSh - List sheet
  * @param {number} listRow - Row number (1-based)
@@ -5266,7 +5285,10 @@ function skipToNextChanged(trackComeback) {
     const changeResult = checkVendorForChanges_(vendor, listRow, source);
     
     if (changeResult.hasChanges) {
-      ss.toast('');
+      // Show what changed in a toast BEFORE loading modules
+      const changeLabel = formatChangeType_(changeResult.changeType);
+      ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
+
       loadVendorData(currentIdx, { forceChanged: true });
       setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
       if (skippedCount > 0) {
