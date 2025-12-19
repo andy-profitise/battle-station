@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-18 19:43 PST
+ * Last Updated: 2025-12-18 23:07 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -4797,7 +4797,19 @@ function battleStationSnoozeVendor() {
   }
 
   const dateStr = response.getResponseText().trim();
-  const snoozeDate = new Date(dateStr);
+
+  // Parse date parts to avoid timezone issues (YYYY-MM-DD interpreted as UTC)
+  const dateParts = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!dateParts) {
+    ui.alert('Invalid date format. Please use YYYY-MM-DD.');
+    return;
+  }
+
+  const snoozeDate = new Date(
+    parseInt(dateParts[1], 10),      // year
+    parseInt(dateParts[2], 10) - 1,  // month (0-indexed)
+    parseInt(dateParts[3], 10)       // day
+  );
 
   if (isNaN(snoozeDate.getTime())) {
     ui.alert('Invalid date format. Please use YYYY-MM-DD.');
