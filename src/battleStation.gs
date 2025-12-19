@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-18
+ * Last Updated: 2025-12-18 14:05 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1598,10 +1598,13 @@ function loadVendorData(vendorIndex, options) {
   
   if (tasks.length === 0) {
     // Check if vendor is Live/Paused/Onboarding - should have tasks
+    // Note: "preonboarding" contains "onboarding" so we must exclude it explicitly
     const statusLower = (liveStatus || '').toLowerCase();
-    const needsTasksWarning = statusLower.includes('live') ||
+    const isPreonboarding = statusLower.includes('pre');
+    const needsTasksWarning = !isPreonboarding && (
+                               statusLower.includes('live') ||
                                statusLower.includes('onboarding') ||
-                               statusLower.includes('paused');
+                               statusLower.includes('paused'));
 
     if (needsTasksWarning) {
       // Show warning with link to Claude task generator
