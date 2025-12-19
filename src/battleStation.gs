@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-19 12:28 PST
+ * Last Updated: 2025-12-19 15:13 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -5124,6 +5124,18 @@ function checkVendorForChanges_(vendor, listRow, source) {
     };
   }
 
+  // Check for overdue emails - always stop if any emails are overdue
+  const emails = getEmailsForVendor_(vendor, listRow) || [];
+  const overdueEmails = emails.filter(e => isEmailOverdue_(e));
+  if (overdueEmails.length > 0) {
+    Logger.log(`${vendor}: has ${overdueEmails.length} overdue email(s)`);
+    return {
+      hasChanges: true,
+      changeType: 'overdue emails',
+      data: { emails }
+    };
+  }
+
   const storedData = getStoredChecksum_(vendor);
 
   // If no stored data, this is a first view
@@ -5136,8 +5148,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     };
   }
   
-  // Check emails (most volatile)
-  const emails = getEmailsForVendor_(vendor, listRow) || [];
+  // Check emails (most volatile) - emails already fetched above for overdue check
   const newEmailChecksum = generateEmailChecksum_(emails);
   
   if (storedData.emailChecksum !== newEmailChecksum) {
@@ -5228,6 +5239,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
 function formatChangeType_(changeType) {
   const typeMap = {
     'flagged': '⚑ Flagged for review',
+    'overdue emails': '🔴 Overdue emails need attention',
     'first view': '🆕 First time viewing',
     'emails changed': '📧 New or updated emails',
     'tasks changed': '📋 Tasks changed on monday.com',
