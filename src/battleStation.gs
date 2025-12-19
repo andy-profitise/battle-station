@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-18 14:05 PST
+ * Last Updated: 2025-12-18 16:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -12,9 +12,10 @@
  * - Mark vendors as reviewed/complete
  * - Email contacts directly from Battle Station
  * - Analyze emails with Claude AI (inline links)
+ * - Snooze vendors until a specific date (skipped unless checksum changes)
  *
- * UPDATED: Snoozed=highest priority, Helpful Links, inline Claude links
- * FIXED: Removed duplicate functions, fixed checksum functionality
+ * UPDATED: Added vendor snooze feature with date display in banner
+ * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
  ************************************************************/
 
 const BS_CFG = {
@@ -215,6 +216,7 @@ function onOpen() {
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
     .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
+    .addItem('💤 Snooze Vendor...', 'battleStationSnoozeVendor')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
@@ -489,8 +491,16 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 40);
   currentRow++;
 
-  // Vendor name banner - prominent display (with flag if flagged)
-  const vendorDisplay = isVendorFlagged_(vendor) ? `${vendor} ⚑` : vendor;
+  // Vendor name banner - prominent display (with flag/snooze indicators)
+  let vendorDisplay = vendor;
+  if (isVendorFlagged_(vendor)) {
+    vendorDisplay += ' ⚑';
+  }
+  const snoozeDate = getVendorSnoozeDate_(vendor);
+  if (snoozeDate && snoozeDate > new Date()) {
+    const dateStr = Utilities.formatDate(snoozeDate, Session.getScriptTimeZone(), 'M/d');
+    vendorDisplay += ` 💤${dateStr}`;
+  }
   bsSh.getRange(currentRow, 1, 1, 9).merge()
     .setValue(vendorDisplay)
     .setFontSize(13).setFontWeight('bold')
@@ -4563,12 +4573,12 @@ function getChecksumsSheet_() {
 
   if (!sh) {
     sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
-    sh.getRange(1, 1, 1, 7).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData']]);
-    sh.getRange(1, 1, 1, 7).setFontWeight('bold');
+    sh.getRange(1, 1, 1, 8).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData', 'SnoozedUntil']]);
+    sh.getRange(1, 1, 1, 8).setFontWeight('bold');
     sh.hideSheet();
   } else {
     // Check if we need to add columns (migration)
-    const headers = sh.getRange(1, 1, 1, 7).getValues()[0];
+    const headers = sh.getRange(1, 1, 1, 8).getValues()[0];
     if (headers[3] !== 'ModuleChecksums') {
       const numCols = sh.getLastColumn();
       if (numCols < 5) {
@@ -4589,6 +4599,13 @@ function getChecksumsSheet_() {
       const numCols = sh.getLastColumn();
       if (numCols < 7) {
         sh.getRange(1, 7).setValue('EmailData').setFontWeight('bold');
+      }
+    }
+    // Add SnoozedUntil column if missing
+    if (headers[7] !== 'SnoozedUntil') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 8) {
+        sh.getRange(1, 8).setValue('SnoozedUntil').setFontWeight('bold');
       }
     }
   }
@@ -4646,9 +4663,9 @@ function battleStationToggleFlag() {
     return;
   }
 
-  // Get vendor name from row 2 (vendor name banner) - remove any existing flag icon
+  // Get vendor name from row 2 (vendor name banner) - remove any icons (flag/snooze)
   const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
-  const vendor = rawValue.replace(/\s*⚑\s*$/, '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*/, '').replace(/\s*💤\d+\/\d+\s*$/, '').trim();
   if (!vendor) {
     SpreadsheetApp.getUi().alert('No vendor currently displayed.');
     return;
@@ -4665,6 +4682,144 @@ function battleStationToggleFlag() {
     bsSh.getRange(2, 1).setValue(vendor);
     ss.toast(`Unflagged "${vendor}"`, '⚑ Unflagged', 3);
   }
+}
+
+/**
+ * Check if a vendor is snoozed (and snooze date hasn't passed)
+ * Returns true if snoozed and date is in the future
+ */
+function isVendorSnoozed_(vendor) {
+  const snoozeDate = getVendorSnoozeDate_(vendor);
+  if (!snoozeDate) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return snoozeDate > today;
+}
+
+/**
+ * Get the snooze date for a vendor
+ * Returns Date object or null if not snoozed
+ */
+function getVendorSnoozeDate_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      const snoozeVal = data[i][7];
+      if (snoozeVal instanceof Date) {
+        return snoozeVal;
+      }
+      if (snoozeVal) {
+        const parsed = new Date(snoozeVal);
+        if (!isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Set or clear the snooze date for a vendor
+ */
+function setVendorSnooze_(vendor, snoozeDate) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 8).setValue(snoozeDate || '');
+      return true;
+    }
+  }
+
+  // Vendor not in checksums yet - add a row
+  if (snoozeDate) {
+    const lastRow = sh.getLastRow();
+    sh.getRange(lastRow + 1, 1).setValue(vendor);
+    sh.getRange(lastRow + 1, 8).setValue(snoozeDate);
+  }
+  return true;
+}
+
+/**
+ * Snooze the currently displayed vendor until a specified date
+ */
+function battleStationSnoozeVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('Battle Station sheet not found.');
+    return;
+  }
+
+  // Get vendor name from row 2 (vendor name banner) - remove any icons
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
+  if (!vendor) {
+    ui.alert('No vendor currently displayed.');
+    return;
+  }
+
+  // Check if already snoozed
+  const currentSnooze = getVendorSnoozeDate_(vendor);
+  if (currentSnooze && currentSnooze > new Date()) {
+    const response = ui.alert(
+      'Already Snoozed',
+      `"${vendor}" is snoozed until ${currentSnooze.toLocaleDateString()}.\n\nDo you want to clear the snooze?`,
+      ui.ButtonSet.YES_NO
+    );
+    if (response === ui.Button.YES) {
+      setVendorSnooze_(vendor, null);
+      // Update display
+      const newDisplay = rawValue.replace(/\s*💤.*$/, '').trim();
+      bsSh.getRange(2, 1).setValue(newDisplay);
+      ss.toast(`Snooze cleared for "${vendor}"`, '⏰ Unsnooze', 3);
+    }
+    return;
+  }
+
+  // Prompt for snooze date
+  const response = ui.prompt(
+    'Snooze Vendor',
+    `Enter snooze date for "${vendor}" (YYYY-MM-DD):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const dateStr = response.getResponseText().trim();
+  const snoozeDate = new Date(dateStr);
+
+  if (isNaN(snoozeDate.getTime())) {
+    ui.alert('Invalid date format. Please use YYYY-MM-DD.');
+    return;
+  }
+
+  // Set snooze to end of day
+  snoozeDate.setHours(23, 59, 59, 999);
+
+  if (snoozeDate <= new Date()) {
+    ui.alert('Snooze date must be in the future.');
+    return;
+  }
+
+  setVendorSnooze_(vendor, snoozeDate);
+
+  // Update display with snooze indicator
+  const displayDate = snoozeDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const baseDisplay = rawValue.replace(/\s*💤.*$/, '').trim();
+  bsSh.getRange(2, 1).setValue(`${baseDisplay} 💤${displayDate}`);
+
+  ss.toast(`Snoozed "${vendor}" until ${displayDate}`, '💤 Snoozed', 3);
 }
 
 /**
