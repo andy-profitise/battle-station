@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-19 07:24 PST
+ * Last Updated: 2025-12-19 12:28 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2283,7 +2283,13 @@ function searchGmailFromLink_(gmailLink, querySetName) {
       const lastMessage = messages[messages.length - 1]; // Most recent message
       const subject = thread.getFirstMessageSubject();
       const date = lastMessage.getDate(); // Use last message date
-      const labels = thread.getLabels().map(label => label.getName()).sort().join(', ');
+
+      // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
+      const userLabels = thread.getLabels().map(label => label.getName());
+      if (thread.isInInbox()) {
+        userLabels.push('INBOX');
+      }
+      const labels = userLabels.sort().join(', ');
       const threadId = thread.getId();
       const threadLink = `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
       
