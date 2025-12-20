@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-19 15:13 PST
+ * Last Updated: 2025-12-19 16:18 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1514,16 +1514,16 @@ function loadVendorData(vendorIndex, options) {
     // Email headers
     bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 3).setValue('Count').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
     currentRow++;
-    
+
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
       const emailDateCell = bsSh.getRange(currentRow, 2);
       emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
       emailDateCell.setValue(email.date);
-      bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0'); // Force number format
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
       bsSh.getRange(currentRow, 4).setValue(email.labels);
       
       if (email.link) {
@@ -2284,6 +2284,11 @@ function searchGmailFromLink_(gmailLink, querySetName) {
       const subject = thread.getFirstMessageSubject();
       const date = lastMessage.getDate(); // Use last message date
 
+      // Determine if last message was from me or vendor
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      const lastSender = lastMessage.getFrom().toLowerCase();
+      const lastFrom = lastSender.includes(myEmail) ? 'ME' : 'VENDOR';
+
       // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
       const userLabels = thread.getLabels().map(label => label.getName());
       if (thread.isInInbox()) {
@@ -2308,7 +2313,8 @@ function searchGmailFromLink_(gmailLink, querySetName) {
         threadId: threadId,
         subject: subject || '(no subject)',
         date: dateFormatted,
-        count: messages.length,
+        lastFrom: lastFrom,
+        count: messages.length,  // Keep for Claude analysis context
         labels: labels,
         link: threadLink,
         querySet: querySetName,
@@ -3627,16 +3633,16 @@ function battleStationQuickRefresh() {
     // Email headers
     bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 3).setValue('Count').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
     currentRow++;
-    
+
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
       const emailDateCell2 = bsSh.getRange(currentRow, 2);
       emailDateCell2.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
       emailDateCell2.setValue(email.date);
-      bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0');
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
       bsSh.getRange(currentRow, 4).setValue(email.labels);
 
       if (email.link) {
