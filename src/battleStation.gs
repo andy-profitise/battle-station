@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-19 16:18 PST
+ * Last Updated: 2025-12-19 20:40 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2284,10 +2284,17 @@ function searchGmailFromLink_(gmailLink, querySetName) {
       const subject = thread.getFirstMessageSubject();
       const date = lastMessage.getDate(); // Use last message date
 
-      // Determine if last message was from me or vendor
+      // Determine who sent the last message
       const myEmail = Session.getActiveUser().getEmail().toLowerCase();
       const lastSender = lastMessage.getFrom().toLowerCase();
-      const lastFrom = lastSender.includes(myEmail) ? 'ME' : 'VENDOR';
+      let lastFrom = 'VENDOR';
+      if (lastSender.includes(myEmail)) {
+        lastFrom = 'ME';
+      } else if (lastSender.includes('aden')) {
+        lastFrom = 'ADEN';
+      } else if (lastSender.includes('accounting')) {
+        lastFrom = 'ACCOUNTING';
+      }
 
       // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
       const userLabels = thread.getLabels().map(label => label.getName());
