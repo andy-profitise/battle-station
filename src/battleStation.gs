@@ -1,7 +1,7 @@
 /************************************************************
  * BATTLE STATION - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-19 20:40 PST
+ * Last Updated: 2025-12-19 21:58 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2294,6 +2294,8 @@ function searchGmailFromLink_(gmailLink, querySetName) {
         lastFrom = 'ADEN';
       } else if (lastSender.includes('accounting')) {
         lastFrom = 'ACCOUNTING';
+      } else if (lastSender.includes('@zeroparallel.com') || lastSender.includes('@profitise.com') || lastSender.includes('@phonexa.com')) {
+        lastFrom = 'INTERNAL';
       }
 
       // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
