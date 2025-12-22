@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-21 22:33 PST
+ * Last Updated: 2025-12-21 23:10 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -4511,6 +4511,9 @@ function generateEmailChecksum_(emails) {
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
+
+  // Snoozed emails are never overdue
+  if (email.isSnoozed) return false;
 
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
