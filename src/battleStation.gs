@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 08:50 PST
+ * Last Updated: 2025-12-22 09:00 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -6858,6 +6858,7 @@ ${threadContent}
 
 /**
  * Create Gmail draft and return the URL
+ * Uses createDraftReplyAll for proper threading, then updates recipients via Gmail API
  */
 function createDraftAndGetUrl_(thread, responseBody) {
   const messages = thread.getMessages();
@@ -6924,56 +6925,83 @@ function createDraftAndGetUrl_(thread, responseBody) {
 
   if (!salesAlreadyIncluded) {
     if (ccRecipients) {
-      // There are CC recipients, add sales as BCC
       bccRecipients = 'sales@profitise.com';
     } else {
-      // No CC recipients, add sales as CC
       ccRecipients = 'sales@profitise.com';
     }
   }
 
-  // Get subject with Re: prefix
-  const subject = lastMessage.getSubject();
-  const replySubject = subject.toLowerCase().startsWith('re:') ? subject : 'Re: ' + subject;
+  // Step 1: Create draft using createDraftReplyAll for proper threading (In-Reply-To, References headers)
+  const draft = lastMessage.createDraftReplyAll(responseBody);
+  const draftId = draft.getId();
 
-  // Build quoted text from the last message
-  const lastFrom = lastMessage.getFrom();
-  const lastDate = lastMessage.getDate();
-  const lastBody = lastMessage.getBody(); // HTML body for proper quoting
+  // Step 2: Use Gmail API to update the draft with correct recipients
+  // Get the raw message and update headers
+  const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'full' });
+  const message = draftData.message;
 
-  // Format date like "Mon, Dec 16, 2024 at 10:30 AM"
-  const dateStr = Utilities.formatDate(lastDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+  // Build new headers with correct recipients
+  const headers = message.payload.headers;
+  const newHeaders = [];
 
-  // Build HTML body with response + quoted message
-  const htmlBody = `<div dir="ltr">${responseBody.replace(/\n/g, '<br>')}</div>
-<br>
-<div class="gmail_quote">
-  <div dir="ltr" class="gmail_attr">On ${dateStr}, ${lastFrom} wrote:<br></div>
-  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">
-    ${lastBody}
-  </blockquote>
-</div>`;
-
-  // Create draft with correct recipients, threaded to the original
-  const draft = GmailApp.createDraft(
-    toRecipients,
-    replySubject,
-    responseBody, // Plain text fallback
-    {
-      htmlBody: htmlBody,
-      cc: ccRecipients || undefined,
-      bcc: bccRecipients || undefined,
-      threadId: thread.getId()
+  for (const header of headers) {
+    const name = header.name.toLowerCase();
+    // Skip recipient headers - we'll add our own
+    if (name === 'to' || name === 'cc' || name === 'bcc') {
+      continue;
     }
+    newHeaders.push(header);
+  }
+
+  // Add our recipient headers
+  if (toRecipients) {
+    newHeaders.push({ name: 'To', value: toRecipients });
+  }
+  if (ccRecipients) {
+    newHeaders.push({ name: 'Cc', value: ccRecipients });
+  }
+  if (bccRecipients) {
+    newHeaders.push({ name: 'Bcc', value: bccRecipients });
+  }
+
+  // Rebuild the raw message with new headers
+  const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
+  const messageId = headers.find(h => h.name.toLowerCase() === 'message-id')?.value || '';
+  const inReplyTo = headers.find(h => h.name.toLowerCase() === 'in-reply-to')?.value || '';
+  const references = headers.find(h => h.name.toLowerCase() === 'references')?.value || '';
+
+  // Build RFC 2822 message
+  let rawMessage = '';
+  rawMessage += `To: ${toRecipients || ''}\r\n`;
+  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
+  rawMessage += `Subject: ${subject}\r\n`;
+  if (inReplyTo) rawMessage += `In-Reply-To: ${inReplyTo}\r\n`;
+  if (references) rawMessage += `References: ${references}\r\n`;
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n`;
+  rawMessage += `\r\n`;
+  rawMessage += responseBody;
+
+  // Encode for Gmail API
+  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+
+  // Update the draft
+  Gmail.Users.Drafts.update(
+    {
+      message: {
+        raw: encodedMessage,
+        threadId: thread.getId()
+      }
+    },
+    'me',
+    draftId
   );
 
-  // Get the message ID from the draft (needed for direct URL)
-  const draftMessage = draft.getMessage();
-  const messageId = draftMessage.getId();
+  // Get the message ID for the URL
+  const updatedDraft = Gmail.Users.Drafts.get('me', draftId);
+  const msgId = updatedDraft.message.id;
 
-  // Use the message ID to open directly to the draft compose window
-  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${messageId}`;
-
+  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${msgId}`;
   return gmailUrl;
 }
 
