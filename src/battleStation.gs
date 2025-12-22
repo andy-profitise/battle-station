@@ -6767,34 +6767,93 @@ ${threadContent}
  * Create Gmail draft and return the URL
  */
 function createDraftAndGetUrl_(thread, responseBody) {
-  // Get the last message to reply to
   const messages = thread.getMessages();
   const lastMessage = messages[messages.length - 1];
 
-  // Get existing CC recipients
-  const existingCc = lastMessage.getCc() || '';
-  const existingTo = lastMessage.getTo() || '';
-  const existingFrom = lastMessage.getFrom() || '';
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
 
-  // Check if sales@profitise.com is already in recipients
-  const allRecipients = (existingTo + ',' + existingCc + ',' + existingFrom).toLowerCase();
-  const salesAlreadyIncluded = allRecipients.includes('sales@profitise.com');
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
 
-  // Build reply options
-  const replyOptions = {};
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
 
-  if (!salesAlreadyIncluded) {
-    if (existingCc.trim()) {
-      // There are CC recipients, add sales as BCC
-      replyOptions.bcc = 'sales@profitise.com';
-    } else {
-      // No CC recipients, add sales as CC
-      replyOptions.cc = 'sales@profitise.com';
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    // Parse all addresses
+    const allAddresses = [from, to, cc].join(',').split(',').map(s => s.trim()).filter(s => s);
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
     }
   }
 
-  // Create Reply All draft
-  const draft = lastMessage.createDraftReplyAll(responseBody, replyOptions);
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  const toRecipients = externalRecipients.join(', ');
+  let ccRecipients = internalRecipients.join(', ');
+  let bccRecipients = '';
+
+  // Check if sales@profitise.com should be added
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  const salesAlreadyIncluded = allRecipientsStr.includes('sales@profitise.com');
+
+  if (!salesAlreadyIncluded) {
+    if (ccRecipients) {
+      // There are CC recipients, add sales as BCC
+      bccRecipients = 'sales@profitise.com';
+    } else {
+      // No CC recipients, add sales as CC
+      ccRecipients = 'sales@profitise.com';
+    }
+  }
+
+  // Get subject with Re: prefix
+  const subject = lastMessage.getSubject();
+  const replySubject = subject.toLowerCase().startsWith('re:') ? subject : 'Re: ' + subject;
+
+  // Create draft with correct recipients, threaded to the original
+  const draft = GmailApp.createDraft(
+    toRecipients,
+    replySubject,
+    responseBody,
+    {
+      cc: ccRecipients || undefined,
+      bcc: bccRecipients || undefined,
+      threadId: thread.getId()
+    }
+  );
 
   // Get the message ID from the draft (needed for direct URL)
   const draftMessage = draft.getMessage();
