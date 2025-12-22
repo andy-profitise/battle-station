@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 13:10 PST
+ * Last Updated: 2025-12-22 13:46 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -5157,6 +5157,7 @@ function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailD
 
 /**
  * Log what changed in emails by comparing old and new email data
+ * @returns {object} { added: [], removed: [] }
  */
 function logEmailChanges_(oldEmails, newEmails, vendor) {
   // Create maps for comparison using subject+date as key
@@ -5201,6 +5202,47 @@ function logEmailChanges_(oldEmails, newEmails, vendor) {
     // If no added/removed but checksum changed, might be label changes
     Logger.log(`📧 Email changes for ${vendor}: Labels or other metadata changed (same threads)`);
   }
+
+  return { added, removed };
+}
+
+/**
+ * Parse the overdue count from an email checksum (e.g., "-17ff163c_OD1" -> 1)
+ */
+function parseOverdueCount_(checksum) {
+  if (!checksum) return 0;
+  const match = String(checksum).match(/_OD(\d+)$/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Get human-readable description of email checksum change
+ */
+function getEmailChangeDescription_(oldChecksum, newChecksum, addedCount, removedCount) {
+  const oldOverdue = parseOverdueCount_(oldChecksum);
+  const newOverdue = parseOverdueCount_(newChecksum);
+
+  const changes = [];
+
+  if (addedCount > 0) {
+    changes.push(`${addedCount} new email${addedCount > 1 ? 's' : ''}`);
+  }
+  if (removedCount > 0) {
+    changes.push(`${removedCount} removed`);
+  }
+  if (oldOverdue !== newOverdue) {
+    if (newOverdue > oldOverdue) {
+      changes.push(`${newOverdue - oldOverdue} became overdue`);
+    } else {
+      changes.push(`${oldOverdue - newOverdue} no longer overdue`);
+    }
+  }
+
+  if (changes.length === 0) {
+    changes.push('labels or metadata changed');
+  }
+
+  return changes.join(', ');
 }
 
 /************************************************************
@@ -5343,10 +5385,12 @@ function checkVendorForChanges_(vendor, listRow, source) {
   const newEmailChecksum = generateEmailChecksum_(emails);
 
   if (storedData.emailChecksum !== newEmailChecksum) {
-    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum})`);
+    // Get human-readable description of what changed
+    const changeDesc = getEmailChangeDescription_(storedData.emailChecksum, newEmailChecksum, 0, 0);
+    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum}) - ${changeDesc}`);
     return {
       hasChanges: true,
-      changeType: 'emails changed',
+      changeType: `emails: ${changeDesc}`,
       data: { emails }
     };
   }
