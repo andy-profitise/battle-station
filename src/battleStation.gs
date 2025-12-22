@@ -5515,7 +5515,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: tasks changed`);
     return { 
       hasChanges: true, 
-      changeType: 'tasks changed',
+      changeType: 'Tasks changed',
       data: { emails, tasks } 
     };
   }
