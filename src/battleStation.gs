@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-21 18:44 PST
+ * Last Updated: 2025-12-21 22:16 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -482,7 +482,7 @@ function loadVendorData(vendorIndex, options) {
 
   // Title - full width, modern blue header with subtle shadow effect
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(`⚡ BATTLE STATION`)
+    .setValue(`⚡ A(I)DEN`)
     .setFontSize(16).setFontWeight('bold')
     .setBackground(BS_CFG.COLOR_HEADER)
     .setFontColor('white')
