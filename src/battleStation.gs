@@ -1785,9 +1785,10 @@ function loadVendorData(vendorIndex, options) {
     const isUnchanged = !forceChanged && storedData && String(storedData.checksum) === String(newChecksum);
     Logger.log(`Is unchanged: ${isUnchanged}${forceChanged ? ' (forceChanged=true)' : ''}`);
     
-    // Determine which modules changed
+    // Determine which modules changed (only if stored version matches to avoid false positives)
     const changedModules = [];
-    if (storedData && storedData.moduleChecksums) {
+    const storedModuleVersion = storedData?.moduleChecksums?._version || 0;
+    if (storedData && storedData.moduleChecksums && storedModuleVersion === MODULE_CHECKSUMS_VERSION) {
       const stored = storedData.moduleChecksums;
       if (stored.emails !== newModuleChecksums.emails) changedModules.push('emails');
       if (stored.tasks !== newModuleChecksums.tasks) changedModules.push('tasks');
@@ -1867,8 +1868,13 @@ function loadVendorData(vendorIndex, options) {
     }
 
     // ========== WHAT CHANGED SECTION (right side - below Google Drive) ==========
-    // Only show if there were changes detected (forceChanged or changedModules)
-    if (forceChanged || changedModules.length > 0 || changeType) {
+    // Show if:
+    // 1. There's a legitimate changeType (Overdue emails, Flagged, etc.) - always show
+    // 2. There are changedModules AND stored version matches (avoids false positives from format changes)
+    const hasLegitimateChangeType = changeType && changeType !== 'First view' && changeType !== 'unchanged';
+    const hasCompatibleModuleChanges = changedModules.length > 0;  // Already filtered by version above
+    const shouldShowWhatChanged = forceChanged || hasLegitimateChangeType || hasCompatibleModuleChanges;
+    if (shouldShowWhatChanged) {
       // Find where to render - use rightColumnRow which tracks furthest row on right side
       let changeRow = rightColumnRow + 1;
 
@@ -4707,6 +4713,9 @@ function hashString_(str) {
   return hash.toString(16);
 }
 
+// Increment this when checksum format changes to avoid false positives
+const MODULE_CHECKSUMS_VERSION = 2;
+
 /**
  * Generate sub-checksums for each module
  * Returns an object with checksums for each data section
@@ -4718,6 +4727,7 @@ function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, 
     .map(e => ({ threadId: e.threadId, subject: e.subject }));
 
   return {
+    _version: MODULE_CHECKSUMS_VERSION,  // Version for compatibility checking
     emails: generateEmailChecksum_(emails),  // Use the overdue-aware email checksum
     tasks: generateTasksChecksum_(tasks),
     notes: hashString_(JSON.stringify(notes || '')),
