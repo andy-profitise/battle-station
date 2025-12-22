@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 09:38 PST
+ * Last Updated: 2025-12-22 09:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -6951,13 +6951,23 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
   let rawEncoded = draftData.message.raw;
 
+  // Clean the base64url string - remove any whitespace/newlines and fix padding
+  rawEncoded = rawEncoded.replace(/[\s\n\r]/g, '');
+
   // Fix base64url padding (Gmail API doesn't include padding)
   while (rawEncoded.length % 4 !== 0) {
     rawEncoded += '=';
   }
 
   // Decode the raw message (base64url -> string)
-  const rawBytes = Utilities.base64DecodeWebSafe(rawEncoded);
+  let rawBytes;
+  try {
+    rawBytes = Utilities.base64DecodeWebSafe(rawEncoded);
+  } catch (e) {
+    // If base64url fails, try converting from standard base64 characters
+    const base64Standard = rawEncoded.replace(/-/g, '+').replace(/_/g, '/');
+    rawBytes = Utilities.base64Decode(base64Standard);
+  }
   let rawMessage = Utilities.newBlob(rawBytes).getDataAsString('UTF-8');
 
   // Step 3: Update recipient headers in the raw message
