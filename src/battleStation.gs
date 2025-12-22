@@ -7133,7 +7133,7 @@ function showDraftPreviewDialog_(responseBody) {
                 document.getElementById('reviseBtn').disabled = false;
                 document.getElementById('loadingMsg').style.display = 'none';
               })
-              .createDraftFromPreview_();
+              .createDraftFromPreview();
           }
 
           function showRevision() {
@@ -7156,8 +7156,9 @@ function showDraftPreviewDialog_(responseBody) {
             google.script.run
               .withSuccessHandler(function(newResponse) {
                 // Update preview in place - escape HTML and convert newlines
-                var escaped = newResponse.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                escaped = escaped.replace(/\n/g, '<br>');
+                // Use hex escapes for < and > to avoid HTML parsing issues
+                var escaped = newResponse.replace(/&/g, '&amp;').replace(/\x3C/g, '&lt;').replace(/\x3E/g, '&gt;');
+                escaped = escaped.replace(/\n/g, '\x3Cbr\x3E');
                 document.getElementById('previewContent').innerHTML = escaped;
                 document.getElementById('revisionInput').value = '';
                 document.getElementById('regenerateBtn').disabled = false;
@@ -7171,7 +7172,7 @@ function showDraftPreviewDialog_(responseBody) {
                 document.getElementById('createBtn').disabled = false;
                 document.getElementById('loadingMsg').style.display = 'none';
               })
-              .reviseEmailDraft_(feedback);
+              .reviseEmailDraft(feedback);
           }
 
           // Allow Enter key to submit revision
@@ -7189,9 +7190,9 @@ function showDraftPreviewDialog_(responseBody) {
 }
 
 /**
- * Create draft from the previewed response
+ * Create draft from the previewed response (no underscore - must be callable from client)
  */
-function createDraftFromPreview_() {
+function createDraftFromPreview() {
   const ss = SpreadsheetApp.getActive();
 
   // Get stored context
@@ -7220,10 +7221,10 @@ function createDraftFromPreview_() {
 }
 
 /**
- * Revise the email response based on user feedback
+ * Revise the email response based on user feedback (no underscore - must be callable from client)
  * Returns the new response body to update the dialog in-place
  */
-function reviseEmailDraft_(feedback) {
+function reviseEmailDraft(feedback) {
   const ss = SpreadsheetApp.getActive();
 
   // Get stored context
