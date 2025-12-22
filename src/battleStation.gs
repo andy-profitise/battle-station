@@ -1885,8 +1885,8 @@ function loadVendorData(vendorIndex, options) {
       const changeDescriptions = [];
 
       // Add the main changeType if provided (from skip detection)
-      if (changeType && changeType !== 'first view') {
-        changeDescriptions.push(`• ${changeType}`);
+      if (changeType && changeType !== 'First view') {
+        changeDescriptions.push({ text: `• ${changeType}` });
       }
 
       // Add detailed module changes
@@ -1900,51 +1900,71 @@ function loadVendorData(vendorIndex, options) {
             emailChanges.removed.length
           );
           if (!changeType || !changeType.includes('emails')) {
-            changeDescriptions.push(`• Emails: ${emailDesc}`);
+            changeDescriptions.push({ text: `• Emails: ${emailDesc}` });
           }
-          // Show specific added emails
+          // Show specific added emails with clickable links
           for (const e of emailChanges.added.slice(0, 3)) {
-            changeDescriptions.push(`  ➕ "${e.subject.substring(0, 50)}${e.subject.length > 50 ? '...' : ''}"`);
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ➕ "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
           }
           if (emailChanges.added.length > 3) {
-            changeDescriptions.push(`  ... and ${emailChanges.added.length - 3} more added`);
+            changeDescriptions.push({ text: `  ... and ${emailChanges.added.length - 3} more added` });
           }
-          // Show specific removed emails
+          // Show specific removed emails (no link - they're gone)
           for (const e of emailChanges.removed.slice(0, 3)) {
-            changeDescriptions.push(`  ➖ "${e.subject.substring(0, 50)}${e.subject.length > 50 ? '...' : ''}"`);
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            changeDescriptions.push({ text: `  ➖ "${subjectDisplay}"` });
           }
           if (emailChanges.removed.length > 3) {
-            changeDescriptions.push(`  ... and ${emailChanges.removed.length - 3} more removed`);
+            changeDescriptions.push({ text: `  ... and ${emailChanges.removed.length - 3} more removed` });
           }
         }
 
         // Other module changes
-        if (changedModules.includes('tasks')) changeDescriptions.push('• Tasks updated');
-        if (changedModules.includes('notes')) changeDescriptions.push('• Notes changed');
-        if (changedModules.includes('status')) changeDescriptions.push('• Status changed');
-        if (changedModules.includes('states')) changeDescriptions.push('• States changed');
-        if (changedModules.includes('contacts')) changeDescriptions.push('• Contacts updated');
-        if (changedModules.includes('meetings')) changeDescriptions.push('• Meetings changed');
-        if (changedModules.includes('contracts')) changeDescriptions.push('• Contracts updated');
-        if (changedModules.includes('helpfulLinks')) changeDescriptions.push('• Helpful links changed');
-        if (changedModules.includes('boxDocs')) changeDescriptions.push('• Box documents changed');
-        if (changedModules.includes('gDriveFiles')) changeDescriptions.push('• Google Drive files changed');
+        if (changedModules.includes('tasks')) changeDescriptions.push({ text: '• Tasks updated' });
+        if (changedModules.includes('notes')) changeDescriptions.push({ text: '• Notes changed' });
+        if (changedModules.includes('status')) changeDescriptions.push({ text: '• Status changed' });
+        if (changedModules.includes('states')) changeDescriptions.push({ text: '• States changed' });
+        if (changedModules.includes('contacts')) changeDescriptions.push({ text: '• Contacts updated' });
+        if (changedModules.includes('meetings')) changeDescriptions.push({ text: '• Meetings changed' });
+        if (changedModules.includes('contracts')) changeDescriptions.push({ text: '• Contracts updated' });
+        if (changedModules.includes('helpfulLinks')) changeDescriptions.push({ text: '• Helpful links changed' });
+        if (changedModules.includes('boxDocs')) changeDescriptions.push({ text: '• Box documents changed' });
+        if (changedModules.includes('gDriveFiles')) changeDescriptions.push({ text: '• Google Drive files changed' });
       }
 
       // First view message
-      if (changeType === 'first view' || !storedData) {
-        changeDescriptions.push('• First time viewing this vendor');
+      if (changeType === 'First view' || !storedData) {
+        changeDescriptions.push({ text: '• First time viewing this vendor' });
       }
 
       // Render each change description
       if (changeDescriptions.length === 0) {
-        changeDescriptions.push('• Changes detected (details unavailable)');
+        changeDescriptions.push({ text: '• Changes detected (details unavailable)' });
       }
 
       for (const desc of changeDescriptions) {
-        bsSh.getRange(changeRow, 6, 1, 4).merge()
-          .setValue(desc)
-          .setBackground('#fff9e6')  // Lighter yellow
+        const range = bsSh.getRange(changeRow, 6, 1, 4).merge();
+
+        if (desc.link && desc.linkText) {
+          // Create rich text with clickable link
+          const prefix = desc.text.substring(0, desc.text.indexOf(desc.linkText));
+          const suffix = desc.text.substring(desc.text.indexOf(desc.linkText) + desc.linkText.length);
+          const richText = SpreadsheetApp.newRichTextValue()
+            .setText(desc.text)
+            .setLinkUrl(prefix.length, prefix.length + desc.linkText.length, desc.link)
+            .build();
+          range.setRichTextValue(richText);
+        } else {
+          range.setValue(desc.text);
+        }
+
+        range.setBackground('#fff9e6')  // Lighter yellow
           .setFontColor('#664d03')
           .setHorizontalAlignment('left')
           .setVerticalAlignment('top')
@@ -5445,7 +5465,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     setVendorFlag_(vendor, false);
     return {
       hasChanges: true,
-      changeType: 'flagged',
+      changeType: 'Flagged',
       data: null
     };
   }
@@ -5457,7 +5477,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: has ${overdueEmails.length} overdue email(s)`);
     return {
       hasChanges: true,
-      changeType: 'overdue emails',
+      changeType: 'Overdue emails',
       data: { emails }
     };
   }
@@ -5469,7 +5489,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: no stored checksums - first view`);
     return {
       hasChanges: true,
-      changeType: 'first view',
+      changeType: 'First view',
       data: null 
     };
   }
@@ -5483,7 +5503,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum}) - ${changeDesc}`);
     return {
       hasChanges: true,
-      changeType: `emails: ${changeDesc}`,
+      changeType: `Emails: ${changeDesc}`,
       data: { emails }
     };
   }
@@ -5500,7 +5520,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: vendor label emails changed (stored=${storedData.vendorLabelChecksum}, new=${newVendorLabelChecksum})`);
       return {
         hasChanges: true,
-        changeType: 'new vendor emails (unlabeled)',
+        changeType: 'New vendor emails (unlabeled)',
         data: { emails }
       };
     }
@@ -5515,7 +5535,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: tasks changed`);
     return { 
       hasChanges: true, 
-      changeType: 'tasks changed',
+      changeType: 'Tasks changed',
       data: { emails, tasks } 
     };
   }
@@ -5531,7 +5551,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: notes changed`);
       return { 
         hasChanges: true, 
-        changeType: 'notes changed',
+        changeType: 'Notes changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5539,7 +5559,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: status changed`);
       return { 
         hasChanges: true, 
-        changeType: 'status changed',
+        changeType: 'Status changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5547,7 +5567,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: contacts changed`);
       return { 
         hasChanges: true, 
-        changeType: 'contacts changed',
+        changeType: 'Contacts changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5563,7 +5583,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: meetings changed`);
     return { 
       hasChanges: true, 
-      changeType: 'meetings changed',
+      changeType: 'Meetings changed',
       data: { emails, tasks, contactData, meetings } 
     };
   }
@@ -5584,15 +5604,15 @@ function checkVendorForChanges_(vendor, listRow, source) {
  */
 function formatChangeType_(changeType) {
   const typeMap = {
-    'flagged': '⚑ Flagged for review',
-    'overdue emails': '🔴 Overdue emails need attention',
-    'first view': '🆕 First time viewing',
-    'emails changed': '📧 New or updated emails',
-    'tasks changed': '📋 Tasks changed on monday.com',
-    'notes changed': '📝 Notes updated',
-    'status changed': '🔄 Status changed',
-    'contacts changed': '👤 Contacts updated',
-    'meetings changed': '📅 Meetings changed'
+    'Flagged': '⚑ Flagged for review',
+    'Overdue emails': '🔴 Overdue emails need attention',
+    'First view': '🆕 First time viewing',
+    'Emails changed': '📧 New or updated emails',
+    'Tasks changed': '📋 Tasks changed on monday.com',
+    'Notes changed': '📝 Notes updated',
+    'Status changed': '🔄 Status changed',
+    'Contacts changed': '👤 Contacts updated',
+    'Meetings changed': '📅 Meetings changed'
   };
   return typeMap[changeType] || changeType;
 }
