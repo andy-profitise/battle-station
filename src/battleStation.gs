@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 09:22 PST
+ * Last Updated: 2025-12-22 09:34 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -221,13 +221,13 @@ function onOpen() {
     .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
     .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
     .addSeparator()
-    .addItem('▶ Next Vendor', 'battleStationNext')
-    .addItem('◀ Previous Vendor', 'battleStationPrevious')
-    .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
-    .addSeparator()
     .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
     .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
     .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
+    .addSeparator()
+    .addItem('▶ Next Vendor', 'battleStationNext')
+    .addItem('◀ Previous Vendor', 'battleStationPrevious')
+    .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
     .addSeparator()
     .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
     .addItem('💤 Snooze Vendor...', 'battleStationSnoozeVendor')
