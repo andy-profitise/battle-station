@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-21 23:10 PST
+ * Last Updated: 2025-12-22 07:43 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -222,6 +222,15 @@ function onOpen() {
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addSeparator()
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addToUi();
+
+  // Email Response Templates menu
+  ui.createMenu('📧 Email Responses')
+    .addItem('🔄 Cold Outreach - Follow Up', 'emailResponseColdFollowUp')
+    .addItem('📅 Schedule a Call', 'emailResponseScheduleCall')
+    .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
+    .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
+    .addItem('✍️ Custom Response...', 'emailResponseCustom')
     .addToUi();
 }
 
@@ -6552,4 +6561,341 @@ function writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyer
   }
   
   ss.toast(`Results written to "${sheetName}" sheet`, '✅ Done', 3);
+}
+
+/************************************************************
+ * EMAIL RESPONSE GENERATION
+ * Generate email responses using Claude AI and create Gmail drafts
+ ************************************************************/
+
+/**
+ * Get the selected email thread from the A(I)DEN sheet
+ * User should have their cursor on an email row in the EMAILS section
+ */
+function getSelectedEmailThread_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    throw new Error('A(I)DEN sheet not found');
+  }
+
+  const selection = bsSh.getSelection();
+  const activeCell = selection.getCurrentCell();
+
+  if (!activeCell) {
+    throw new Error('No cell selected. Please click on an email row first.');
+  }
+
+  const row = activeCell.getRow();
+
+  // Check if we're in the emails section by looking for the subject column (column A)
+  // and checking if the row is after the EMAILS header
+  const values = bsSh.getDataRange().getValues();
+
+  // Find the EMAILS header row
+  let emailsHeaderRow = -1;
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0]).includes('📧 EMAILS')) {
+      emailsHeaderRow = i + 1; // 1-based
+      break;
+    }
+  }
+
+  if (emailsHeaderRow === -1) {
+    throw new Error('Could not find EMAILS section');
+  }
+
+  // The header row with Subject/Date/Last/Labels is emailsHeaderRow + 1
+  // Email rows start at emailsHeaderRow + 2
+  const emailDataStartRow = emailsHeaderRow + 2;
+
+  if (row < emailDataStartRow) {
+    throw new Error('Please select an email row (click on a Subject)');
+  }
+
+  // Get the subject from the selected row
+  const subject = String(bsSh.getRange(row, 1).getValue() || '').trim();
+
+  if (!subject || subject === 'No emails found') {
+    throw new Error('No valid email selected');
+  }
+
+  // Try to get the thread ID from the hyperlink formula
+  const formula = bsSh.getRange(row, 1).getFormula();
+  let threadId = null;
+
+  if (formula) {
+    // Extract thread ID from HYPERLINK formula like: =HYPERLINK("https://mail.google.com/mail/u/0/#inbox/THREADID", "Subject")
+    const match = formula.match(/#inbox\/([^"]+)/);
+    if (match) {
+      threadId = match[1];
+    }
+  }
+
+  if (!threadId) {
+    throw new Error('Could not find thread ID for selected email. Make sure you clicked on a valid email row.');
+  }
+
+  // Fetch the full thread
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) {
+    throw new Error('Could not fetch email thread');
+  }
+
+  return {
+    threadId: threadId,
+    subject: subject,
+    thread: thread
+  };
+}
+
+/**
+ * Get the full thread content formatted for Claude
+ */
+function getThreadContent_(thread) {
+  const messages = thread.getMessages();
+  let content = '';
+
+  for (const msg of messages) {
+    const from = msg.getFrom();
+    const to = msg.getTo();
+    const date = msg.getDate();
+    const body = msg.getPlainBody();
+
+    content += `\n\n=== MESSAGE ===\n`;
+    content += `From: ${from}\n`;
+    content += `To: ${to}\n`;
+    content += `Date: ${date}\n`;
+    content += `---\n`;
+    content += body.substring(0, 3000); // Limit each message
+  }
+
+  return content;
+}
+
+/**
+ * Show dialog for extra directions and get user input
+ */
+function showDirectionsDialog_(responseType) {
+  const ui = SpreadsheetApp.getUi();
+
+  const result = ui.prompt(
+    `📧 ${responseType}`,
+    'Add any extra directions or context for the response:\n(Leave blank for default response)',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() !== ui.Button.OK) {
+    return null;
+  }
+
+  return result.getResponseText().trim();
+}
+
+/**
+ * Generate email response using Claude
+ */
+function generateEmailWithClaude_(threadContent, subject, responseType, extraDirections) {
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    throw new Error('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+  }
+
+  // Build the prompt based on response type
+  let systemPrompt = `You are an email assistant for Andy Worford, Director of Business Development at Profitise, a lead generation company.
+Your job is to draft professional, friendly email responses.
+
+Key info about Andy/Profitise:
+- Company: Profitise - delivers exclusive homeowner leads in real-time with TCPA consent
+- Andy's scheduling link: https://calendar.app.google/68Fk8pb9mUokSiaW8
+- Phone: 888-400-4868 x 8117 | Cell: 949.351.2300
+- Tone: Professional but personable, concise, action-oriented
+
+Response guidelines:
+- Keep responses brief and to the point
+- Don't include a signature block (it will be added automatically)
+- Match the tone of the conversation
+- Be helpful and solution-oriented`;
+
+  let userPrompt = `Response Type: ${responseType}
+
+Email Thread:
+${threadContent}
+
+`;
+
+  if (extraDirections) {
+    userPrompt += `Extra Directions from Andy: ${extraDirections}\n\n`;
+  }
+
+  userPrompt += `Please draft a response email. Just provide the email body text, no subject line needed (we'll reply to the existing thread).`;
+
+  const payload = {
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [
+      { role: 'user', content: userPrompt }
+    ],
+    system: systemPrompt
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      'x-api-key': claudeApiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', options);
+  const result = JSON.parse(response.getContentText());
+
+  if (result.error) {
+    throw new Error(`Claude API error: ${result.error.message}`);
+  }
+
+  return result.content[0].text;
+}
+
+/**
+ * Create Gmail draft and return the URL
+ */
+function createDraftAndGetUrl_(thread, responseBody) {
+  // Get the last message to reply to
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Create reply draft
+  const draft = lastMessage.createDraftReply(responseBody);
+
+  // Get draft ID and construct URL
+  const draftId = draft.getId();
+  const gmailUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+
+  return gmailUrl;
+}
+
+/**
+ * Main function to handle email response generation
+ */
+function generateEmailResponse_(responseType) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread
+    const emailData = getSelectedEmailThread_();
+
+    // Show directions dialog
+    const extraDirections = showDirectionsDialog_(responseType);
+    if (extraDirections === null) {
+      return; // User cancelled
+    }
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+
+    // Get full thread content
+    const threadContent = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      responseType,
+      extraDirections
+    );
+
+    ss.toast('Creating Gmail draft...', '📧 Creating Draft', 2);
+
+    // Create draft and get URL
+    const draftUrl = createDraftAndGetUrl_(emailData.thread, responseBody);
+
+    // Show success with link to open draft
+    const htmlOutput = HtmlService.createHtmlOutput(`
+      <html>
+        <head>
+          <base target="_blank">
+          <style>
+            body { font-family: Arial, sans-serif; padding: 20px; }
+            .success { color: #0d652d; font-size: 16px; margin-bottom: 15px; }
+            .draft-link {
+              display: inline-block;
+              background: #1a73e8;
+              color: white;
+              padding: 12px 24px;
+              text-decoration: none;
+              border-radius: 4px;
+              font-size: 14px;
+              margin-top: 10px;
+            }
+            .draft-link:hover { background: #1557b0; }
+            .preview {
+              background: #f8f9fa;
+              padding: 15px;
+              border-radius: 8px;
+              margin-top: 20px;
+              white-space: pre-wrap;
+              font-size: 13px;
+              max-height: 200px;
+              overflow-y: auto;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="success">✅ Draft created successfully!</div>
+          <a href="${draftUrl}" class="draft-link" onclick="google.script.host.close()">Open Draft in Gmail →</a>
+          <div class="preview"><strong>Preview:</strong>\n\n${responseBody.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        </body>
+      </html>
+    `)
+    .setWidth(500)
+    .setHeight(400);
+
+    ui.showModalDialog(htmlOutput, '📧 Email Draft Created');
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+// Menu item functions for each response type
+function emailResponseColdFollowUp() {
+  generateEmailResponse_('Cold Outreach - Follow Up');
+}
+
+function emailResponseScheduleCall() {
+  generateEmailResponse_('Schedule a Call');
+}
+
+function emailResponsePaymentFollowUp() {
+  generateEmailResponse_('Payment/Invoice Follow Up');
+}
+
+function emailResponseGeneralFollowUp() {
+  generateEmailResponse_('General Follow Up');
+}
+
+function emailResponseCustom() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.prompt(
+    '✍️ Custom Response Type',
+    'Enter the type of response you want to generate:',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() === ui.Button.OK) {
+    const customType = result.getResponseText().trim();
+    if (customType) {
+      generateEmailResponse_(customType);
+    }
+  }
 }
