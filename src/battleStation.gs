@@ -1885,7 +1885,7 @@ function loadVendorData(vendorIndex, options) {
       const changeDescriptions = [];
 
       // Add the main changeType if provided (from skip detection)
-      if (changeType && changeType !== 'first view') {
+      if (changeType && changeType !== 'First view') {
         changeDescriptions.push(`• ${changeType}`);
       }
 
@@ -1932,7 +1932,7 @@ function loadVendorData(vendorIndex, options) {
       }
 
       // First view message
-      if (changeType === 'first view' || !storedData) {
+      if (changeType === 'First view' || !storedData) {
         changeDescriptions.push('• First time viewing this vendor');
       }
 
@@ -5445,7 +5445,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     setVendorFlag_(vendor, false);
     return {
       hasChanges: true,
-      changeType: 'flagged',
+      changeType: 'Flagged',
       data: null
     };
   }
@@ -5457,7 +5457,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: has ${overdueEmails.length} overdue email(s)`);
     return {
       hasChanges: true,
-      changeType: 'overdue emails',
+      changeType: 'Overdue emails',
       data: { emails }
     };
   }
@@ -5469,7 +5469,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: no stored checksums - first view`);
     return {
       hasChanges: true,
-      changeType: 'first view',
+      changeType: 'First view',
       data: null 
     };
   }
@@ -5483,7 +5483,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum}) - ${changeDesc}`);
     return {
       hasChanges: true,
-      changeType: `emails: ${changeDesc}`,
+      changeType: `Emails: ${changeDesc}`,
       data: { emails }
     };
   }
@@ -5500,7 +5500,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: vendor label emails changed (stored=${storedData.vendorLabelChecksum}, new=${newVendorLabelChecksum})`);
       return {
         hasChanges: true,
-        changeType: 'new vendor emails (unlabeled)',
+        changeType: 'New vendor emails (unlabeled)',
         data: { emails }
       };
     }
@@ -5531,7 +5531,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: notes changed`);
       return { 
         hasChanges: true, 
-        changeType: 'notes changed',
+        changeType: 'Notes changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5539,7 +5539,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: status changed`);
       return { 
         hasChanges: true, 
-        changeType: 'status changed',
+        changeType: 'Status changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5547,7 +5547,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: contacts changed`);
       return { 
         hasChanges: true, 
-        changeType: 'contacts changed',
+        changeType: 'Contacts changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5563,7 +5563,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: meetings changed`);
     return { 
       hasChanges: true, 
-      changeType: 'meetings changed',
+      changeType: 'Meetings changed',
       data: { emails, tasks, contactData, meetings } 
     };
   }
@@ -5584,15 +5584,15 @@ function checkVendorForChanges_(vendor, listRow, source) {
  */
 function formatChangeType_(changeType) {
   const typeMap = {
-    'flagged': '⚑ Flagged for review',
-    'overdue emails': '🔴 Overdue emails need attention',
-    'first view': '🆕 First time viewing',
-    'emails changed': '📧 New or updated emails',
-    'tasks changed': '📋 Tasks changed on monday.com',
-    'notes changed': '📝 Notes updated',
-    'status changed': '🔄 Status changed',
-    'contacts changed': '👤 Contacts updated',
-    'meetings changed': '📅 Meetings changed'
+    'Flagged': '⚑ Flagged for review',
+    'Overdue emails': '🔴 Overdue emails need attention',
+    'First view': '🆕 First time viewing',
+    'Emails changed': '📧 New or updated emails',
+    'Tasks changed': '📋 Tasks changed on monday.com',
+    'Notes changed': '📝 Notes updated',
+    'Status changed': '🔄 Status changed',
+    'Contacts changed': '👤 Contacts updated',
+    'Meetings changed': '📅 Meetings changed'
   };
   return typeMap[changeType] || changeType;
 }
