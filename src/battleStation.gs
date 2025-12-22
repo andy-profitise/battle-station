@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 08:45 PST
+ * Last Updated: 2025-12-22 08:50 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7036,157 +7036,154 @@ function generateEmailResponse_(responseType) {
 function showDraftPreviewDialog_(responseBody) {
   const ui = SpreadsheetApp.getUi();
 
-  const htmlOutput = HtmlService.createHtmlOutput(`
-    <html>
-      <head>
-        <base target="_blank">
-        <style>
-          body { font-family: Arial, sans-serif; padding: 20px; }
-          .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
-          .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
-          .create-btn, .revise-btn {
-            display: inline-block;
-            padding: 12px 24px;
-            text-decoration: none;
-            border-radius: 4px;
-            font-size: 14px;
-            cursor: pointer;
-            border: none;
-          }
-          .create-btn { background: #1a73e8; color: white; }
-          .create-btn:hover { background: #1557b0; }
-          .create-btn:disabled { background: #ccc; cursor: not-allowed; }
-          .revise-btn { background: #f1f3f4; color: #5f6368; }
-          .revise-btn:hover { background: #e8eaed; }
-          .preview {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 8px;
-            margin-top: 15px;
-            white-space: pre-wrap;
-            font-size: 13px;
-            max-height: 180px;
-            overflow-y: auto;
-          }
-          .revision-section {
-            display: none;
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #e0e0e0;
-          }
-          .revision-section.show { display: block; }
-          .revision-input {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 13px;
-            margin-bottom: 10px;
-            box-sizing: border-box;
-          }
-          .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
-          .regenerate-btn {
-            background: #1a73e8;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-          }
-          .regenerate-btn:hover { background: #1557b0; }
-          .regenerate-btn:disabled { background: #ccc; cursor: not-allowed; }
-          .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
-        </style>
-      </head>
-      <body>
-        <div class="header">📧 Preview Generated Response</div>
-        <div class="buttons">
-          <button id="createBtn" class="create-btn" onclick="createDraft()">✓ Create Draft & Open</button>
-          <button id="reviseBtn" class="revise-btn" onclick="showRevision()">🔄 Revise</button>
-        </div>
-        <div id="previewContent" class="preview">${responseBody.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
+  // Safely escape the response for embedding in HTML
+  const escapedResponse = responseBody
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\n/g, '<br>');
 
-        <div id="revisionSection" class="revision-section">
-          <div class="revision-label">What would you like to change?</div>
-          <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add actual scheduling link, make it shorter, more casual...">
-          <button id="regenerateBtn" class="regenerate-btn" onclick="regenerate()">Regenerate</button>
-        </div>
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_blank">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
+    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      font-size: 13px;
+      max-height: 180px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .revision-section {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .revision-section.show { display: block; }
+    .revision-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="header">Preview Generated Response</div>
+  <div class="buttons">
+    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft and Open</button>
+    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+  </div>
+  <div id="previewContent" class="preview">${escapedResponse}</div>
 
-        <div id="loadingMsg" class="loading" style="display:none;"></div>
+  <div id="revisionSection" class="revision-section">
+    <div class="revision-label">What would you like to change?</div>
+    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add actual scheduling link, make it shorter...">
+    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+  </div>
 
-        <script>
-          function createDraft() {
-            document.getElementById('createBtn').disabled = true;
-            document.getElementById('reviseBtn').disabled = true;
-            document.getElementById('loadingMsg').textContent = 'Creating draft...';
-            document.getElementById('loadingMsg').style.display = 'block';
+  <div id="loadingMsg" class="loading" style="display:none;"></div>
 
-            google.script.run
-              .withSuccessHandler(function(url) {
-                window.open(url, '_blank');
-                google.script.host.close();
-              })
-              .withFailureHandler(function(err) {
-                alert('Error: ' + err.message);
-                document.getElementById('createBtn').disabled = false;
-                document.getElementById('reviseBtn').disabled = false;
-                document.getElementById('loadingMsg').style.display = 'none';
-              })
-              .createDraftFromPreview();
-          }
+  <script>
+    function doCreateDraft() {
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Creating draft...';
+      document.getElementById('loadingMsg').style.display = 'block';
 
-          function showRevision() {
-            document.getElementById('revisionSection').classList.add('show');
-            document.getElementById('revisionInput').focus();
-          }
+      google.script.run
+        .withSuccessHandler(function(url) {
+          window.open(url, '_blank');
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .createDraftFromPreview();
+    }
 
-          function regenerate() {
-            const feedback = document.getElementById('revisionInput').value.trim();
-            if (!feedback) {
-              alert('Please enter what you want to change');
-              return;
-            }
+    function doShowRevision() {
+      document.getElementById('revisionSection').classList.add('show');
+      document.getElementById('revisionInput').focus();
+    }
 
-            document.getElementById('regenerateBtn').disabled = true;
-            document.getElementById('createBtn').disabled = true;
-            document.getElementById('loadingMsg').textContent = 'Regenerating...';
-            document.getElementById('loadingMsg').style.display = 'block';
+    function doRegenerate() {
+      var feedback = document.getElementById('revisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
 
-            google.script.run
-              .withSuccessHandler(function(newResponse) {
-                // Update preview in place - escape HTML and convert newlines
-                // Use hex escapes for < and > to avoid HTML parsing issues
-                var escaped = newResponse.replace(/&/g, '&amp;').replace(/\x3C/g, '&lt;').replace(/\x3E/g, '&gt;');
-                escaped = escaped.replace(/\n/g, '\x3Cbr\x3E');
-                document.getElementById('previewContent').innerHTML = escaped;
-                document.getElementById('revisionInput').value = '';
-                document.getElementById('regenerateBtn').disabled = false;
-                document.getElementById('createBtn').disabled = false;
-                document.getElementById('loadingMsg').style.display = 'none';
-                document.getElementById('revisionInput').focus();
-              })
-              .withFailureHandler(function(err) {
-                alert('Error: ' + err.message);
-                document.getElementById('regenerateBtn').disabled = false;
-                document.getElementById('createBtn').disabled = false;
-                document.getElementById('loadingMsg').style.display = 'none';
-              })
-              .reviseEmailDraft(feedback);
-          }
+      document.getElementById('regenerateBtn').disabled = true;
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
 
-          // Allow Enter key to submit revision
-          document.getElementById('revisionInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') regenerate();
-          });
-        </script>
-      </body>
-    </html>
-  `)
-  .setWidth(500)
-  .setHeight(420);
+      google.script.run
+        .withSuccessHandler(function(newResponse) {
+          var el = document.getElementById('previewContent');
+          var safe = newResponse.replace(/&/g, '&amp;');
+          safe = safe.replace(/[<]/g, '&lt;');
+          safe = safe.replace(/[>]/g, '&gt;');
+          safe = safe.replace(/\\n/g, '<br>');
+          el.innerHTML = safe;
+          document.getElementById('revisionInput').value = '';
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('revisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseEmailDraft(feedback);
+    }
 
-  ui.showModalDialog(htmlOutput, '📧 Email Response');
+    document.getElementById('revisionInput').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') doRegenerate();
+    });
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(500)
+    .setHeight(420);
+
+  ui.showModalDialog(htmlOutput, 'Email Response');
 }
 
 /**
