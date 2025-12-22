@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 07:49 PST
+ * Last Updated: 2025-12-22 07:50 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -6717,7 +6717,8 @@ Response guidelines:
 - Keep responses brief and to the point
 - Don't include a signature block (it will be added automatically)
 - Match the tone of the conversation
-- Be helpful and solution-oriented`;
+- Be helpful and solution-oriented
+- No extra blank line between greeting and body (e.g., "Hi Catie,\\nThanks for..." not "Hi Catie,\\n\\nThanks for...")`;
 
   let userPrompt = `Response Type: ${responseType}
 
