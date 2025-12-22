@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 07:43 PST
+ * Last Updated: 2025-12-22 07:49 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -6773,9 +6773,12 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Create reply draft
   const draft = lastMessage.createDraftReply(responseBody);
 
-  // Get draft ID and construct URL
-  const draftId = draft.getId();
-  const gmailUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+  // Get the message ID from the draft (needed for direct URL)
+  const draftMessage = draft.getMessage();
+  const messageId = draftMessage.getId();
+
+  // Use the message ID to open directly to the draft compose window
+  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${messageId}`;
 
   return gmailUrl;
 }
