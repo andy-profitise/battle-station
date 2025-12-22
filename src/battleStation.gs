@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 09:00 PST
+ * Last Updated: 2025-12-22 09:10 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -195,19 +195,13 @@ const BS_CFG = {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
+
+  // Main A(I)DEN menu - setup, sync, refresh, actions
   ui.createMenu('⚡ A(I)DEN')
     .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
     .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
-    .addSeparator()
-    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
-    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
-    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
-    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
-    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
-    .addItem('▶ Next Vendor', 'battleStationNext')
-    .addItem('◀ Previous Vendor', 'battleStationPrevious')
     .addSeparator()
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔄 Refresh', 'battleStationRefresh')
@@ -220,8 +214,20 @@ function onOpen() {
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addSeparator()
+    .addToUi();
+
+  // Navigation menu - movement and traversal
+  ui.createMenu('🧭 Navigation')
+    .addItem('▶ Next Vendor', 'battleStationNext')
+    .addItem('◀ Previous Vendor', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addSeparator()
+    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
+    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
+    .addSeparator()
+    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
+    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
+    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
     .addToUi();
 
   // Email Response Templates menu
@@ -6931,61 +6937,42 @@ function createDraftAndGetUrl_(thread, responseBody) {
     }
   }
 
-  // Step 1: Create draft using createDraftReplyAll for proper threading (In-Reply-To, References headers)
+  // Step 1: Create draft using createDraftReplyAll for proper threading AND quoted message
   const draft = lastMessage.createDraftReplyAll(responseBody);
   const draftId = draft.getId();
 
-  // Step 2: Use Gmail API to update the draft with correct recipients
-  // Get the raw message and update headers
-  const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'full' });
-  const message = draftData.message;
+  // Step 2: Get the raw message from the draft (includes quoted content)
+  const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
+  const rawEncoded = draftData.message.raw;
 
-  // Build new headers with correct recipients
-  const headers = message.payload.headers;
-  const newHeaders = [];
+  // Decode the raw message (base64url -> string)
+  const rawBytes = Utilities.base64DecodeWebSafe(rawEncoded);
+  let rawMessage = Utilities.newBlob(rawBytes).getDataAsString();
 
-  for (const header of headers) {
-    const name = header.name.toLowerCase();
-    // Skip recipient headers - we'll add our own
-    if (name === 'to' || name === 'cc' || name === 'bcc') {
-      continue;
-    }
-    newHeaders.push(header);
-  }
+  // Step 3: Update recipient headers in the raw message
+  // Split headers from body (separated by \r\n\r\n)
+  const headerBodySplit = rawMessage.indexOf('\r\n\r\n');
+  let headerSection = rawMessage.substring(0, headerBodySplit);
+  const bodySection = rawMessage.substring(headerBodySplit);
 
-  // Add our recipient headers
-  if (toRecipients) {
-    newHeaders.push({ name: 'To', value: toRecipients });
-  }
-  if (ccRecipients) {
-    newHeaders.push({ name: 'Cc', value: ccRecipients });
-  }
-  if (bccRecipients) {
-    newHeaders.push({ name: 'Bcc', value: bccRecipients });
-  }
+  // Remove existing To, Cc, Bcc headers
+  headerSection = headerSection.replace(/^To:.*(\r\n[ \t].*)*\r\n/mi, '');
+  headerSection = headerSection.replace(/^Cc:.*(\r\n[ \t].*)*\r\n/mi, '');
+  headerSection = headerSection.replace(/^Bcc:.*(\r\n[ \t].*)*\r\n/mi, '');
 
-  // Rebuild the raw message with new headers
-  const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
-  const messageId = headers.find(h => h.name.toLowerCase() === 'message-id')?.value || '';
-  const inReplyTo = headers.find(h => h.name.toLowerCase() === 'in-reply-to')?.value || '';
-  const references = headers.find(h => h.name.toLowerCase() === 'references')?.value || '';
+  // Add our recipient headers at the start
+  let newHeaders = '';
+  if (toRecipients) newHeaders += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) newHeaders += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) newHeaders += `Bcc: ${bccRecipients}\r\n`;
 
-  // Build RFC 2822 message
-  let rawMessage = '';
-  rawMessage += `To: ${toRecipients || ''}\r\n`;
-  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
-  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
-  rawMessage += `Subject: ${subject}\r\n`;
-  if (inReplyTo) rawMessage += `In-Reply-To: ${inReplyTo}\r\n`;
-  if (references) rawMessage += `References: ${references}\r\n`;
-  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n`;
-  rawMessage += `\r\n`;
-  rawMessage += responseBody;
+  // Rebuild the message
+  rawMessage = newHeaders + headerSection + bodySection;
 
   // Encode for Gmail API
   const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
 
-  // Update the draft
+  // Update the draft with new recipients but same body (including quoted message)
   Gmail.Users.Drafts.update(
     {
       message: {
