@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 12:34 PST
+ * Last Updated: 2025-12-22 13:10 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1863,9 +1863,13 @@ function loadVendorData(vendorIndex, options) {
       logEmailChanges_(storedData.emailData, emailData, vendor);
     }
 
-    // Store the new checksums including module checksums and email data
-    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums, emailData);
-    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}`);
+    // Generate vendor-label-only checksum (secondary checksum for catching unlabeled emails)
+    const gmailLinkForChecksum = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    const vendorLabelChecksum = generateVendorLabelChecksum_(gmailLinkForChecksum);
+
+    // Store the new checksums including module checksums, email data, and vendor label checksum
+    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums, emailData, vendorLabelChecksum);
+    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}, vendorLabel=${vendorLabelChecksum || 'null'}`);
   } catch (e) {
     Logger.log(`Error with checksum: ${e.message}`);
   }
@@ -4610,6 +4614,48 @@ function generateEmailChecksum_(emails) {
 }
 
 /**
+ * Generate a secondary checksum for vendor-label-only Gmail search
+ * This catches emails that might not have label:00.received yet
+ * @param {string} gmailLink - The full Gmail search link (with 00.received)
+ * @returns {string|null} - Checksum or null if can't extract vendor label
+ */
+function generateVendorLabelChecksum_(gmailLink) {
+  if (!gmailLink) return null;
+
+  try {
+    const gmailLinkStr = gmailLink.toString();
+
+    // Extract the vendor label (zzzvendors-*) from the URL
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_-]+)/i);
+    if (!vendorLabelMatch) {
+      Logger.log('Could not extract vendor label from Gmail link');
+      return null;
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+
+    // Build simplified search query: just vendor label, no snoozed, no noInbox
+    const searchQuery = `label:${vendorLabel} -is:snoozed -label:03.noInbox`;
+    Logger.log(`Vendor label search query: ${searchQuery}`);
+
+    // Search Gmail
+    const threads = GmailApp.search(searchQuery, 0, 100);
+    Logger.log(`Vendor label search found ${threads.length} threads`);
+
+    // Generate simple checksum based on thread count and thread IDs
+    const threadData = threads.map(t => ({
+      id: t.getId(),
+      lastDate: t.getLastMessageDate().getTime()
+    }));
+
+    return hashString_(JSON.stringify(threadData));
+  } catch (e) {
+    Logger.log(`Error in generateVendorLabelChecksum_: ${e.message}`);
+    return null;
+  }
+}
+
+/**
  * Check if an email is overdue:
  * - Priority + waiting/customer or waiting/me + >16 business hours, OR
  * - waiting/phonexa + >7 days
@@ -4709,8 +4755,8 @@ function getChecksumsSheet_() {
 
   if (!sh) {
     sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
-    sh.getRange(1, 1, 1, 8).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData', 'SnoozedUntil']]);
-    sh.getRange(1, 1, 1, 8).setFontWeight('bold');
+    sh.getRange(1, 1, 1, 9).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData', 'SnoozedUntil', 'VendorLabelChecksum']]);
+    sh.getRange(1, 1, 1, 9).setFontWeight('bold');
     sh.hideSheet();
   } else {
     // Check if we need to add columns (migration)
@@ -4743,6 +4789,11 @@ function getChecksumsSheet_() {
       if (numCols < 8) {
         sh.getRange(1, 8).setValue('SnoozedUntil').setFontWeight('bold');
       }
+    }
+    // Add VendorLabelChecksum column if missing (column 9)
+    const numCols = sh.getLastColumn();
+    if (numCols < 9) {
+      sh.getRange(1, 9).setValue('VendorLabelChecksum').setFontWeight('bold');
     }
   }
 
@@ -5062,7 +5113,8 @@ function getStoredChecksum_(vendor) {
         checksum: data[i][1],
         emailChecksum: data[i][2] || null,
         moduleChecksums: moduleChecksums,
-        emailData: emailData
+        emailData: emailData,
+        vendorLabelChecksum: data[i][8] || null  // Column 9 (0-indexed = 8)
       };
     }
   }
@@ -5072,8 +5124,14 @@ function getStoredChecksum_(vendor) {
 
 /**
  * Store checksum for a vendor (including module sub-checksums and email data)
+ * @param {string} vendor
+ * @param {string} checksum
+ * @param {string} emailChecksum
+ * @param {object} moduleChecksums
+ * @param {object} emailData
+ * @param {string} vendorLabelChecksum - Optional secondary checksum for vendor-label-only search
  */
-function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailData) {
+function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailData, vendorLabelChecksum) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
   const now = new Date();
@@ -5083,15 +5141,18 @@ function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailD
   // Look for existing row
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
-      // Update columns 2-5 (Checksum, EmailChecksum, ModuleChecksums, Last Viewed) and column 7 (EmailData)
+      // Update columns 2-5 (Checksum, EmailChecksum, ModuleChecksums, Last Viewed) and column 7 (EmailData), column 9 (VendorLabelChecksum)
       sh.getRange(i + 1, 2, 1, 4).setValues([[checksum, emailChecksum || '', moduleJson, now]]);
       sh.getRange(i + 1, 7).setValue(emailDataJson);
+      if (vendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(vendorLabelChecksum);
+      }
       return;
     }
   }
 
-  // Add new row
-  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now, '', emailDataJson]);
+  // Add new row (9 columns now)
+  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now, '', emailDataJson, '', vendorLabelChecksum || '']);
 }
 
 /**
@@ -5280,16 +5341,34 @@ function checkVendorForChanges_(vendor, listRow, source) {
   
   // Check emails (most volatile) - emails already fetched above for overdue check
   const newEmailChecksum = generateEmailChecksum_(emails);
-  
+
   if (storedData.emailChecksum !== newEmailChecksum) {
     Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum})`);
-    return { 
-      hasChanges: true, 
+    return {
+      hasChanges: true,
       changeType: 'emails changed',
-      data: { emails } 
+      data: { emails }
     };
   }
-  
+
+  // Check vendor-label-only checksum (catches emails without 00.received label)
+  // Only check if vendor has a stored vendorLabelChecksum - if not, skip this check
+  if (storedData.vendorLabelChecksum) {
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+    if (newVendorLabelChecksum && storedData.vendorLabelChecksum !== newVendorLabelChecksum) {
+      Logger.log(`${vendor}: vendor label emails changed (stored=${storedData.vendorLabelChecksum}, new=${newVendorLabelChecksum})`);
+      return {
+        hasChanges: true,
+        changeType: 'new vendor emails (unlabeled)',
+        data: { emails }
+      };
+    }
+  }
+
   // Check tasks (second most volatile)
   let tasks = getTasksForVendor_(vendor, listRow) || [];
   tasks = filterTasksBySource_(tasks, source);
