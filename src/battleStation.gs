@@ -1,7 +1,7 @@
 /************************************************************
- * BATTLE STATION - One-by-one vendor review dashboard
+ * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-19 21:58 PST
+ * Last Updated: 2025-12-21 18:44 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -10,7 +10,7 @@
  * - View helpful links from monday.com
  * - Update monday.com notes directly
  * - Mark vendors as reviewed/complete
- * - Email contacts directly from Battle Station
+ * - Email contacts directly from A(I)DEN
  * - Analyze emails with Claude AI (inline links)
  * - Snooze vendors until a specific date (skipped unless checksum changes)
  *
@@ -21,7 +21,7 @@
 const BS_CFG = {
   // Sheet names
   LIST_SHEET: 'List',
-  BATTLE_SHEET: 'Battle Station',
+  BATTLE_SHEET: 'A(I)DEN',
   GMAIL_OUTPUT_SHEET: 'Gmail Review Output',
   TASKS_SHEET: 'monday.com tasks',
   
@@ -35,7 +35,7 @@ const BS_CFG = {
   L_NO_SNOOZE: 6,
   L_PROCESSED: 7,
   
-  // Battle Station layout
+  // A(I)DEN layout
   HEADER_ROWS: 3,
   DATA_START_ROW: 5,
   
@@ -195,8 +195,8 @@ const BS_CFG = {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('⚡ Battle Station')
-    .addItem('🔧 Setup Battle Station', 'setupBattleStation')
+  ui.createMenu('⚡ A(I)DEN')
+    .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
     .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
@@ -400,7 +400,7 @@ function getCurrentVendorIndex_() {
 }
 
 /**
- * Create or reset the Battle Station sheet
+ * Create or reset the A(I)DEN sheet
  */
 function setupBattleStation() {
   const ss = SpreadsheetApp.getActive();
@@ -431,7 +431,7 @@ function setupBattleStation() {
   
   loadVendorData(1);
   
-  SpreadsheetApp.getUi().alert('Battle Station initialized!\n\nUse the ⚡ Battle Station menu to navigate:\n- ▶ Next Vendor\n- ◀ Previous Vendor\n- 💾 Update monday.com Notes\n- ✓ Mark as Reviewed\n- ✉️ Email Contacts\n- 🤖 Analyze Emails (Claude)');
+  SpreadsheetApp.getUi().alert('A(I)DEN initialized!\n\nUse the ⚡ A(I)DEN menu to navigate:\n- ▶ Next Vendor\n- ◀ Previous Vendor\n- 💾 Update monday.com Notes\n- ✓ Mark as Reviewed\n- ✉️ Email Contacts\n- 🤖 Analyze Emails (Claude)');
 }
 
 /**
@@ -3018,7 +3018,7 @@ function getContractsForVendor_(vendorName) {
 }
 
 /**
- * Format contracts for display in Battle Station
+ * Format contracts for display in A(I)DEN
  */
 function formatContractsForDisplay_(contracts) {
   if (!contracts || contracts.length === 0) {
@@ -3098,8 +3098,8 @@ function formatContractsForDisplay_(contracts) {
 }
 
 /**
- * Get contracts for vendor and format for Battle Station display
- * This is the main function to call from Battle Station
+ * Get contracts for vendor and format for A(I)DEN display
+ * This is the main function to call from A(I)DEN
  */
 function getVendorContracts_(vendorName) {
   try {
@@ -3463,7 +3463,7 @@ function battleStationNext() {
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   
   if (!bsSh || !listSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
@@ -3497,7 +3497,7 @@ function battleStationPrevious() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
@@ -3524,7 +3524,7 @@ function battleStationRefresh() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
@@ -3546,7 +3546,7 @@ function battleStationQuickRefresh() {
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   
   if (!bsSh || !listSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
@@ -3733,7 +3733,7 @@ function battleStationHardRefresh() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
@@ -4680,7 +4680,7 @@ function battleStationToggleFlag() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
 
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station sheet not found.');
+    SpreadsheetApp.getUi().alert('A(I)DEN sheet not found.');
     return;
   }
 
@@ -4776,7 +4776,7 @@ function battleStationSnoozeVendor() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
 
   if (!bsSh) {
-    ui.alert('Battle Station sheet not found.');
+    ui.alert('A(I)DEN sheet not found.');
     return;
   }
 
