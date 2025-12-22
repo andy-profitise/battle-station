@@ -7105,7 +7105,7 @@ function showDraftPreviewDialog_(responseBody) {
           <button id="createBtn" class="create-btn" onclick="createDraft()">✓ Create Draft & Open</button>
           <button id="reviseBtn" class="revise-btn" onclick="showRevision()">🔄 Revise</button>
         </div>
-        <div class="preview">${responseBody.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
+        <div id="previewContent" class="preview">${responseBody.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
 
         <div id="revisionSection" class="revision-section">
           <div class="revision-label">What would you like to change?</div>
@@ -7154,8 +7154,16 @@ function showDraftPreviewDialog_(responseBody) {
             document.getElementById('loadingMsg').style.display = 'block';
 
             google.script.run
-              .withSuccessHandler(function() {
-                google.script.host.close();
+              .withSuccessHandler(function(newResponse) {
+                // Update preview in place - escape HTML and convert newlines
+                var escaped = newResponse.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                escaped = escaped.replace(/\n/g, '<br>');
+                document.getElementById('previewContent').innerHTML = escaped;
+                document.getElementById('revisionInput').value = '';
+                document.getElementById('regenerateBtn').disabled = false;
+                document.getElementById('createBtn').disabled = false;
+                document.getElementById('loadingMsg').style.display = 'none';
+                document.getElementById('revisionInput').focus();
               })
               .withFailureHandler(function(err) {
                 alert('Error: ' + err.message);
@@ -7213,6 +7221,7 @@ function createDraftFromPreview_() {
 
 /**
  * Revise the email response based on user feedback
+ * Returns the new response body to update the dialog in-place
  */
 function reviseEmailDraft_(feedback) {
   const ss = SpreadsheetApp.getActive();
@@ -7259,8 +7268,10 @@ Please generate an improved version addressing this feedback.`;
   context.previousResponse = responseBody;
   PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(context));
 
-  // Show new preview dialog
-  showDraftPreviewDialog_(responseBody);
+  ss.toast('Done! Review updated response.', '✅', 3);
+
+  // Return the new response - dialog will update in-place
+  return responseBody;
 }
 
 // Menu item functions for each response type
