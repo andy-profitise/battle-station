@@ -4714,7 +4714,7 @@ function hashString_(str) {
 }
 
 // Increment this when checksum format changes to avoid false positives
-const MODULE_CHECKSUMS_VERSION = 2;
+const MODULE_CHECKSUMS_VERSION = 3;
 
 /**
  * Generate sub-checksums for each module
@@ -4808,8 +4808,8 @@ function generateVendorLabelChecksum_(gmailLink) {
 
 /**
  * Check if an email is overdue:
- * - Priority + waiting/customer or waiting/me + >16 business hours, OR
- * - waiting/phonexa + >7 days
+ * - REQUIRES 01.priority/1 label (non-priority emails are never overdue)
+ * - Priority + any waiting label (customer, me, phonexa) + >16 business hours
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
@@ -4817,24 +4817,20 @@ function isEmailOverdue_(email) {
   // Snoozed emails are never overdue
   if (email.isSnoozed) return false;
 
+  // MUST have priority label - non-priority emails are never overdue
+  if (!email.labels.includes('01.priority/1')) return false;
+
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
 
-  // Check for Phonexa waiting - 7 calendar days
-  if (email.labels.includes('02.waiting/phonexa')) {
-    const now = new Date();
-    const daysDiff = (now - emailDate) / (1000 * 60 * 60 * 24);
-    if (daysDiff > 7) return true;
-  }
-
-  // Check for priority + waiting/customer or waiting/me - 16 business hours
-  if (email.labels.includes('01.priority/1')) {
-    const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
-    if (isWaiting) {
-      const businessHours = getBusinessHoursElapsed_(emailDate);
-      if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
-    }
+  // Check for any waiting label - 16 business hours
+  const isWaiting = email.labels.includes('02.waiting/customer') ||
+                    email.labels.includes('02.waiting/me') ||
+                    email.labels.includes('02.waiting/phonexa');
+  if (isWaiting) {
+    const businessHours = getBusinessHoursElapsed_(emailDate);
+    if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
   }
 
   return false;
