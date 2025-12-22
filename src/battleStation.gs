@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 07:43 PST
+ * Last Updated: 2025-12-22 07:52 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -6717,7 +6717,8 @@ Response guidelines:
 - Keep responses brief and to the point
 - Don't include a signature block (it will be added automatically)
 - Match the tone of the conversation
-- Be helpful and solution-oriented`;
+- Be helpful and solution-oriented
+- No extra blank line between greeting and body (e.g., "Hi Catie,\\nThanks for..." not "Hi Catie,\\n\\nThanks for...")`;
 
   let userPrompt = `Response Type: ${responseType}
 
@@ -6770,12 +6771,37 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const messages = thread.getMessages();
   const lastMessage = messages[messages.length - 1];
 
-  // Create reply draft
-  const draft = lastMessage.createDraftReply(responseBody);
+  // Get existing CC recipients
+  const existingCc = lastMessage.getCc() || '';
+  const existingTo = lastMessage.getTo() || '';
+  const existingFrom = lastMessage.getFrom() || '';
 
-  // Get draft ID and construct URL
-  const draftId = draft.getId();
-  const gmailUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+  // Check if sales@profitise.com is already in recipients
+  const allRecipients = (existingTo + ',' + existingCc + ',' + existingFrom).toLowerCase();
+  const salesAlreadyIncluded = allRecipients.includes('sales@profitise.com');
+
+  // Build reply options
+  const replyOptions = {};
+
+  if (!salesAlreadyIncluded) {
+    if (existingCc.trim()) {
+      // There are CC recipients, add sales as BCC
+      replyOptions.bcc = 'sales@profitise.com';
+    } else {
+      // No CC recipients, add sales as CC
+      replyOptions.cc = 'sales@profitise.com';
+    }
+  }
+
+  // Create Reply All draft
+  const draft = lastMessage.createDraftReplyAll(responseBody, replyOptions);
+
+  // Get the message ID from the draft (needed for direct URL)
+  const draftMessage = draft.getMessage();
+  const messageId = draftMessage.getId();
+
+  // Use the message ID to open directly to the draft compose window
+  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${messageId}`;
 
   return gmailUrl;
 }
