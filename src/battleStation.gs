@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 11:22 PST
+ * Last Updated: 2025-12-22 12:04 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -919,7 +919,7 @@ function loadVendorData(vendorIndex, options) {
   if (l1mLink) {
     bsSh.getRange(rightColumnRow, 6).setValue(l1mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor);
     bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
-      .setFormula(`=HYPERLINK("${l1mLink.url}", "cp.profitise.com/p2/report/...")`)
+      .setFormula(`=HYPERLINK("${l1mLink.url}", "https://cp.profitise.com/p2/report/...")`)
       .setFontColor('#1a73e8')
       .setHorizontalAlignment('left')
       .setVerticalAlignment('top')
@@ -7032,8 +7032,24 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const draftId = draft.getId();
 
   // Step 2: Get the raw message from the draft (includes quoted content)
-  const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
-  let rawEncoded = draftData.message.raw;
+  // Small delay to ensure draft is fully created
+  Utilities.sleep(500);
+
+  let draftData;
+  try {
+    draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
+  } catch (e) {
+    Logger.log(`Gmail API error: ${e.message}`);
+    throw new Error(`Failed to get draft from Gmail API: ${e.message}`);
+  }
+
+  let rawEncoded = draftData && draftData.message ? draftData.message.raw : null;
+
+  // Check if we got raw data
+  if (!rawEncoded || typeof rawEncoded !== 'string') {
+    Logger.log(`Gmail API response: ${JSON.stringify(draftData)}`);
+    throw new Error('Gmail API did not return raw message data. The Gmail Advanced Service may need to be re-enabled. Please try again.');
+  }
 
   // Clean the base64url string - remove any whitespace/newlines and fix padding
   rawEncoded = rawEncoded.replace(/[\s\n\r]/g, '');
