@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 12:27 PST
+ * Last Updated: 2025-12-22 12:34 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -5854,16 +5854,17 @@ function autoTraverseVendors() {
     if (changeResult.hasChanges) {
       // Show what changed in a toast BEFORE loading modules
       const changeLabel = formatChangeType_(changeResult.changeType);
-      ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
+      ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 3);
 
       loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
       setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-      return; // Stop on changed vendor
+      // Continue to next vendor instead of stopping
+    } else {
+      // No changes - mark as skipped (yellow)
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+      skippedCount++;
     }
 
-    // No changes - mark as skipped (yellow)
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
-    skippedCount++;
     currentIdx++;
 
     // Safety check - Apps Script has a 6 minute timeout
