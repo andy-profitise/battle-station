@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 13:10 PST
+ * Last Updated: 2025-12-22 13:46 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1858,9 +1858,102 @@ function loadVendorData(vendorIndex, options) {
       date: e.date
     }));
 
-    // Log email changes if emails module changed
+    // Log email changes and get added/removed details
+    let emailChanges = { added: [], removed: [] };
     if (changedModules.includes('emails') && storedData && storedData.emailData) {
-      logEmailChanges_(storedData.emailData, emailData, vendor);
+      emailChanges = logEmailChanges_(storedData.emailData, emailData, vendor);
+    }
+
+    // ========== WHAT CHANGED SECTION (right side - below Google Drive) ==========
+    // Only show if there were changes detected (forceChanged or changedModules)
+    if (forceChanged || changedModules.length > 0 || changeType) {
+      // Find where to render - use rightColumnRow which tracks furthest row on right side
+      let changeRow = rightColumnRow + 1;
+
+      bsSh.getRange(changeRow, 6, 1, 4).merge()
+        .setValue('🔄 WHAT CHANGED')
+        .setBackground('#fff3cd')  // Light yellow/amber
+        .setFontWeight('bold')
+        .setFontSize(10)
+        .setFontColor('#856404')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(changeRow, 24);
+      changeRow++;
+
+      // Build change descriptions
+      const changeDescriptions = [];
+
+      // Add the main changeType if provided (from skip detection)
+      if (changeType && changeType !== 'first view') {
+        changeDescriptions.push(`• ${changeType}`);
+      }
+
+      // Add detailed module changes
+      if (changedModules.length > 0) {
+        // Email changes with details
+        if (changedModules.includes('emails')) {
+          const emailDesc = getEmailChangeDescription_(
+            storedData?.emailChecksum,
+            newEmailChecksum,
+            emailChanges.added.length,
+            emailChanges.removed.length
+          );
+          if (!changeType || !changeType.includes('emails')) {
+            changeDescriptions.push(`• Emails: ${emailDesc}`);
+          }
+          // Show specific added emails
+          for (const e of emailChanges.added.slice(0, 3)) {
+            changeDescriptions.push(`  ➕ "${e.subject.substring(0, 50)}${e.subject.length > 50 ? '...' : ''}"`);
+          }
+          if (emailChanges.added.length > 3) {
+            changeDescriptions.push(`  ... and ${emailChanges.added.length - 3} more added`);
+          }
+          // Show specific removed emails
+          for (const e of emailChanges.removed.slice(0, 3)) {
+            changeDescriptions.push(`  ➖ "${e.subject.substring(0, 50)}${e.subject.length > 50 ? '...' : ''}"`);
+          }
+          if (emailChanges.removed.length > 3) {
+            changeDescriptions.push(`  ... and ${emailChanges.removed.length - 3} more removed`);
+          }
+        }
+
+        // Other module changes
+        if (changedModules.includes('tasks')) changeDescriptions.push('• Tasks updated');
+        if (changedModules.includes('notes')) changeDescriptions.push('• Notes changed');
+        if (changedModules.includes('status')) changeDescriptions.push('• Status changed');
+        if (changedModules.includes('states')) changeDescriptions.push('• States changed');
+        if (changedModules.includes('contacts')) changeDescriptions.push('• Contacts updated');
+        if (changedModules.includes('meetings')) changeDescriptions.push('• Meetings changed');
+        if (changedModules.includes('contracts')) changeDescriptions.push('• Contracts updated');
+        if (changedModules.includes('helpfulLinks')) changeDescriptions.push('• Helpful links changed');
+        if (changedModules.includes('boxDocs')) changeDescriptions.push('• Box documents changed');
+        if (changedModules.includes('gDriveFiles')) changeDescriptions.push('• Google Drive files changed');
+      }
+
+      // First view message
+      if (changeType === 'first view' || !storedData) {
+        changeDescriptions.push('• First time viewing this vendor');
+      }
+
+      // Render each change description
+      if (changeDescriptions.length === 0) {
+        changeDescriptions.push('• Changes detected (details unavailable)');
+      }
+
+      for (const desc of changeDescriptions) {
+        bsSh.getRange(changeRow, 6, 1, 4).merge()
+          .setValue(desc)
+          .setBackground('#fff9e6')  // Lighter yellow
+          .setFontColor('#664d03')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top')
+          .setWrap(true);
+        changeRow++;
+      }
+
+      // Update rightColumnRow
+      rightColumnRow = changeRow;
     }
 
     // Generate vendor-label-only checksum (secondary checksum for catching unlabeled emails)
@@ -5157,6 +5250,7 @@ function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailD
 
 /**
  * Log what changed in emails by comparing old and new email data
+ * @returns {object} { added: [], removed: [] }
  */
 function logEmailChanges_(oldEmails, newEmails, vendor) {
   // Create maps for comparison using subject+date as key
@@ -5201,6 +5295,47 @@ function logEmailChanges_(oldEmails, newEmails, vendor) {
     // If no added/removed but checksum changed, might be label changes
     Logger.log(`📧 Email changes for ${vendor}: Labels or other metadata changed (same threads)`);
   }
+
+  return { added, removed };
+}
+
+/**
+ * Parse the overdue count from an email checksum (e.g., "-17ff163c_OD1" -> 1)
+ */
+function parseOverdueCount_(checksum) {
+  if (!checksum) return 0;
+  const match = String(checksum).match(/_OD(\d+)$/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Get human-readable description of email checksum change
+ */
+function getEmailChangeDescription_(oldChecksum, newChecksum, addedCount, removedCount) {
+  const oldOverdue = parseOverdueCount_(oldChecksum);
+  const newOverdue = parseOverdueCount_(newChecksum);
+
+  const changes = [];
+
+  if (addedCount > 0) {
+    changes.push(`${addedCount} new email${addedCount > 1 ? 's' : ''}`);
+  }
+  if (removedCount > 0) {
+    changes.push(`${removedCount} removed`);
+  }
+  if (oldOverdue !== newOverdue) {
+    if (newOverdue > oldOverdue) {
+      changes.push(`${newOverdue - oldOverdue} became overdue`);
+    } else {
+      changes.push(`${oldOverdue - newOverdue} no longer overdue`);
+    }
+  }
+
+  if (changes.length === 0) {
+    changes.push('labels or metadata changed');
+  }
+
+  return changes.join(', ');
 }
 
 /************************************************************
@@ -5343,10 +5478,12 @@ function checkVendorForChanges_(vendor, listRow, source) {
   const newEmailChecksum = generateEmailChecksum_(emails);
 
   if (storedData.emailChecksum !== newEmailChecksum) {
-    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum})`);
+    // Get human-readable description of what changed
+    const changeDesc = getEmailChangeDescription_(storedData.emailChecksum, newEmailChecksum, 0, 0);
+    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum}) - ${changeDesc}`);
     return {
       hasChanges: true,
-      changeType: 'emails changed',
+      changeType: `emails: ${changeDesc}`,
       data: { emails }
     };
   }
