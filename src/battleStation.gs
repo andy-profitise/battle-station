@@ -895,9 +895,9 @@ function loadVendorData(vendorIndex, options) {
   ss.toast('Loading helpful links...', '🔗 Loading', 2);
   const helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
 
-  // Generate L1M Reporting link if we have a Phonexa link
-  const l1mLink = getL1MReportingLink_(contactData.phonexaLink, source);
-  const totalLinksCount = helpfulLinks.length + 1; // +1 for L1M row (always shown)
+  // Generate L2M Reporting link if we have a Phonexa link
+  const l2mLink = getL2MReportingLink_(contactData.phonexaLink, source);
+  const totalLinksCount = helpfulLinks.length + 1; // +1 for L2M row (always shown)
 
   const helpfulLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.HELPFUL_LINKS_BOARD_ID}`;
   bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
@@ -916,29 +916,29 @@ function loadVendorData(vendorIndex, options) {
   bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('Link').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
   rightColumnRow++;
 
-  // L1M Reporting link first (light grey background to distinguish from monday.com links)
-  const l1mBgColor = '#e8e8e8'; // Light grey
-  if (l1mLink) {
-    bsSh.getRange(rightColumnRow, 6).setValue(l1mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor);
+  // L2M Reporting link first (light grey background to distinguish from monday.com links)
+  const l2mBgColor = '#e8e8e8'; // Light grey
+  if (l2mLink) {
+    bsSh.getRange(rightColumnRow, 6).setValue(l2mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l2mBgColor);
     bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
-      .setFormula(`=HYPERLINK("${l1mLink.url}", "https://cp.profitise.com/p2/report/...")`)
+      .setFormula(`=HYPERLINK("${l2mLink.url}", "https://cp.profitise.com/p2/report/...")`)
       .setFontColor('#1a73e8')
       .setHorizontalAlignment('left')
       .setVerticalAlignment('top')
-      .setBackground(l1mBgColor);
+      .setBackground(l2mBgColor);
     rightColumnRow++;
   } else {
     // No Phonexa link - show warning with link to monday.com board
     const encodedVendor = encodeURIComponent(vendor);
     const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
     const mondayLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendor}`;
-    bsSh.getRange(rightColumnRow, 6).setValue('⚠️ NO PHONEXA LINK FOUND').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor).setFontColor('#b71c1c');
+    bsSh.getRange(rightColumnRow, 6).setValue('⚠️ NO PHONEXA LINK FOUND').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l2mBgColor).setFontColor('#b71c1c');
     bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
       .setFormula(`=HYPERLINK("${mondayLink}", "Add in monday.com →")`)
       .setFontColor('#1a73e8')
       .setHorizontalAlignment('left')
       .setVerticalAlignment('top')
-      .setBackground(l1mBgColor);
+      .setBackground(l2mBgColor);
     rightColumnRow++;
   }
 
@@ -2019,12 +2019,12 @@ function loadVendorData(vendorIndex, options) {
 }
 
 /**
- * Generate L1M (Last 1 Month) Reporting permalink for a vendor
+ * Generate L2M (Last 2 Months) Reporting permalink for a vendor
  * @param {string} phonexaLink - The Phonexa link from monday.com
  * @param {string} source - The source (Buyers or Affiliates)
  * @returns {object|null} - { url, label } or null if can't generate
  */
-function getL1MReportingLink_(phonexaLink, source) {
+function getL2MReportingLink_(phonexaLink, source) {
   if (!phonexaLink) return null;
 
   const isBuyer = source.toLowerCase().includes('buyer');
@@ -2047,10 +2047,10 @@ function getL1MReportingLink_(phonexaLink, source) {
 
   if (!vendorId) return null;
 
-  // Generate date range: last month to today
+  // Generate date range: 2 months ago to today
   const today = new Date();
-  const lastMonth = new Date(today);
-  lastMonth.setMonth(lastMonth.getMonth() - 1);
+  const twoMonthsAgo = new Date(today);
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
 
   const formatDate = (d) => {
     const month = d.getMonth() + 1;
@@ -2059,7 +2059,7 @@ function getL1MReportingLink_(phonexaLink, source) {
     return `${month}/${day}/${year}`;
   };
 
-  const dateRange = `${formatDate(lastMonth)}%20-%20${formatDate(today)}`;
+  const dateRange = `${formatDate(twoMonthsAgo)}%20-%20${formatDate(today)}`;
 
   let url;
   if (isBuyer) {
@@ -2068,7 +2068,7 @@ function getL1MReportingLink_(phonexaLink, source) {
     url = `https://cp.profitise.com/p2/report/summarypublisherbywm/index?searchForm[pr.productType]=1&searchForm[r.date]=${dateRange}&searchForm[productId]=&searchForm[webmasterId]=${vendorId}`;
   }
 
-  return { url: url, label: 'Link to L1M Reporting' };
+  return { url: url, label: 'Link to L2M Reporting' };
 }
 
 /**
