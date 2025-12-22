@@ -1923,19 +1923,39 @@ function loadVendorData(vendorIndex, options) {
           if (emailChanges.removed.length > 3) {
             changeDescriptions.push({ text: `  ... and ${emailChanges.removed.length - 3} more removed` });
           }
+
+          // Show specific emails that are no longer overdue
+          const oldOverdueEmails = storedData?.moduleChecksums?.overdueEmails || [];
+          const newOverdueEmails = newModuleChecksums?.overdueEmails || [];
+          const newOverdueIds = new Set(newOverdueEmails.map(e => e.threadId));
+          const noLongerOverdue = oldOverdueEmails.filter(e => !newOverdueIds.has(e.threadId));
+
+          for (const e of noLongerOverdue.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ✅ No longer overdue: "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
+          }
+          if (noLongerOverdue.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${noLongerOverdue.length - 3} more no longer overdue` });
+          }
         }
 
-        // Other module changes
-        if (changedModules.includes('tasks')) changeDescriptions.push({ text: '• Tasks updated' });
-        if (changedModules.includes('notes')) changeDescriptions.push({ text: '• Notes changed' });
-        if (changedModules.includes('status')) changeDescriptions.push({ text: '• Status changed' });
-        if (changedModules.includes('states')) changeDescriptions.push({ text: '• States changed' });
-        if (changedModules.includes('contacts')) changeDescriptions.push({ text: '• Contacts updated' });
-        if (changedModules.includes('meetings')) changeDescriptions.push({ text: '• Meetings changed' });
-        if (changedModules.includes('contracts')) changeDescriptions.push({ text: '• Contracts updated' });
-        if (changedModules.includes('helpfulLinks')) changeDescriptions.push({ text: '• Helpful links changed' });
-        if (changedModules.includes('boxDocs')) changeDescriptions.push({ text: '• Box documents changed' });
-        if (changedModules.includes('gDriveFiles')) changeDescriptions.push({ text: '• Google Drive files changed' });
+        // Other module changes (skip if already mentioned in changeType to avoid duplicates)
+        const ct = (changeType || '').toLowerCase();
+        if (changedModules.includes('tasks') && !ct.includes('task')) changeDescriptions.push({ text: '• Tasks updated' });
+        if (changedModules.includes('notes') && !ct.includes('note')) changeDescriptions.push({ text: '• Notes changed' });
+        if (changedModules.includes('status') && !ct.includes('status')) changeDescriptions.push({ text: '• Status changed' });
+        if (changedModules.includes('states') && !ct.includes('state')) changeDescriptions.push({ text: '• States changed' });
+        if (changedModules.includes('contacts') && !ct.includes('contact')) changeDescriptions.push({ text: '• Contacts updated' });
+        if (changedModules.includes('meetings') && !ct.includes('meeting')) changeDescriptions.push({ text: '• Meetings changed' });
+        if (changedModules.includes('contracts') && !ct.includes('contract')) changeDescriptions.push({ text: '• Contracts updated' });
+        if (changedModules.includes('helpfulLinks') && !ct.includes('link')) changeDescriptions.push({ text: '• Helpful links changed' });
+        if (changedModules.includes('boxDocs') && !ct.includes('box')) changeDescriptions.push({ text: '• Box documents changed' });
+        if (changedModules.includes('gDriveFiles') && !ct.includes('drive')) changeDescriptions.push({ text: '• Google Drive files changed' });
       }
 
       // First view message
@@ -4690,6 +4710,11 @@ function hashString_(str) {
  * Returns an object with checksums for each data section
  */
 function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, contracts, helpfulLinks, meetings, boxDocs, gDriveFiles, contacts) {
+  // Track which specific emails are overdue (for showing "no longer overdue" details)
+  const overdueEmails = (emails || [])
+    .filter(e => isEmailOverdue_(e))
+    .map(e => ({ threadId: e.threadId, subject: e.subject }));
+
   return {
     emails: generateEmailChecksum_(emails),  // Use the overdue-aware email checksum
     tasks: generateTasksChecksum_(tasks),
@@ -4701,7 +4726,8 @@ function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, 
     meetings: generateMeetingsChecksum_(meetings),
     boxDocs: hashString_(JSON.stringify((boxDocs || []).map(d => ({ name: d.name, modified: d.modifiedAt })))),
     gDriveFiles: hashString_(JSON.stringify((gDriveFiles || []).map(f => ({ name: f.name, modified: f.modified })))),
-    contacts: generateContactsChecksum_(contacts)
+    contacts: generateContactsChecksum_(contacts),
+    overdueEmails: overdueEmails  // Store specific overdue emails for comparison
   };
 }
 
