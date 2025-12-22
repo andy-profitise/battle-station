@@ -7003,7 +7003,7 @@ function generateEmailResponse_(responseType) {
 
     ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
 
-    // Generate response with Claude
+    // Generate response with Claude (no draft yet)
     const responseBody = generateEmailWithClaude_(
       threadContent,
       emailData.subject,
@@ -7012,57 +7012,255 @@ function generateEmailResponse_(responseType) {
       lastSenderIsMe
     );
 
-    ss.toast('Creating Gmail draft...', '📧 Creating Draft', 2);
+    // Store context for potential revision or draft creation
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: responseType,
+      originalDirections: extraDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
 
-    // Create draft and get URL
-    const draftUrl = createDraftAndGetUrl_(emailData.thread, responseBody);
-
-    // Show success with link to open draft
-    const htmlOutput = HtmlService.createHtmlOutput(`
-      <html>
-        <head>
-          <base target="_blank">
-          <style>
-            body { font-family: Arial, sans-serif; padding: 20px; }
-            .success { color: #0d652d; font-size: 16px; margin-bottom: 15px; }
-            .draft-link {
-              display: inline-block;
-              background: #1a73e8;
-              color: white;
-              padding: 12px 24px;
-              text-decoration: none;
-              border-radius: 4px;
-              font-size: 14px;
-              margin-top: 10px;
-            }
-            .draft-link:hover { background: #1557b0; }
-            .preview {
-              background: #f8f9fa;
-              padding: 15px;
-              border-radius: 8px;
-              margin-top: 20px;
-              white-space: pre-wrap;
-              font-size: 13px;
-              max-height: 200px;
-              overflow-y: auto;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="success">✅ Draft created successfully!</div>
-          <a href="${draftUrl}" class="draft-link" onclick="google.script.host.close()">Open Draft in Gmail →</a>
-          <div class="preview"><strong>Preview:</strong>\n\n${responseBody.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
-        </body>
-      </html>
-    `)
-    .setWidth(500)
-    .setHeight(400);
-
-    ui.showModalDialog(htmlOutput, '📧 Email Draft Created');
+    // Show preview - draft only created when user confirms
+    showDraftPreviewDialog_(responseBody);
 
   } catch (e) {
     ui.alert('Error', e.message, ui.ButtonSet.OK);
   }
+}
+
+/**
+ * Show the draft preview dialog with revision option
+ * Draft is only created when user clicks "Create Draft"
+ */
+function showDraftPreviewDialog_(responseBody) {
+  const ui = SpreadsheetApp.getUi();
+
+  const htmlOutput = HtmlService.createHtmlOutput(`
+    <html>
+      <head>
+        <base target="_blank">
+        <style>
+          body { font-family: Arial, sans-serif; padding: 20px; }
+          .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
+          .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+          .create-btn, .revise-btn {
+            display: inline-block;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+          }
+          .create-btn { background: #1a73e8; color: white; }
+          .create-btn:hover { background: #1557b0; }
+          .create-btn:disabled { background: #ccc; cursor: not-allowed; }
+          .revise-btn { background: #f1f3f4; color: #5f6368; }
+          .revise-btn:hover { background: #e8eaed; }
+          .preview {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            white-space: pre-wrap;
+            font-size: 13px;
+            max-height: 180px;
+            overflow-y: auto;
+          }
+          .revision-section {
+            display: none;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+          }
+          .revision-section.show { display: block; }
+          .revision-input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 10px;
+            box-sizing: border-box;
+          }
+          .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+          .regenerate-btn {
+            background: #1a73e8;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+          }
+          .regenerate-btn:hover { background: #1557b0; }
+          .regenerate-btn:disabled { background: #ccc; cursor: not-allowed; }
+          .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">📧 Preview Generated Response</div>
+        <div class="buttons">
+          <button id="createBtn" class="create-btn" onclick="createDraft()">✓ Create Draft & Open</button>
+          <button id="reviseBtn" class="revise-btn" onclick="showRevision()">🔄 Revise</button>
+        </div>
+        <div class="preview">${responseBody.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
+
+        <div id="revisionSection" class="revision-section">
+          <div class="revision-label">What would you like to change?</div>
+          <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add actual scheduling link, make it shorter, more casual...">
+          <button id="regenerateBtn" class="regenerate-btn" onclick="regenerate()">Regenerate</button>
+        </div>
+
+        <div id="loadingMsg" class="loading" style="display:none;"></div>
+
+        <script>
+          function createDraft() {
+            document.getElementById('createBtn').disabled = true;
+            document.getElementById('reviseBtn').disabled = true;
+            document.getElementById('loadingMsg').textContent = 'Creating draft...';
+            document.getElementById('loadingMsg').style.display = 'block';
+
+            google.script.run
+              .withSuccessHandler(function(url) {
+                window.open(url, '_blank');
+                google.script.host.close();
+              })
+              .withFailureHandler(function(err) {
+                alert('Error: ' + err.message);
+                document.getElementById('createBtn').disabled = false;
+                document.getElementById('reviseBtn').disabled = false;
+                document.getElementById('loadingMsg').style.display = 'none';
+              })
+              .createDraftFromPreview_();
+          }
+
+          function showRevision() {
+            document.getElementById('revisionSection').classList.add('show');
+            document.getElementById('revisionInput').focus();
+          }
+
+          function regenerate() {
+            const feedback = document.getElementById('revisionInput').value.trim();
+            if (!feedback) {
+              alert('Please enter what you want to change');
+              return;
+            }
+
+            document.getElementById('regenerateBtn').disabled = true;
+            document.getElementById('createBtn').disabled = true;
+            document.getElementById('loadingMsg').textContent = 'Regenerating...';
+            document.getElementById('loadingMsg').style.display = 'block';
+
+            google.script.run
+              .withSuccessHandler(function() {
+                google.script.host.close();
+              })
+              .withFailureHandler(function(err) {
+                alert('Error: ' + err.message);
+                document.getElementById('regenerateBtn').disabled = false;
+                document.getElementById('createBtn').disabled = false;
+                document.getElementById('loadingMsg').style.display = 'none';
+              })
+              .reviseEmailDraft_(feedback);
+          }
+
+          // Allow Enter key to submit revision
+          document.getElementById('revisionInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') regenerate();
+          });
+        </script>
+      </body>
+    </html>
+  `)
+  .setWidth(500)
+  .setHeight(420);
+
+  ui.showModalDialog(htmlOutput, '📧 Email Response');
+}
+
+/**
+ * Create draft from the previewed response
+ */
+function createDraftFromPreview_() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Creating Gmail draft...', '📧 Creating Draft', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft
+  const draftUrl = createDraftAndGetUrl_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  return draftUrl;
+}
+
+/**
+ * Revise the email response based on user feedback
+ */
+function reviseEmailDraft_(feedback) {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Regenerating with your feedback...', '🤖 AI Working', 5);
+
+  // Get the thread again
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Get thread content
+  const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+  // Build revision directions combining original + feedback about previous response
+  const revisionDirections = `Previous draft was:
+---
+${context.previousResponse}
+---
+
+User feedback on that draft: ${feedback}
+
+Please generate an improved version addressing this feedback.`;
+
+  // Generate new response
+  const responseBody = generateEmailWithClaude_(
+    threadContent,
+    thread.getFirstMessageSubject(),
+    context.responseType,
+    revisionDirections,
+    lastSenderIsMe
+  );
+
+  // Update stored context with new response
+  context.previousResponse = responseBody;
+  PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(context));
+
+  // Show new preview dialog
+  showDraftPreviewDialog_(responseBody);
 }
 
 // Menu item functions for each response type
