@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-21 22:16 PST
+ * Last Updated: 2025-12-21 22:33 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -442,6 +442,7 @@ function loadVendorData(vendorIndex, options) {
   options = options || {};
   const useCache = options.useCache !== undefined ? options.useCache : false;
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
+  const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
   
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
@@ -1747,7 +1748,13 @@ function loadVendorData(vendorIndex, options) {
       if (stored.contacts !== newModuleChecksums.contacts) changedModules.push('contacts');
     }
     
-    if (isUnchanged) {
+    // If we stopped due to overdue emails, make sure emails is in changedModules
+    if (changeType === 'overdue emails' && !changedModules.includes('emails')) {
+      changedModules.push('emails');
+      Logger.log(`Added emails to changedModules due to overdue emails`);
+    }
+
+    if (isUnchanged && !changedModules.length) {
       // Add ✅ to title row
       const currentTitle = bsSh.getRange(1, 1).getValue();
       bsSh.getRange(1, 1).setValue(`${currentTitle} ✅`);
@@ -1755,7 +1762,7 @@ function loadVendorData(vendorIndex, options) {
     } else if (storedData && changedModules.length > 0) {
       // Highlight changed section headers with 🔄
       Logger.log(`Changed modules for ${vendor}: ${changedModules.join(', ')}`);
-      
+
       // Map module names to their header row search patterns
       const moduleHeaderMap = {
         'emails': '📧 EMAILS',
@@ -5334,7 +5341,7 @@ function skipToNextChanged(trackComeback) {
       const changeLabel = formatChangeType_(changeResult.changeType);
       ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
 
-      loadVendorData(currentIdx, { forceChanged: true });
+      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
       setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
       if (skippedCount > 0) {
         SpreadsheetApp.getUi().alert(`Skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
@@ -5741,7 +5748,7 @@ function autoTraverseVendors() {
       const changeLabel = formatChangeType_(changeResult.changeType);
       ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
 
-      loadVendorData(currentIdx, { forceChanged: true });
+      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
       setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
       return; // Stop on changed vendor
     }
