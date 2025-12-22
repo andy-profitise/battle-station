@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 11:22 PST
+ * Last Updated: 2025-12-22 11:47 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -919,7 +919,7 @@ function loadVendorData(vendorIndex, options) {
   if (l1mLink) {
     bsSh.getRange(rightColumnRow, 6).setValue(l1mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor);
     bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
-      .setFormula(`=HYPERLINK("${l1mLink.url}", "cp.profitise.com/p2/report/...")`)
+      .setFormula(`=HYPERLINK("${l1mLink.url}", "https://cp.profitise.com/p2/report/...")`)
       .setFontColor('#1a73e8')
       .setHorizontalAlignment('left')
       .setVerticalAlignment('top')
