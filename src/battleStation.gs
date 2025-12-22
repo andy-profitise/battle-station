@@ -217,6 +217,8 @@ function onOpen() {
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔄 Full Refresh', 'battleStationRefresh')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addSeparator()
+    .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
 
   // Navigation menu - movement and traversal
@@ -1783,9 +1785,10 @@ function loadVendorData(vendorIndex, options) {
     const isUnchanged = !forceChanged && storedData && String(storedData.checksum) === String(newChecksum);
     Logger.log(`Is unchanged: ${isUnchanged}${forceChanged ? ' (forceChanged=true)' : ''}`);
     
-    // Determine which modules changed
+    // Determine which modules changed (only if stored version matches to avoid false positives)
     const changedModules = [];
-    if (storedData && storedData.moduleChecksums) {
+    const storedModuleVersion = storedData?.moduleChecksums?._version || 0;
+    if (storedData && storedData.moduleChecksums && storedModuleVersion === MODULE_CHECKSUMS_VERSION) {
       const stored = storedData.moduleChecksums;
       if (stored.emails !== newModuleChecksums.emails) changedModules.push('emails');
       if (stored.tasks !== newModuleChecksums.tasks) changedModules.push('tasks');
@@ -1865,8 +1868,13 @@ function loadVendorData(vendorIndex, options) {
     }
 
     // ========== WHAT CHANGED SECTION (right side - below Google Drive) ==========
-    // Only show if there were changes detected (forceChanged or changedModules)
-    if (forceChanged || changedModules.length > 0 || changeType) {
+    // Show if:
+    // 1. There's a legitimate changeType (Overdue emails, Flagged, etc.) - always show
+    // 2. There are changedModules AND stored version matches (avoids false positives from format changes)
+    const hasLegitimateChangeType = changeType && changeType !== 'First view' && changeType !== 'unchanged';
+    const hasCompatibleModuleChanges = changedModules.length > 0;  // Already filtered by version above
+    const shouldShowWhatChanged = forceChanged || hasLegitimateChangeType || hasCompatibleModuleChanges;
+    if (shouldShowWhatChanged) {
       // Find where to render - use rightColumnRow which tracks furthest row on right side
       let changeRow = rightColumnRow + 1;
 
@@ -1923,19 +1931,39 @@ function loadVendorData(vendorIndex, options) {
           if (emailChanges.removed.length > 3) {
             changeDescriptions.push({ text: `  ... and ${emailChanges.removed.length - 3} more removed` });
           }
+
+          // Show specific emails that are no longer overdue
+          const oldOverdueEmails = storedData?.moduleChecksums?.overdueEmails || [];
+          const newOverdueEmails = newModuleChecksums?.overdueEmails || [];
+          const newOverdueIds = new Set(newOverdueEmails.map(e => e.threadId));
+          const noLongerOverdue = oldOverdueEmails.filter(e => !newOverdueIds.has(e.threadId));
+
+          for (const e of noLongerOverdue.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ✅ No longer overdue: "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
+          }
+          if (noLongerOverdue.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${noLongerOverdue.length - 3} more no longer overdue` });
+          }
         }
 
-        // Other module changes
-        if (changedModules.includes('tasks')) changeDescriptions.push({ text: '• Tasks updated' });
-        if (changedModules.includes('notes')) changeDescriptions.push({ text: '• Notes changed' });
-        if (changedModules.includes('status')) changeDescriptions.push({ text: '• Status changed' });
-        if (changedModules.includes('states')) changeDescriptions.push({ text: '• States changed' });
-        if (changedModules.includes('contacts')) changeDescriptions.push({ text: '• Contacts updated' });
-        if (changedModules.includes('meetings')) changeDescriptions.push({ text: '• Meetings changed' });
-        if (changedModules.includes('contracts')) changeDescriptions.push({ text: '• Contracts updated' });
-        if (changedModules.includes('helpfulLinks')) changeDescriptions.push({ text: '• Helpful links changed' });
-        if (changedModules.includes('boxDocs')) changeDescriptions.push({ text: '• Box documents changed' });
-        if (changedModules.includes('gDriveFiles')) changeDescriptions.push({ text: '• Google Drive files changed' });
+        // Other module changes (skip if already mentioned in changeType to avoid duplicates)
+        const ct = (changeType || '').toLowerCase();
+        if (changedModules.includes('tasks') && !ct.includes('task')) changeDescriptions.push({ text: '• Tasks updated' });
+        if (changedModules.includes('notes') && !ct.includes('note')) changeDescriptions.push({ text: '• Notes changed' });
+        if (changedModules.includes('status') && !ct.includes('status')) changeDescriptions.push({ text: '• Status changed' });
+        if (changedModules.includes('states') && !ct.includes('state')) changeDescriptions.push({ text: '• States changed' });
+        if (changedModules.includes('contacts') && !ct.includes('contact')) changeDescriptions.push({ text: '• Contacts updated' });
+        if (changedModules.includes('meetings') && !ct.includes('meeting')) changeDescriptions.push({ text: '• Meetings changed' });
+        if (changedModules.includes('contracts') && !ct.includes('contract')) changeDescriptions.push({ text: '• Contracts updated' });
+        if (changedModules.includes('helpfulLinks') && !ct.includes('link')) changeDescriptions.push({ text: '• Helpful links changed' });
+        if (changedModules.includes('boxDocs') && !ct.includes('box')) changeDescriptions.push({ text: '• Box documents changed' });
+        if (changedModules.includes('gDriveFiles') && !ct.includes('drive')) changeDescriptions.push({ text: '• Google Drive files changed' });
       }
 
       // First view message
@@ -4685,12 +4713,21 @@ function hashString_(str) {
   return hash.toString(16);
 }
 
+// Increment this when checksum format changes to avoid false positives
+const MODULE_CHECKSUMS_VERSION = 3;
+
 /**
  * Generate sub-checksums for each module
  * Returns an object with checksums for each data section
  */
 function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, contracts, helpfulLinks, meetings, boxDocs, gDriveFiles, contacts) {
+  // Track which specific emails are overdue (for showing "no longer overdue" details)
+  const overdueEmails = (emails || [])
+    .filter(e => isEmailOverdue_(e))
+    .map(e => ({ threadId: e.threadId, subject: e.subject }));
+
   return {
+    _version: MODULE_CHECKSUMS_VERSION,  // Version for compatibility checking
     emails: generateEmailChecksum_(emails),  // Use the overdue-aware email checksum
     tasks: generateTasksChecksum_(tasks),
     notes: hashString_(JSON.stringify(notes || '')),
@@ -4701,7 +4738,8 @@ function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, 
     meetings: generateMeetingsChecksum_(meetings),
     boxDocs: hashString_(JSON.stringify((boxDocs || []).map(d => ({ name: d.name, modified: d.modifiedAt })))),
     gDriveFiles: hashString_(JSON.stringify((gDriveFiles || []).map(f => ({ name: f.name, modified: f.modified })))),
-    contacts: generateContactsChecksum_(contacts)
+    contacts: generateContactsChecksum_(contacts),
+    overdueEmails: overdueEmails  // Store specific overdue emails for comparison
   };
 }
 
@@ -4770,8 +4808,8 @@ function generateVendorLabelChecksum_(gmailLink) {
 
 /**
  * Check if an email is overdue:
- * - Priority + waiting/customer or waiting/me + >16 business hours, OR
- * - waiting/phonexa + >7 days
+ * - REQUIRES 01.priority/1 label (non-priority emails are never overdue)
+ * - Priority + any waiting label (customer, me, phonexa) + >16 business hours
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
@@ -4779,24 +4817,20 @@ function isEmailOverdue_(email) {
   // Snoozed emails are never overdue
   if (email.isSnoozed) return false;
 
+  // MUST have priority label - non-priority emails are never overdue
+  if (!email.labels.includes('01.priority/1')) return false;
+
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
 
-  // Check for Phonexa waiting - 7 calendar days
-  if (email.labels.includes('02.waiting/phonexa')) {
-    const now = new Date();
-    const daysDiff = (now - emailDate) / (1000 * 60 * 60 * 24);
-    if (daysDiff > 7) return true;
-  }
-
-  // Check for priority + waiting/customer or waiting/me - 16 business hours
-  if (email.labels.includes('01.priority/1')) {
-    const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
-    if (isWaiting) {
-      const businessHours = getBusinessHoursElapsed_(emailDate);
-      if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
-    }
+  // Check for any waiting label - 16 business hours
+  const isWaiting = email.labels.includes('02.waiting/customer') ||
+                    email.labels.includes('02.waiting/me') ||
+                    email.labels.includes('02.waiting/phonexa');
+  if (isWaiting) {
+    const businessHours = getBusinessHoursElapsed_(emailDate);
+    if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
   }
 
   return false;
@@ -4911,6 +4945,35 @@ function getChecksumsSheet_() {
   }
 
   return sh;
+}
+
+/**
+ * Reset all module checksums to force a fresh baseline
+ * This clears only the ModuleChecksums column (4), preserving flags, snooze dates, etc.
+ * After running this, the first traversal will establish new baselines without false positives
+ */
+function resetAllModuleChecksums() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.alert(
+    'Reset Module Checksums',
+    'This will clear all stored module checksums. The next traversal will establish fresh baselines.\n\nFlags, snooze dates, and email data will be preserved.\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (result !== ui.Button.YES) {
+    ui.alert('Cancelled');
+    return;
+  }
+
+  const sh = getChecksumsSheet_();
+  const lastRow = sh.getLastRow();
+
+  if (lastRow > 1) {
+    // Clear column 4 (ModuleChecksums) for all data rows
+    sh.getRange(2, 4, lastRow - 1, 1).clearContent();
+  }
+
+  ui.alert('Done', `Cleared module checksums for ${lastRow - 1} vendors. Next traversal will establish fresh baselines.`, ui.ButtonSet.OK);
 }
 
 /**
