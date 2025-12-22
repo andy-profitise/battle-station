@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 09:00 PST
+ * Last Updated: 2025-12-22 09:05 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -195,19 +195,13 @@ const BS_CFG = {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
+
+  // Main A(I)DEN menu - setup, sync, refresh, actions
   ui.createMenu('⚡ A(I)DEN')
     .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
     .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
-    .addSeparator()
-    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
-    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
-    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
-    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
-    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
-    .addItem('▶ Next Vendor', 'battleStationNext')
-    .addItem('◀ Previous Vendor', 'battleStationPrevious')
     .addSeparator()
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔄 Refresh', 'battleStationRefresh')
@@ -220,8 +214,20 @@ function onOpen() {
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addSeparator()
+    .addToUi();
+
+  // Navigation menu - movement and traversal
+  ui.createMenu('🧭 Navigation')
+    .addItem('▶ Next Vendor', 'battleStationNext')
+    .addItem('◀ Previous Vendor', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addSeparator()
+    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
+    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
+    .addSeparator()
+    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
+    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
+    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
     .addToUi();
 
   // Email Response Templates menu
