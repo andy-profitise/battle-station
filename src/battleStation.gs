@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 09:45 PST
+ * Last Updated: 2025-12-22 09:52 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -892,10 +892,14 @@ function loadVendorData(vendorIndex, options) {
   // HELPFUL LINKS SECTION (right side - aligned with VENDOR INFO at top)
   ss.toast('Loading helpful links...', '🔗 Loading', 2);
   const helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
-  
+
+  // Generate L1M Reporting link if we have a Phonexa link
+  const l1mLink = getL1MReportingLink_(contactData.phonexaLink, source);
+  const totalLinksCount = helpfulLinks.length + (l1mLink ? 1 : 0);
+
   const helpfulLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.HELPFUL_LINKS_BOARD_ID}`;
   bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
-    .setFormula(`=HYPERLINK("${helpfulLinksUrl}", "🔗 HELPFUL LINKS (${helpfulLinks.length})")`)
+    .setFormula(`=HYPERLINK("${helpfulLinksUrl}", "🔗 HELPFUL LINKS (${totalLinksCount})")`)
     .setBackground('#f8f9fa')
     .setFontWeight('bold')
     .setFontSize(10)
@@ -904,8 +908,26 @@ function loadVendorData(vendorIndex, options) {
     .setVerticalAlignment('top');
   bsSh.setRowHeight(rightColumnRow, 24);
   rightColumnRow++;
-  
-  if (helpfulLinks.length === 0) {
+
+  // Header row for links table
+  bsSh.getRange(rightColumnRow, 6).setValue('Description').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+  bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('Link').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+  rightColumnRow++;
+
+  // L1M Reporting link first (light grey background to distinguish from monday.com links)
+  if (l1mLink) {
+    const l1mBgColor = '#e8e8e8'; // Light grey
+    bsSh.getRange(rightColumnRow, 6).setValue(l1mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor);
+    bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+      .setFormula(`=HYPERLINK("${l1mLink.url}", "cp.profitise.com/p2/report/...")`)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top')
+      .setBackground(l1mBgColor);
+    rightColumnRow++;
+  }
+
+  if (helpfulLinks.length === 0 && !l1mLink) {
     bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
       .setValue('No helpful links found')
       .setFontStyle('italic')
@@ -914,15 +936,11 @@ function loadVendorData(vendorIndex, options) {
       .setVerticalAlignment('top');
     bsSh.setRowHeight(rightColumnRow, 25);
     rightColumnRow++;
-  } else {
-    // Single column layout
-    bsSh.getRange(rightColumnRow, 6).setValue('Description').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
-    bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('Link').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
-    rightColumnRow++;
-    
+  } else if (helpfulLinks.length > 0) {
+    // monday.com links (no grey background - default white)
     for (const link of helpfulLinks.slice(0, 8)) {
       bsSh.getRange(rightColumnRow, 6).setValue(link.notes || '(no description)').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
-      
+
       if (link.url) {
         bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
           .setFormula(`=HYPERLINK("${link.url}", "${link.url.substring(0, 50)}${link.url.length > 50 ? '...' : ''}")`)
@@ -932,10 +950,10 @@ function loadVendorData(vendorIndex, options) {
       } else {
         bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('(no URL)').setHorizontalAlignment('left').setVerticalAlignment('top');
       }
-      
+
       rightColumnRow++;
     }
-    
+
     if (helpfulLinks.length > 8) {
       bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
         .setValue(`... and ${helpfulLinks.length - 8} more links`)
@@ -1840,6 +1858,59 @@ function loadVendorData(vendorIndex, options) {
   }
   
   ss.toast(`Loaded vendor ${vendorIndex} of ${totalVendors}`, '✅ Ready', 2);
+}
+
+/**
+ * Generate L1M (Last 1 Month) Reporting permalink for a vendor
+ * @param {string} phonexaLink - The Phonexa link from monday.com
+ * @param {string} source - The source (Buyers or Affiliates)
+ * @returns {object|null} - { url, label } or null if can't generate
+ */
+function getL1MReportingLink_(phonexaLink, source) {
+  if (!phonexaLink) return null;
+
+  const isBuyer = source.toLowerCase().includes('buyer');
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+
+  if (!isBuyer && !isAffiliate) return null;
+
+  // Extract the ID from the Phonexa link
+  let vendorId = null;
+
+  if (isBuyer) {
+    // Buyers: https://cp.profitise.com/p2/buyer/partner/view?id=65
+    const match = phonexaLink.match(/[?&]id=(\d+)/);
+    if (match) vendorId = match[1];
+  } else {
+    // Affiliates: https://cp.profitise.com/p2/user/webmaster/view?userId=2160
+    const match = phonexaLink.match(/[?&]userId=(\d+)/);
+    if (match) vendorId = match[1];
+  }
+
+  if (!vendorId) return null;
+
+  // Generate date range: last month to today
+  const today = new Date();
+  const lastMonth = new Date(today);
+  lastMonth.setMonth(lastMonth.getMonth() - 1);
+
+  const formatDate = (d) => {
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+    const year = d.getFullYear();
+    return `${month}/${day}/${year}`;
+  };
+
+  const dateRange = `${formatDate(lastMonth)}%20-%20${formatDate(today)}`;
+
+  let url;
+  if (isBuyer) {
+    url = `https://cp.profitise.com/p2/report/summarypartnerbypartner/index?searchForm[pr.productType]=1&searchForm[productId]=&searchForm[date]=${dateRange}&searchForm[partnerId]=${vendorId}`;
+  } else {
+    url = `https://cp.profitise.com/p2/report/summarypublisherbywm/index?searchForm[pr.productType]=1&searchForm[r.date]=${dateRange}&searchForm[productId]=&searchForm[webmasterId]=${vendorId}`;
+  }
+
+  return { url: url, label: 'Link to L1M Reporting' };
 }
 
 /**
