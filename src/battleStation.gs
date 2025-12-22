@@ -217,6 +217,8 @@ function onOpen() {
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔄 Full Refresh', 'battleStationRefresh')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addSeparator()
+    .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
 
   // Navigation menu - movement and traversal
@@ -4937,6 +4939,35 @@ function getChecksumsSheet_() {
   }
 
   return sh;
+}
+
+/**
+ * Reset all module checksums to force a fresh baseline
+ * This clears only the ModuleChecksums column (4), preserving flags, snooze dates, etc.
+ * After running this, the first traversal will establish new baselines without false positives
+ */
+function resetAllModuleChecksums() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.alert(
+    'Reset Module Checksums',
+    'This will clear all stored module checksums. The next traversal will establish fresh baselines.\n\nFlags, snooze dates, and email data will be preserved.\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (result !== ui.Button.YES) {
+    ui.alert('Cancelled');
+    return;
+  }
+
+  const sh = getChecksumsSheet_();
+  const lastRow = sh.getLastRow();
+
+  if (lastRow > 1) {
+    // Clear column 4 (ModuleChecksums) for all data rows
+    sh.getRange(2, 4, lastRow - 1, 1).clearContent();
+  }
+
+  ui.alert('Done', `Cleared module checksums for ${lastRow - 1} vendors. Next traversal will establish fresh baselines.`, ui.ButtonSet.OK);
 }
 
 /**
