@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 11:09 PST
+ * Last Updated: 2025-12-22 11:22 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -895,7 +895,7 @@ function loadVendorData(vendorIndex, options) {
 
   // Generate L1M Reporting link if we have a Phonexa link
   const l1mLink = getL1MReportingLink_(contactData.phonexaLink, source);
-  const totalLinksCount = helpfulLinks.length + (l1mLink ? 1 : 0);
+  const totalLinksCount = helpfulLinks.length + 1; // +1 for L1M row (always shown)
 
   const helpfulLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.HELPFUL_LINKS_BOARD_ID}`;
   bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
@@ -915,8 +915,8 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow++;
 
   // L1M Reporting link first (light grey background to distinguish from monday.com links)
+  const l1mBgColor = '#e8e8e8'; // Light grey
   if (l1mLink) {
-    const l1mBgColor = '#e8e8e8'; // Light grey
     bsSh.getRange(rightColumnRow, 6).setValue(l1mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor);
     bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
       .setFormula(`=HYPERLINK("${l1mLink.url}", "cp.profitise.com/p2/report/...")`)
@@ -925,9 +925,22 @@ function loadVendorData(vendorIndex, options) {
       .setVerticalAlignment('top')
       .setBackground(l1mBgColor);
     rightColumnRow++;
+  } else {
+    // No Phonexa link - show warning with link to monday.com board
+    const encodedVendor = encodeURIComponent(vendor);
+    const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+    const mondayLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendor}`;
+    bsSh.getRange(rightColumnRow, 6).setValue('⚠️ NO PHONEXA LINK FOUND').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l1mBgColor).setFontColor('#b71c1c');
+    bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+      .setFormula(`=HYPERLINK("${mondayLink}", "Add in monday.com →")`)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top')
+      .setBackground(l1mBgColor);
+    rightColumnRow++;
   }
 
-  if (helpfulLinks.length === 0 && !l1mLink) {
+  if (helpfulLinks.length === 0) {
     bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
       .setValue('No helpful links found')
       .setFontStyle('italic')
