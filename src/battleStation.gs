@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 09:34 PST
+ * Last Updated: 2025-12-22 09:38 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -196,16 +196,12 @@ const BS_CFG = {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  // Main A(I)DEN menu - setup, sync, refresh, actions
+  // Main A(I)DEN menu - setup, sync, actions
   ui.createMenu('⚡ A(I)DEN')
     .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
     .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
-    .addSeparator()
-    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
-    .addItem('🔄 Refresh', 'battleStationRefresh')
-    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
@@ -214,6 +210,13 @@ function onOpen() {
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addToUi();
+
+  // Refresh menu - refresh current vendor view
+  ui.createMenu('🔄 Refresh')
+    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
+    .addItem('🔄 Full Refresh', 'battleStationRefresh')
+    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addToUi();
 
   // Navigation menu - movement and traversal
