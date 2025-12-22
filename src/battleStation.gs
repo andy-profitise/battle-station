@@ -6651,10 +6651,73 @@ function getSelectedEmailThread_() {
 }
 
 /**
+ * Get Email Response settings from Settings sheet
+ * Format in Settings:
+ * Row: "Email Response Settings" | (empty)
+ * Row: "Response Type" | "Custom Instructions"
+ * Row: "Cold Outreach - Follow Up" | "Be persistent but polite"
+ * Row: "Schedule a Call" | "Always offer specific times"
+ * Row: "General" | "Instructions that apply to all response types"
+ */
+function getEmailResponseSettings_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return { typeInstructions: {}, generalInstructions: '' };
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const typeInstructions = {};
+  let generalInstructions = '';
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Email Response Settings" header in any column
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'email response settings') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const typeCell = String(data[i][startCol] || '').trim();
+    const instructionsCell = String(data[i][startCol + 1] || '').trim();
+
+    // Skip header row
+    if (typeCell.toLowerCase() === 'response type') {
+      continue;
+    }
+
+    // Exit if we hit an empty row
+    if (typeCell === '' && instructionsCell === '') {
+      break;
+    }
+
+    // Parse settings
+    if (typeCell !== '' && instructionsCell !== '') {
+      if (typeCell.toLowerCase() === 'general') {
+        generalInstructions = instructionsCell;
+      } else {
+        typeInstructions[typeCell] = instructionsCell;
+      }
+    }
+  }
+
+  return { typeInstructions, generalInstructions };
+}
+
+/**
  * Get the full thread content formatted for Claude
  */
 function getThreadContent_(thread) {
   const messages = thread.getMessages();
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
   let content = '';
 
   for (const msg of messages) {
@@ -6671,7 +6734,12 @@ function getThreadContent_(thread) {
     content += body.substring(0, 3000); // Limit each message
   }
 
-  return content;
+  // Check if I sent the last message (meaning this is a follow-up, not a reply)
+  const lastMessage = messages[messages.length - 1];
+  const lastFrom = lastMessage.getFrom().toLowerCase();
+  const lastSenderIsMe = lastFrom.includes(myEmail) || lastFrom.includes('andy');
+
+  return { content, lastSenderIsMe };
 }
 
 /**
@@ -6696,31 +6764,56 @@ function showDirectionsDialog_(responseType) {
 /**
  * Generate email response using Claude
  */
-function generateEmailWithClaude_(threadContent, subject, responseType, extraDirections) {
+function generateEmailWithClaude_(threadContent, subject, responseType, extraDirections, lastSenderIsMe) {
   const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
 
   if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
     throw new Error('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
   }
 
-  // Build the prompt based on response type
-  let systemPrompt = `You are an email assistant for Andy Worford, Director of Business Development at Profitise, a lead generation company.
-Your job is to draft professional, friendly email responses.
+  // Load custom settings from Settings sheet
+  const settings = getEmailResponseSettings_();
 
-Key info about Andy/Profitise:
+  // Build the prompt based on response type
+  let systemPrompt = `You are drafting an email AS Andy Worford, Director of Business Development at Profitise. Write in first person as Andy.
+
+Key info:
 - Company: Profitise - delivers exclusive homeowner leads in real-time with TCPA consent
 - Andy's scheduling link: https://calendar.app.google/68Fk8pb9mUokSiaW8
 - Phone: 888-400-4868 x 8117 | Cell: 949.351.2300
-- Tone: Professional but personable, concise, action-oriented
 
-Response guidelines:
-- Keep responses brief and to the point
-- Don't include a signature block (it will be added automatically)
-- Match the tone of the conversation
-- Be helpful and solution-oriented
-- No extra blank line between greeting and body (e.g., "Hi Catie,\\nThanks for..." not "Hi Catie,\\n\\nThanks for...")`;
+CRITICAL STYLE RULES - You must follow these:
+- Write like a real human, not like an AI assistant
+- NEVER use phrases like "Perfect!", "Absolutely!", "Great question!", "I'd be happy to", "Hope this helps!"
+- NEVER start with enthusiastic affirmations - just get to the point
+- Be direct, professional, casual-friendly (not corporate-stiff)
+- Keep it brief - 2-4 sentences when possible
+- Don't over-explain or be overly formal
+- No signature block (added automatically)
+- No extra blank line between greeting and body (e.g., "Hi Catie,\\nJust following up..." not "Hi Catie,\\n\\nJust following up...")
 
-  let userPrompt = `Response Type: ${responseType}
+CONTEXT AWARENESS:
+- Pay attention to WHO sent the last message in the thread
+- If Andy (me) sent the last message, this is a FOLLOW-UP because they haven't replied yet
+- If someone else sent the last message, this is a REPLY to their message`;
+
+  // Add general custom instructions from Settings if present
+  if (settings.generalInstructions) {
+    systemPrompt += `\n\nADDITIONAL INSTRUCTIONS FROM ANDY:\n${settings.generalInstructions}`;
+  }
+
+  // Add type-specific instructions from Settings if present
+  if (settings.typeInstructions[responseType]) {
+    systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "${responseType}":\n${settings.typeInstructions[responseType]}`;
+  }
+
+  // Add context about whether this is a follow-up or reply
+  let contextNote = '';
+  if (lastSenderIsMe) {
+    contextNote = `\n\nIMPORTANT: I (Andy) sent the last message and haven't received a reply. This is a FOLLOW-UP, not a reply to them. Don't act like they said something they didn't.`;
+  }
+
+  let userPrompt = `Response Type: ${responseType}${contextNote}
 
 Email Thread:
 ${threadContent}
@@ -6728,10 +6821,10 @@ ${threadContent}
 `;
 
   if (extraDirections) {
-    userPrompt += `Extra Directions from Andy: ${extraDirections}\n\n`;
+    userPrompt += `Extra directions: ${extraDirections}\n\n`;
   }
 
-  userPrompt += `Please draft a response email. Just provide the email body text, no subject line needed (we'll reply to the existing thread).`;
+  userPrompt += `Draft the email body only (no subject line).`;
 
   const payload = {
     model: 'claude-sonnet-4-20250514',
@@ -6843,12 +6936,31 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const subject = lastMessage.getSubject();
   const replySubject = subject.toLowerCase().startsWith('re:') ? subject : 'Re: ' + subject;
 
+  // Build quoted text from the last message
+  const lastFrom = lastMessage.getFrom();
+  const lastDate = lastMessage.getDate();
+  const lastBody = lastMessage.getBody(); // HTML body for proper quoting
+
+  // Format date like "Mon, Dec 16, 2024 at 10:30 AM"
+  const dateStr = Utilities.formatDate(lastDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Build HTML body with response + quoted message
+  const htmlBody = `<div dir="ltr">${responseBody.replace(/\n/g, '<br>')}</div>
+<br>
+<div class="gmail_quote">
+  <div dir="ltr" class="gmail_attr">On ${dateStr}, ${lastFrom} wrote:<br></div>
+  <blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">
+    ${lastBody}
+  </blockquote>
+</div>`;
+
   // Create draft with correct recipients, threaded to the original
   const draft = GmailApp.createDraft(
     toRecipients,
     replySubject,
-    responseBody,
+    responseBody, // Plain text fallback
     {
+      htmlBody: htmlBody,
       cc: ccRecipients || undefined,
       bcc: bccRecipients || undefined,
       threadId: thread.getId()
@@ -6886,8 +6998,8 @@ function generateEmailResponse_(responseType) {
 
     ss.toast('Reading email thread...', '📧 Email Response', 2);
 
-    // Get full thread content
-    const threadContent = getThreadContent_(emailData.thread);
+    // Get full thread content and context
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
 
     ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
 
@@ -6896,7 +7008,8 @@ function generateEmailResponse_(responseType) {
       threadContent,
       emailData.subject,
       responseType,
-      extraDirections
+      extraDirections,
+      lastSenderIsMe
     );
 
     ss.toast('Creating Gmail draft...', '📧 Creating Draft', 2);
