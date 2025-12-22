@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 12:04 PST
+ * Last Updated: 2025-12-22 12:27 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7031,79 +7031,72 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const draft = lastMessage.createDraftReplyAll(responseBody);
   const draftId = draft.getId();
 
-  // Step 2: Get the raw message from the draft (includes quoted content)
-  // Small delay to ensure draft is fully created
-  Utilities.sleep(500);
+  // Step 2: Try to update recipients using Gmail API
+  // If raw format fails, we'll fall back to the basic draft (recipients may need manual adjustment)
+  let useBasicDraft = false;
 
-  let draftData;
   try {
-    draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
-  } catch (e) {
-    Logger.log(`Gmail API error: ${e.message}`);
-    throw new Error(`Failed to get draft from Gmail API: ${e.message}`);
-  }
+    // Small delay to ensure draft is fully created
+    Utilities.sleep(500);
 
-  let rawEncoded = draftData && draftData.message ? draftData.message.raw : null;
+    const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
+    let rawEncoded = draftData && draftData.message ? draftData.message.raw : null;
 
-  // Check if we got raw data
-  if (!rawEncoded || typeof rawEncoded !== 'string') {
-    Logger.log(`Gmail API response: ${JSON.stringify(draftData)}`);
-    throw new Error('Gmail API did not return raw message data. The Gmail Advanced Service may need to be re-enabled. Please try again.');
-  }
-
-  // Clean the base64url string - remove any whitespace/newlines and fix padding
-  rawEncoded = rawEncoded.replace(/[\s\n\r]/g, '');
-
-  // Fix base64url padding (Gmail API doesn't include padding)
-  while (rawEncoded.length % 4 !== 0) {
-    rawEncoded += '=';
-  }
-
-  // Decode the raw message (base64url -> string)
-  let rawBytes;
-  try {
-    rawBytes = Utilities.base64DecodeWebSafe(rawEncoded);
-  } catch (e) {
-    // If base64url fails, try converting from standard base64 characters
-    const base64Standard = rawEncoded.replace(/-/g, '+').replace(/_/g, '/');
-    rawBytes = Utilities.base64Decode(base64Standard);
-  }
-  let rawMessage = Utilities.newBlob(rawBytes).getDataAsString('UTF-8');
-
-  // Step 3: Update recipient headers in the raw message
-  // Split headers from body (separated by \r\n\r\n)
-  const headerBodySplit = rawMessage.indexOf('\r\n\r\n');
-  let headerSection = rawMessage.substring(0, headerBodySplit);
-  const bodySection = rawMessage.substring(headerBodySplit);
-
-  // Remove existing To, Cc, Bcc headers
-  headerSection = headerSection.replace(/^To:.*(\r\n[ \t].*)*\r\n/mi, '');
-  headerSection = headerSection.replace(/^Cc:.*(\r\n[ \t].*)*\r\n/mi, '');
-  headerSection = headerSection.replace(/^Bcc:.*(\r\n[ \t].*)*\r\n/mi, '');
-
-  // Add our recipient headers at the start
-  let newHeaders = '';
-  if (toRecipients) newHeaders += `To: ${toRecipients}\r\n`;
-  if (ccRecipients) newHeaders += `Cc: ${ccRecipients}\r\n`;
-  if (bccRecipients) newHeaders += `Bcc: ${bccRecipients}\r\n`;
-
-  // Rebuild the message
-  rawMessage = newHeaders + headerSection + bodySection;
-
-  // Encode for Gmail API
-  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
-
-  // Update the draft with new recipients but same body (including quoted message)
-  Gmail.Users.Drafts.update(
-    {
-      message: {
-        raw: encodedMessage,
-        threadId: thread.getId()
+    if (rawEncoded && typeof rawEncoded === 'string') {
+      // Clean the base64url string - remove any whitespace/newlines and fix padding
+      rawEncoded = rawEncoded.replace(/[\s\n\r]/g, '');
+      while (rawEncoded.length % 4 !== 0) {
+        rawEncoded += '=';
       }
-    },
-    'me',
-    draftId
-  );
+
+      // Decode the raw message (base64url -> string)
+      let rawBytes;
+      try {
+        rawBytes = Utilities.base64DecodeWebSafe(rawEncoded);
+      } catch (e) {
+        const base64Standard = rawEncoded.replace(/-/g, '+').replace(/_/g, '/');
+        rawBytes = Utilities.base64Decode(base64Standard);
+      }
+      let rawMessage = Utilities.newBlob(rawBytes).getDataAsString('UTF-8');
+
+      // Step 3: Update recipient headers in the raw message
+      const headerBodySplit = rawMessage.indexOf('\r\n\r\n');
+      let headerSection = rawMessage.substring(0, headerBodySplit);
+      const bodySection = rawMessage.substring(headerBodySplit);
+
+      // Remove existing To, Cc, Bcc headers
+      headerSection = headerSection.replace(/^To:.*(\r\n[ \t].*)*\r\n/mi, '');
+      headerSection = headerSection.replace(/^Cc:.*(\r\n[ \t].*)*\r\n/mi, '');
+      headerSection = headerSection.replace(/^Bcc:.*(\r\n[ \t].*)*\r\n/mi, '');
+
+      // Add our recipient headers at the start
+      let newHeaders = '';
+      if (toRecipients) newHeaders += `To: ${toRecipients}\r\n`;
+      if (ccRecipients) newHeaders += `Cc: ${ccRecipients}\r\n`;
+      if (bccRecipients) newHeaders += `Bcc: ${bccRecipients}\r\n`;
+
+      // Rebuild and update the message
+      rawMessage = newHeaders + headerSection + bodySection;
+      const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+
+      Gmail.Users.Drafts.update(
+        { message: { raw: encodedMessage, threadId: thread.getId() } },
+        'me',
+        draftId
+      );
+    } else {
+      Logger.log('Gmail API did not return raw data, using basic draft');
+      useBasicDraft = true;
+    }
+  } catch (e) {
+    Logger.log(`Gmail API update failed: ${e.message}, using basic draft`);
+    useBasicDraft = true;
+  }
+
+  if (useBasicDraft) {
+    // Log warning - recipients may need manual adjustment in Gmail
+    Logger.log('Warning: Draft created but recipients could not be customized. Manual adjustment may be needed.');
+  }
 
   // Get the message ID for the URL
   const updatedDraft = Gmail.Users.Drafts.get('me', draftId);
