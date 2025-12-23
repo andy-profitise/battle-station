@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 10:31 PST
+ * Last Updated: 2025-12-23 10:43 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -5799,9 +5799,7 @@ function skipToNextChanged(trackComeback) {
 
       loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
       setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-      if (skippedCount > 0) {
-        SpreadsheetApp.getUi().alert(`Skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
-      }
+      // WHAT CHANGED section now shows the details, no need for dialog
       if (trackComeback) checkComeback_();
       return;
     }
