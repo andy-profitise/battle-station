@@ -1679,7 +1679,7 @@ function loadVendorData(vendorIndex, options) {
         .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
         .setFontColor('#d32f2f')
         .setBackground('#ffebee')
-        .setHorizontalAlignment('center')
+        .setHorizontalAlignment('left')
         .setVerticalAlignment('middle');
       bsSh.setRowHeight(currentRow, 25);
       currentRow++;
@@ -1690,7 +1690,7 @@ function loadVendorData(vendorIndex, options) {
         .setFontStyle('italic')
         .setFontColor('#666666')
         .setBackground('#fafafa')
-        .setHorizontalAlignment('center')
+        .setHorizontalAlignment('left')
         .setVerticalAlignment('middle');
       bsSh.setRowHeight(currentRow, 22);
       currentRow++;
@@ -1699,7 +1699,7 @@ function loadVendorData(vendorIndex, options) {
         .setValue('No tasks found')
         .setFontStyle('italic')
         .setBackground('#fafafa')
-        .setHorizontalAlignment('center')
+        .setHorizontalAlignment('left')
         .setVerticalAlignment('middle');
       bsSh.setRowHeight(currentRow, 25);
       currentRow++;
