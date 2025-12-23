@@ -7339,8 +7339,20 @@ function createDraftAndGetUrl_(thread, responseBody) {
     // Small delay to ensure draft is fully created
     Utilities.sleep(500);
 
-    const draftData = Gmail.Users.Drafts.get('me', draftId, { format: 'raw' });
-    let rawEncoded = draftData && draftData.message ? draftData.message.raw : null;
+    // Step 2a: Get the draft to get the message ID
+    const draftData = Gmail.Users.Drafts.get('me', draftId);
+    const messageId = draftData && draftData.message ? draftData.message.id : null;
+    Logger.log(`Draft message ID: ${messageId}`);
+
+    if (!messageId) {
+      Logger.log('Could not get message ID from draft');
+      throw new Error('No message ID');
+    }
+
+    // Step 2b: Get the message in raw format using Messages.get
+    const messageData = Gmail.Users.Messages.get('me', messageId, { format: 'raw' });
+    let rawEncoded = messageData ? messageData.raw : null;
+    Logger.log(`Raw encoded length: ${rawEncoded ? rawEncoded.length : 'null'}`);
 
     if (rawEncoded && typeof rawEncoded === 'string') {
       // Clean the base64url string - remove any whitespace/newlines and fix padding
@@ -7609,8 +7621,8 @@ function showDraftPreviewDialog_(responseBody) {
 </html>`;
 
   const htmlOutput = HtmlService.createHtmlOutput(html)
-    .setWidth(500)
-    .setHeight(420);
+    .setWidth(700)
+    .setHeight(600);
 
   ui.showModalDialog(htmlOutput, 'Email Response');
 }
