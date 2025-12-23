@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 10:31 PST
+ * Last Updated: 2025-12-23 10:49 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -3983,20 +3983,27 @@ function battleStationQuickRefreshUntilChanged() {
 
   // Get current email checksum before refreshing
   const storedData = getStoredChecksum_(vendor);
-  const oldChecksum = storedData ? storedData.emailChecksum : null;
+  // Convert to string for consistent comparison (spreadsheet reads numbers as strings)
+  const oldChecksum = storedData && storedData.emailChecksum != null ? String(storedData.emailChecksum) : null;
 
   const maxAttempts = 20;  // Max attempts to prevent infinite loop
   const delaySeconds = 3;  // Seconds between attempts
+
+  Logger.log(`Quick Refresh Until Changed - Starting for ${vendor}`);
+  Logger.log(`Old checksum: ${oldChecksum} (type: ${typeof oldChecksum})`);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     ss.toast(`Checking for email changes... (attempt ${attempt}/${maxAttempts})`, '🔁 Waiting', delaySeconds + 1);
 
     // Fetch fresh emails
     const emails = getEmailsForVendor_(vendor, listRow);
-    const newChecksum = generateEmailChecksum_(emails);
+    const newChecksum = String(generateEmailChecksum_(emails));
+
+    Logger.log(`Attempt ${attempt}: newChecksum = ${newChecksum} (type: ${typeof newChecksum})`);
 
     if (newChecksum !== oldChecksum) {
       // Change detected! Do a full quick refresh to update the display
+      Logger.log(`Change detected! Old: ${oldChecksum}, New: ${newChecksum}`);
       ss.toast('Change detected! Refreshing display...', '✅ Found', 2);
       battleStationQuickRefresh();
       return;
@@ -5799,9 +5806,7 @@ function skipToNextChanged(trackComeback) {
 
       loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
       setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-      if (skippedCount > 0) {
-        SpreadsheetApp.getUi().alert(`Skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
-      }
+      // WHAT CHANGED section now shows the details, no need for dialog
       if (trackComeback) checkComeback_();
       return;
     }
