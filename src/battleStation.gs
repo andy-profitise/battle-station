@@ -7609,8 +7609,8 @@ function showDraftPreviewDialog_(responseBody) {
 </html>`;
 
   const htmlOutput = HtmlService.createHtmlOutput(html)
-    .setWidth(500)
-    .setHeight(420);
+    .setWidth(700)
+    .setHeight(600);
 
   ui.showModalDialog(htmlOutput, 'Email Response');
 }
