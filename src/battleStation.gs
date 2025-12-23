@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-22 23:23 PST
+ * Last Updated: 2025-12-23 10:31 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -215,6 +215,7 @@ function onOpen() {
   // Refresh menu - refresh current vendor view
   ui.createMenu('🔄 Refresh')
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
+    .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
     .addItem('🔄 Full Refresh', 'battleStationRefresh')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
@@ -3958,8 +3959,56 @@ function battleStationQuickRefresh() {
   // Update checksum for emails
   const newEmailChecksum = generateEmailChecksum_(emails);
   updateEmailChecksum_(vendor, newEmailChecksum);
-  
+
   ss.toast('Emails refreshed!', '⚡ Done', 2);
+}
+
+/**
+ * Quick Refresh Until Changed - repeatedly refreshes emails until a change is detected
+ * Useful when you've made email changes and are waiting for them to take effect
+ */
+function battleStationQuickRefreshUntilChanged() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  // Get current email checksum before refreshing
+  const storedData = getStoredChecksum_(vendor);
+  const oldChecksum = storedData ? storedData.emailChecksum : null;
+
+  const maxAttempts = 20;  // Max attempts to prevent infinite loop
+  const delaySeconds = 3;  // Seconds between attempts
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    ss.toast(`Checking for email changes... (attempt ${attempt}/${maxAttempts})`, '🔁 Waiting', delaySeconds + 1);
+
+    // Fetch fresh emails
+    const emails = getEmailsForVendor_(vendor, listRow);
+    const newChecksum = generateEmailChecksum_(emails);
+
+    if (newChecksum !== oldChecksum) {
+      // Change detected! Do a full quick refresh to update the display
+      ss.toast('Change detected! Refreshing display...', '✅ Found', 2);
+      battleStationQuickRefresh();
+      return;
+    }
+
+    // No change yet, wait before next attempt
+    if (attempt < maxAttempts) {
+      Utilities.sleep(delaySeconds * 1000);
+    }
+  }
+
+  ss.toast(`No changes detected after ${maxAttempts} attempts`, '⏱️ Timeout', 3);
 }
 
 /**
