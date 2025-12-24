@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 23:30 PST
+ * Last Updated: 2025-12-24 00:15 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8415,12 +8415,25 @@ SUMMARY:
   PropertiesService.getUserProperties().setProperty('taskAnalysisData', JSON.stringify(taskDataForDialog));
 
   // Build suggested updates HTML with Apply buttons
+  const allStatuses = ['Waiting on Profitise', 'Waiting on Client', 'Waiting on Phonexa', 'Done'];
+
   let updatesHtml = '';
   if (suggestedUpdates.length > 0) {
     updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
     for (const update of suggestedUpdates) {
       const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}`;
       const statusBg = getStatusColor_(update.newStatus);
+
+      // Build alternative status buttons (exclude current and suggested)
+      const altStatuses = allStatuses.filter(s =>
+        s !== update.currentStatus && s !== update.newStatus
+      );
+      const escapedTaskName = escapeHtml_(update.taskName).replace(/'/g, "\\'");
+      const altButtonsHtml = altStatuses.map(s => {
+        const bg = getStatusColor_(s);
+        return `<button class="alt-btn" style="background: ${bg};" onclick="applyOverride('${update.itemId}', '${update.statusColumnId}', '${s}', '${escapedTaskName}', this)">${s}</button>`;
+      }).join('');
+
       updatesHtml += `
         <div class="update-row" id="update-${update.itemId}">
           <div class="update-task">
@@ -8434,6 +8447,7 @@ SUMMARY:
           <div class="update-actions">
             <button class="apply-btn" onclick="applyUpdate('${update.itemId}', '${update.statusColumnId}', '${escapeHtml_(update.newStatus)}', this)">✓ Apply</button>
             <button class="skip-btn" onclick="skipUpdate(this)">✗ Skip</button>
+            ${altButtonsHtml}
           </div>
         </div>
       `;
@@ -8461,6 +8475,9 @@ SUMMARY:
       .apply-btn:disabled { background: #ccc; cursor: not-allowed; }
       .skip-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
       .skip-btn:hover { background: #eee; }
+      .alt-btn { color: #333; border: 1px solid #ccc; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+      .alt-btn:hover { opacity: 0.8; }
+      .alt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
       .old-status { color: #666; text-decoration: line-through; }
       .task-link { color: #1a73e8; text-decoration: none; }
       .task-link:hover { text-decoration: underline; }
@@ -8510,6 +8527,41 @@ SUMMARY:
       function skipUpdate(btn) {
         btn.parentElement.parentElement.classList.add('skipped');
         btn.parentElement.innerHTML = '<em>Skipped</em>';
+      }
+
+      function applyOverride(itemId, statusColumnId, newStatus, taskName, btn) {
+        var comment = prompt('Why is "' + newStatus + '" more appropriate?\\n\\nThis will be saved to Settings for future reference.');
+        if (comment === null) return; // Cancelled
+
+        btn.disabled = true;
+        btn.textContent = '⏳...';
+
+        // First save the override comment to Settings
+        if (comment && comment.trim() !== '') {
+          google.script.run
+            .withFailureHandler(function(e) { console.log('Failed to save override: ' + e); })
+            .saveStatusOverride(taskName, newStatus, comment);
+        }
+
+        // Then apply the status update
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              btn.textContent = '✓ Applied';
+              btn.parentElement.parentElement.classList.add('applied');
+              showStatus('Override applied: ' + newStatus, 'success');
+            } else {
+              btn.textContent = '✗ Failed';
+              btn.disabled = false;
+              showStatus('Error: ' + result.error, 'error');
+            }
+          })
+          .withFailureHandler(function(error) {
+            btn.textContent = '✗ Failed';
+            btn.disabled = false;
+            showStatus('Error: ' + error.message, 'error');
+          })
+          .updateTaskStatus(itemId, statusColumnId, newStatus);
       }
 
       function showStatus(message, type) {
@@ -8638,4 +8690,72 @@ function updateTaskStatus(itemId, statusColumnId, newStatus) {
     Logger.log(`Error updating task: ${e.message}`);
     return { success: false, error: e.message };
   }
+}
+
+/**
+ * Save a status override comment to Settings sheet columns S and T (Task Analysis Settings)
+ * Appends the feedback to the existing "What to Look For" value for the matching task
+ */
+function saveStatusOverride(taskName, chosenStatus, comment) {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    Logger.log('Settings sheet not found, cannot save override');
+    return;
+  }
+
+  // Column S = 19 (Task Name), Column T = 20 (What to Look For)
+  const colS = 19;
+  const colT = 20;
+
+  const data = settingsSh.getDataRange().getValues();
+  const taskNameLower = taskName.toLowerCase();
+  let matchedRow = -1;
+  let inSection = false;
+
+  // Find the task row in "Task Analysis Settings" section
+  for (let i = 0; i < data.length; i++) {
+    const cellS = String(data[i][colS - 1] || '').trim();
+
+    // Check for section header
+    if (cellS.toLowerCase() === 'task analysis settings') {
+      inSection = true;
+      continue;
+    }
+
+    if (!inSection) continue;
+
+    // Skip column header row
+    if (cellS.toLowerCase() === 'task name') continue;
+
+    // Exit section on empty row
+    if (cellS === '' && String(data[i][colT - 1] || '').trim() === '') {
+      break;
+    }
+
+    // Check if this row matches our task (partial match)
+    if (cellS !== '' && taskNameLower.includes(cellS.toLowerCase())) {
+      matchedRow = i + 1; // 1-indexed
+      break;
+    }
+  }
+
+  if (matchedRow === -1) {
+    Logger.log(`Task not found in Settings: ${taskName}`);
+    return;
+  }
+
+  // Append feedback to existing value in column T
+  const existingValue = String(settingsSh.getRange(matchedRow, colT).getValue() || '');
+  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM/dd');
+  const feedback = `[${timestamp}: ${chosenStatus}] ${comment}`;
+
+  const newValue = existingValue
+    ? `${existingValue}; ${feedback}`
+    : feedback;
+
+  settingsSh.getRange(matchedRow, colT).setValue(newValue);
+
+  Logger.log(`Appended override feedback to row ${matchedRow}: "${feedback}"`);
 }
