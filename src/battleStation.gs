@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 22:45 PST
+ * Last Updated: 2025-12-23 22:55 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7191,6 +7191,63 @@ function getEmailResponseSettings_() {
 }
 
 /**
+ * Get task analysis settings from Settings sheet
+ * Format: "Task Analysis Settings" header, then "Task Name" | "What to Look For"
+ */
+function getTaskAnalysisSettings_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return { taskInstructions: {}, generalInstructions: '' };
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const taskInstructions = {};
+  let generalInstructions = '';
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Task Analysis Settings" header in any column
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'task analysis settings') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const taskCell = String(data[i][startCol] || '').trim();
+    const instructionsCell = String(data[i][startCol + 1] || '').trim();
+
+    // Skip header row
+    if (taskCell.toLowerCase() === 'task name') {
+      continue;
+    }
+
+    // Exit if we hit an empty row
+    if (taskCell === '' && instructionsCell === '') {
+      break;
+    }
+
+    // Parse settings
+    if (taskCell !== '' && instructionsCell !== '') {
+      if (taskCell.toLowerCase() === 'general') {
+        generalInstructions = instructionsCell;
+      } else {
+        taskInstructions[taskCell.toLowerCase()] = instructionsCell;
+      }
+    }
+  }
+
+  return { taskInstructions, generalInstructions };
+}
+
+/**
  * Get the full thread content formatted for Claude
  */
 function getThreadContent_(thread) {
@@ -8245,6 +8302,9 @@ function analyzeTasksFromEmails() {
 
   ss.toast('Analyzing with Claude AI...', '🤖 Task Analysis', 5);
 
+  // Get task analysis settings from Settings sheet
+  const taskSettings = getTaskAnalysisSettings_();
+
   // Build email summaries (most recent first, limit to 15)
   const emailSummaries = emails.slice(0, 15).map((e, i) => {
     // Handle labels - could be array or string
@@ -8256,10 +8316,20 @@ Labels: ${labelsStr}
 ---`;
   }).join('\n\n');
 
-  // Build task list
+  // Build task list with custom instructions from settings
   const taskList = openTasks.map((t, i) => {
-    return `${i + 1}. "${t.subject}" - Status: ${t.status}${t.taskDate ? ` (Date: ${t.taskDate})` : ''}`;
+    // Extract base task name (without vendor suffix) for matching settings
+    const baseTaskName = t.subject.replace(/ - [^-]+$/, '').trim().toLowerCase();
+    const customInstruction = taskSettings.taskInstructions[baseTaskName] || '';
+    const instructionNote = customInstruction ? `\n   [LOOK FOR: ${customInstruction}]` : '';
+    return `${i + 1}. "${t.subject}" - Status: ${t.status}${t.taskDate ? ` (Date: ${t.taskDate})` : ''}${instructionNote}`;
   }).join('\n');
+
+  // Build general instructions section
+  let customGuidance = '';
+  if (taskSettings.generalInstructions) {
+    customGuidance = `\nCUSTOM GUIDANCE FROM USER:\n${taskSettings.generalInstructions}\n`;
+  }
 
   // Build the prompt
   const prompt = `You are analyzing a vendor's email thread and their monday.com onboarding tasks to suggest status updates.
@@ -8277,8 +8347,9 @@ POSSIBLE TASK STATUSES:
 
 RECENT EMAILS (most recent first):
 ${emailSummaries}
-
+${customGuidance}
 IMPORTANT CONTEXT:
+- Pay close attention to any [LOOK FOR: ...] notes on tasks - these are custom instructions from the user
 - Onboarding tasks are typically done in a linear sequence
 - If later tasks are being worked on, earlier tasks may already be complete
 - Look for evidence in emails that suggests task status changes:
@@ -8286,16 +8357,6 @@ IMPORTANT CONTEXT:
   * If they requested something and we haven't done it → "Waiting on Profitise"
   * If we mention Phonexa needs to do something → "Waiting on Phonexa"
   * If something is confirmed done in emails → "Done"
-
-Common task patterns:
-- "Signup on Profitise Portal" - Done when they have portal access
-- "Send Projections/Determine Pricing" - Done when pricing is agreed
-- "Sign Contract" - Done when contract is executed, Waiting on Client if sent to them
-- "Approve Landing Pages" - Usually involves back and forth
-- "Setup Delivery Methods" - Done when we've configured their integration, Waiting on Client if we sent test leads
-- "Turn Off Test Mode" - Done when we flip them to live
-- "Add to TCPA Lists" - Internal/External lists for compliance
-- "Go Live" - Final step, they're actively receiving leads
 
 Analyze the emails and provide your recommendations in this EXACT format:
 
