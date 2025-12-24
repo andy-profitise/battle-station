@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 23:57 PST
+ * Last Updated: 2025-12-24 00:05 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7549,125 +7549,75 @@ function createDraftAndGetUrl_(thread, responseBody) {
   Logger.log(`External (To): ${toRecipients || '(none)'}`);
   Logger.log(`Internal (Cc): ${ccRecipients || '(none)'}`);
   Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
-  Logger.log(`Last message From: ${messages[messages.length - 1].getFrom()}`);
-  Logger.log(`Last message To: ${messages[messages.length - 1].getTo()}`);
-  Logger.log(`Last message Cc: ${messages[messages.length - 1].getCc() || '(none)'}`);
+  Logger.log(`Last message From: ${lastMessage.getFrom()}`);
+  Logger.log(`Last message To: ${lastMessage.getTo()}`);
+  Logger.log(`Last message Cc: ${lastMessage.getCc() || '(none)'}`);
   Logger.log('=============================');
 
-  // Step 1: Create draft using createDraftReplyAll for proper threading AND quoted message
-  const draft = lastMessage.createDraftReplyAll(responseBody);
-  const draftId = draft.getId();
+  // Get threading headers from the last message for proper reply threading
+  const lastMessageId = lastMessage.getHeader('Message-ID') || lastMessage.getHeader('Message-Id');
+  const existingRefs = lastMessage.getHeader('References') || '';
 
-  // Step 2: Try to update recipients using Gmail API
-  // If raw format fails, we'll fall back to the basic draft (recipients may need manual adjustment)
-  let useBasicDraft = false;
-
-  try {
-    // Small delay to ensure draft is fully created
-    Utilities.sleep(500);
-
-    // Step 2a: Get the draft to get the message ID
-    const draftData = Gmail.Users.Drafts.get('me', draftId);
-    Logger.log(`Draft data keys: ${Object.keys(draftData || {}).join(', ')}`);
-    Logger.log(`Draft message object: ${JSON.stringify(draftData?.message)}`);
-
-    const messageId = draftData && draftData.message ? draftData.message.id : null;
-    Logger.log(`Draft message ID: ${messageId}`);
-
-    if (!messageId) {
-      Logger.log('Could not get message ID from draft');
-      throw new Error('No message ID');
-    }
-
-    // Step 2b: Get the message in raw format using Messages.get
-    Logger.log(`Calling Messages.get with messageId: ${messageId}`);
-    const messageData = Gmail.Users.Messages.get('me', messageId, { format: 'raw' });
-    Logger.log(`Message data keys: ${Object.keys(messageData || {}).join(', ')}`);
-    Logger.log(`Message data threadId: ${messageData?.threadId}`);
-    Logger.log(`Message data raw type: ${typeof messageData?.raw}`);
-    if (messageData?.raw) {
-      Logger.log(`Message data raw constructor: ${messageData.raw.constructor?.name || 'unknown'}`);
-    }
-
-    let rawEncoded = messageData ? messageData.raw : null;
-    Logger.log(`Raw encoded initial: length=${rawEncoded ? (rawEncoded.length || 'no length prop') : 'null'}, type=${typeof rawEncoded}`);
-
-    // If it's a Blob or byte array, try to get string from it
-    if (rawEncoded && typeof rawEncoded === 'object') {
-      Logger.log(`Raw is object. Keys: ${Object.keys(rawEncoded).slice(0, 10).join(', ')}`);
-      if (typeof rawEncoded.getDataAsString === 'function') {
-        // It's a Blob
-        Logger.log('Raw is a Blob, getting string...');
-        rawEncoded = rawEncoded.getDataAsString();
-      } else if (Array.isArray(rawEncoded) || rawEncoded.byteLength !== undefined) {
-        // It's a byte array or typed array
-        Logger.log('Raw is byte array, converting...');
-        rawEncoded = Utilities.newBlob(rawEncoded).getDataAsString();
-      } else {
-        // Log the object structure
-        const sample = JSON.stringify(rawEncoded).substring(0, 300);
-        Logger.log(`Raw object sample: ${sample}`);
-        // Try to convert to string anyway
-        rawEncoded = String(rawEncoded);
-      }
-      Logger.log(`After object conversion: length=${rawEncoded.length}, type=${typeof rawEncoded}`);
-    }
-
-    if (rawEncoded && typeof rawEncoded === 'string' && rawEncoded.length > 0) {
-      // Clean the base64url string - remove any whitespace/newlines and fix padding
-      rawEncoded = rawEncoded.replace(/[\s\n\r]/g, '');
-      while (rawEncoded.length % 4 !== 0) {
-        rawEncoded += '=';
-      }
-
-      // Decode the raw message (base64url -> string)
-      let rawBytes;
-      try {
-        rawBytes = Utilities.base64DecodeWebSafe(rawEncoded);
-      } catch (e) {
-        const base64Standard = rawEncoded.replace(/-/g, '+').replace(/_/g, '/');
-        rawBytes = Utilities.base64Decode(base64Standard);
-      }
-      let rawMessage = Utilities.newBlob(rawBytes).getDataAsString('UTF-8');
-
-      // Step 3: Update recipient headers in the raw message
-      const headerBodySplit = rawMessage.indexOf('\r\n\r\n');
-      let headerSection = rawMessage.substring(0, headerBodySplit);
-      const bodySection = rawMessage.substring(headerBodySplit);
-
-      // Remove existing To, Cc, Bcc headers
-      headerSection = headerSection.replace(/^To:.*(\r\n[ \t].*)*\r\n/mi, '');
-      headerSection = headerSection.replace(/^Cc:.*(\r\n[ \t].*)*\r\n/mi, '');
-      headerSection = headerSection.replace(/^Bcc:.*(\r\n[ \t].*)*\r\n/mi, '');
-
-      // Add our recipient headers at the start
-      let newHeaders = '';
-      if (toRecipients) newHeaders += `To: ${toRecipients}\r\n`;
-      if (ccRecipients) newHeaders += `Cc: ${ccRecipients}\r\n`;
-      if (bccRecipients) newHeaders += `Bcc: ${bccRecipients}\r\n`;
-
-      // Rebuild and update the message
-      rawMessage = newHeaders + headerSection + bodySection;
-      const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
-
-      Gmail.Users.Drafts.update(
-        { message: { raw: encodedMessage, threadId: thread.getId() } },
-        'me',
-        draftId
-      );
-    } else {
-      Logger.log('Gmail API did not return raw data, using basic draft');
-      useBasicDraft = true;
-    }
-  } catch (e) {
-    Logger.log(`Gmail API update failed: ${e.message}, using basic draft`);
-    useBasicDraft = true;
+  // Build References header: existing refs + last message ID
+  let referencesHeader = existingRefs;
+  if (lastMessageId) {
+    referencesHeader = referencesHeader ? `${referencesHeader} ${lastMessageId}` : lastMessageId;
   }
 
-  if (useBasicDraft) {
-    // Log warning - recipients may need manual adjustment in Gmail
-    Logger.log('Warning: Draft created but recipients could not be customized. Manual adjustment may be needed.');
+  // Get subject (add Re: if not already there)
+  let subject = thread.getFirstMessageSubject();
+  if (!subject.toLowerCase().startsWith('re:')) {
+    subject = 'Re: ' + subject;
   }
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  const lastMsgBody = lastMessage.getPlainBody() || '';
+
+  // Format date for quote header
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+  const quotedBody = lastMsgBody.split('\n').map(line => '> ' + line).join('\n');
+  const quoteHeader = `\n\nOn ${dateStr}, ${lastMsgFrom} wrote:\n`;
+
+  // Full email body with quote
+  const fullBody = responseBody + quoteHeader + quotedBody;
+
+  // Build RFC 2822 message from scratch
+  const boundary = 'boundary_' + Utilities.getUuid();
+  let rawMessage = '';
+
+  // Headers
+  rawMessage += `From: ${myEmail}\r\n`;
+  if (toRecipients) rawMessage += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
+  rawMessage += `Subject: =?UTF-8?B?${Utilities.base64Encode(subject, Utilities.Charset.UTF_8)}?=\r\n`;
+  if (lastMessageId) rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
+  if (referencesHeader) rawMessage += `References: ${referencesHeader}\r\n`;
+  rawMessage += `MIME-Version: 1.0\r\n`;
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n`;
+  rawMessage += `Content-Transfer-Encoding: base64\r\n`;
+  rawMessage += `\r\n`;
+
+  // Body (base64 encoded)
+  rawMessage += Utilities.base64Encode(fullBody, Utilities.Charset.UTF_8);
+
+  // Encode the entire message for Gmail API
+  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+
+  // Create draft via Gmail API with proper threading
+  const draftResource = {
+    message: {
+      raw: encodedMessage,
+      threadId: thread.getId()
+    }
+  };
+
+  Logger.log('Creating draft via Gmail API with custom recipients...');
+  const draft = Gmail.Users.Drafts.create(draftResource, 'me');
+  const draftId = draft.id;
+  Logger.log(`Draft created with ID: ${draftId}`);
 
   // Get the message ID for the URL
   const updatedDraft = Gmail.Users.Drafts.get('me', draftId);
