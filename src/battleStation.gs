@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 22:55 PST
+ * Last Updated: 2025-12-23 23:21 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8284,6 +8284,12 @@ function analyzeTasksFromEmails() {
 
   ss.toast('Fetching emails and tasks...', '🤖 Task Analysis', 3);
 
+  // Get vendor info including status
+  const contactData = getContactsForVendor_(vendor, source);
+  const vendorStatus = contactData.liveStatus || 'Unknown';
+  const hasContacts = (contactData.contacts || []).length > 0;
+  const hasPhonexaLink = !!contactData.phonexaLink;
+
   // Get emails for this vendor
   const emails = getEmailsForVendor_(vendor, listRow);
   if (!emails || emails.length === 0) {
@@ -8305,14 +8311,17 @@ function analyzeTasksFromEmails() {
   // Get task analysis settings from Settings sheet
   const taskSettings = getTaskAnalysisSettings_();
 
-  // Build email summaries (most recent first, limit to 15)
+  // Build email summaries with content snippets (most recent first, limit to 15)
   const emailSummaries = emails.slice(0, 15).map((e, i) => {
     // Handle labels - could be array or string
     const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || '');
+    // Include snippet for context (truncate if too long)
+    const snippet = (e.snippet || '').substring(0, 300);
     return `EMAIL ${i + 1} (${e.date}):
 Subject: ${e.subject}
 From: ${e.from || 'Unknown'}
 Labels: ${labelsStr}
+Preview: ${snippet}
 ---`;
   }).join('\n\n');
 
@@ -8335,6 +8344,9 @@ Labels: ${labelsStr}
   const prompt = `You are analyzing a vendor's email thread and their monday.com onboarding tasks to suggest status updates.
 
 VENDOR: ${vendor}
+VENDOR STATUS: ${vendorStatus}
+HAS CONTACTS IN MONDAY.COM: ${hasContacts ? 'Yes' : 'No'}
+HAS PHONEXA LINK: ${hasPhonexaLink ? 'Yes' : 'No'}
 
 CURRENT OPEN TASKS:
 ${taskList}
