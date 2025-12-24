@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:25 PST
+ * Last Updated: 2025-12-24 00:35 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1745,9 +1745,16 @@ function loadVendorData(vendorIndex, options) {
         .setWrap(true)
         .setFontColor('#1a73e8');
       
-      // Status - append date if present (e.g., "Waiting on Profitise - 2025-12-10")
-      // Status - append date if present (but not for Done tasks)
-      const statusDisplay = (task.taskDate && !task.isDone) ? `${task.status} - ${task.taskDate}` : task.status;
+      // Status display:
+      // - For Done tasks: show "Done - YYYY-MM-DD" (lastUpdated date)
+      // - For non-Done tasks with taskDate: show "Status - taskDate"
+      // - Otherwise: just show status
+      let statusDisplay = task.status;
+      if (task.isDone && task.lastUpdated) {
+        statusDisplay = `Done - ${task.lastUpdated}`;
+      } else if (task.taskDate && !task.isDone) {
+        statusDisplay = `${task.status} - ${task.taskDate}`;
+      }
       bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
       const taskDateCell = bsSh.getRange(currentRow, 3);
       taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
@@ -2817,6 +2824,7 @@ function getTasksForVendor_(vendor, listRow) {
       let tempInd = null;
       let taskDate = '';  // Date from timeline column
       let statusColumnId = 'status';  // Default, will be updated if found
+      let lastUpdated = '';  // Last Updated column
 
       for (const col of item.column_values) {
         // Status column
@@ -2846,6 +2854,14 @@ function getTasksForVendor_(vendor, listRow) {
             taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
           }
         }
+        // Last Updated column
+        else if (col.id === 'pulse_updated_mkyyesw') {
+          if (col.text && col.text.trim()) {
+            // Format is typically "YYYY-MM-DD HH:MM:SS" or similar, extract just the date
+            const datePart = col.text.split(' ')[0];
+            lastUpdated = datePart;
+          }
+        }
       }
       
       const createdDate = new Date(item.created_at);
@@ -2858,6 +2874,7 @@ function getTasksForVendor_(vendor, listRow) {
         subject: itemName,
         status: status || 'No Status',
         taskDate: taskDate,  // Date from timeline column
+        lastUpdated: lastUpdated,  // Last Updated column
         created: createdFormatted,
         project: projectName || `Group: ${groupTitle}`,
         isDone: (status.toLowerCase() === 'done'),
