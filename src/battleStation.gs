@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:45 PST
+ * Last Updated: 2025-12-24 00:50 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1339,7 +1339,9 @@ function loadVendorData(vendorIndex, options) {
       // Check if this doc is in the primary "Profitise > Vendor" folder
       const folderPath = (doc.folderPath || '').toLowerCase();
       const isInProfitiseVendorFolder = folderPath.includes('profitise/') && folderPath.includes(vendorLower);
-      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder;
+      const isInW9Folder = folderPath.includes('w-9') || folderPath.includes('w9');
+      // Don't gray out W-9 folder documents - they're different document types
+      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder && !isInW9Folder;
 
       // Document name - clickable link to Box
       const docName = doc.name.length > 40 ? doc.name.substring(0, 37) + '...' : doc.name;
