@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 01:30 PST
+ * Last Updated: 2025-12-24 01:35 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7189,15 +7189,6 @@ function getSelectedEmailThread_() {
     throw new Error('A(I)DEN sheet not found');
   }
 
-  const selection = bsSh.getSelection();
-  const activeCell = selection.getCurrentCell();
-
-  if (!activeCell) {
-    throw new Error('No cell selected. Please click on an email row first.');
-  }
-
-  const row = activeCell.getRow();
-
   // Check if we're in the emails section by looking for the subject column (column A)
   // and checking if the row is after the EMAILS header
   const values = bsSh.getDataRange().getValues();
@@ -7219,15 +7210,23 @@ function getSelectedEmailThread_() {
   // Email rows start at emailsHeaderRow + 2
   const emailDataStartRow = emailsHeaderRow + 2;
 
-  if (row < emailDataStartRow) {
-    throw new Error('Please select an email row (click on a Subject)');
+  // Determine which row to use - selected row if valid, otherwise first email row
+  const selection = bsSh.getSelection();
+  const activeCell = selection.getCurrentCell();
+  let row = emailDataStartRow; // Default to first email (newest)
+
+  if (activeCell) {
+    const selectedRow = activeCell.getRow();
+    if (selectedRow >= emailDataStartRow) {
+      row = selectedRow; // Use selected row if it's in the email section
+    }
   }
 
-  // Get the subject from the selected row
+  // Get the subject from the row
   const subject = String(bsSh.getRange(row, 1).getValue() || '').trim();
 
   if (!subject || subject === 'No emails found') {
-    throw new Error('No valid email selected');
+    throw new Error('No emails available');
   }
 
   // Try to get the thread ID from the hyperlink formula
