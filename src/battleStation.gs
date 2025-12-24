@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 23:21 PST
+ * Last Updated: 2025-12-23 23:27 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2744,11 +2744,13 @@ function getTasksForVendor_(vendor, listRow) {
       let projectName = '';
       let tempInd = null;
       let taskDate = '';  // Date from timeline column
-      
+      let statusColumnId = 'status';  // Default, will be updated if found
+
       for (const col of item.column_values) {
         // Status column
         if (col.id === 'status' || col.id === 'status4' || col.id === 'status_1') {
           status = col.text || '';
+          statusColumnId = col.id;  // Remember which column has the status
         }
         // Project column (board relation)
         else if (col.id === BS_CFG.TASKS_PROJECT_COLUMN) {
@@ -2779,13 +2781,15 @@ function getTasksForVendor_(vendor, listRow) {
       const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
       
       tasks.push({
+        itemId: item.id,  // Monday.com item ID for updates
+        statusColumnId: statusColumnId,  // Status column ID for updates
         subject: itemName,
         status: status || 'No Status',
         taskDate: taskDate,  // Date from timeline column
         created: createdFormatted,
         project: projectName || `Group: ${groupTitle}`,
         isDone: (status.toLowerCase() === 'done'),
-        
+
         // Sorting fields
         groupId: groupId,
         groupPriority: groupPriority[groupId] || -1,
@@ -8397,60 +8401,241 @@ SUMMARY:
   Logger.log(`Emails analyzed: ${Math.min(emails.length, 15)}`);
   Logger.log(`Claude response: ${response.content}`);
 
-  // Build results HTML
-  const analysisHtml = (response.content || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-    .replace(/→/g, '→')
-    .replace(/"([^"]+)"/g, '<strong>"$1"</strong>')
-    .replace(/TASK UPDATES:/g, '<h3 style="color: #1a73e8; margin-top: 15px;">📋 TASK UPDATES:</h3>')
-    .replace(/NO CHANGE NEEDED:/g, '<h3 style="color: #666; margin-top: 15px;">✓ NO CHANGE NEEDED:</h3>')
-    .replace(/SUMMARY:/g, '<h3 style="color: #333; margin-top: 15px;">📝 SUMMARY:</h3>')
-    .replace(/Reason:/g, '<em style="color: #666;">Reason:</em>')
-    .replace(/Waiting on Client/g, '<span style="background: #fff2cc; padding: 2px 6px; border-radius: 3px;">Waiting on Client</span>')
-    .replace(/Waiting on Profitise/g, '<span style="background: #e3f2fd; padding: 2px 6px; border-radius: 3px;">Waiting on Profitise</span>')
-    .replace(/Waiting on Phonexa/g, '<span style="background: #ffcdd2; padding: 2px 6px; border-radius: 3px;">Waiting on Phonexa</span>')
-    .replace(/Done/g, '<span style="background: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Done</span>');
+  // Parse Claude's response to extract suggested updates
+  const suggestedUpdates = parseTaskSuggestions_(response.content, openTasks);
+  Logger.log(`Parsed ${suggestedUpdates.length} suggested updates`);
+
+  // Store task data for the dialog to use
+  const taskDataForDialog = openTasks.map(t => ({
+    itemId: t.itemId,
+    statusColumnId: t.statusColumnId,
+    subject: t.subject,
+    currentStatus: t.status
+  }));
+  PropertiesService.getUserProperties().setProperty('taskAnalysisData', JSON.stringify(taskDataForDialog));
+
+  // Build suggested updates HTML with Apply buttons
+  let updatesHtml = '';
+  if (suggestedUpdates.length > 0) {
+    updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
+    for (const update of suggestedUpdates) {
+      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}`;
+      const statusBg = getStatusColor_(update.newStatus);
+      updatesHtml += `
+        <div class="update-row" id="update-${update.itemId}">
+          <div class="update-task">
+            <a href="${taskLink}" target="_blank" class="task-link">🔗 ${escapeHtml_(update.taskName)}</a>
+          </div>
+          <div class="update-change">
+            <span class="old-status">${escapeHtml_(update.currentStatus)}</span> →
+            <span style="background: ${statusBg}; padding: 2px 6px; border-radius: 3px;">${escapeHtml_(update.newStatus)}</span>
+          </div>
+          <div class="update-reason"><em>Reason:</em> ${escapeHtml_(update.reason)}</div>
+          <div class="update-actions">
+            <button class="apply-btn" onclick="applyUpdate('${update.itemId}', '${update.statusColumnId}', '${escapeHtml_(update.newStatus)}', this)">✓ Apply</button>
+            <button class="skip-btn" onclick="skipUpdate(this)">✗ Skip</button>
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    updatesHtml = '<h3 style="color: #666; margin-top: 15px;">✓ No updates suggested</h3>';
+  }
+
 
   const html = `
     <style>
       body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
       h2 { color: #1a73e8; margin-bottom: 10px; }
+      h3 { margin-top: 20px; margin-bottom: 10px; }
       .summary-box { background: #f8f9fa; padding: 12px; border-radius: 5px; margin-bottom: 15px; }
-      .analysis { background: white; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+      .update-row { background: #fff; border: 1px solid #ddd; padding: 12px; margin-bottom: 10px; border-radius: 5px; }
+      .update-row.applied { background: #e8f5e9; border-color: #4caf50; }
+      .update-row.skipped { background: #f5f5f5; opacity: 0.6; }
+      .update-task { font-weight: bold; margin-bottom: 5px; }
+      .update-change { margin-bottom: 5px; }
+      .update-reason { color: #666; font-size: 12px; margin-bottom: 8px; }
+      .update-actions { display: flex; gap: 8px; }
+      .apply-btn { background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+      .apply-btn:hover { background: #45a049; }
+      .apply-btn:disabled { background: #ccc; cursor: not-allowed; }
+      .skip-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+      .skip-btn:hover { background: #eee; }
+      .old-status { color: #666; text-decoration: line-through; }
+      .task-link { color: #1a73e8; text-decoration: none; }
+      .task-link:hover { text-decoration: underline; }
       .task-list { background: #fafafa; padding: 10px; margin-top: 15px; border-radius: 5px; }
       .task-item { padding: 5px 0; border-bottom: 1px solid #eee; }
-      .note { color: #666; font-style: italic; margin-top: 15px; font-size: 12px; }
+      .summary-section { background: #f0f7ff; padding: 12px; border-radius: 5px; margin-top: 15px; }
+      .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; }
+      .status-msg.success { background: #e8f5e9; color: #2e7d32; display: block; }
+      .status-msg.error { background: #ffebee; color: #c62828; display: block; }
     </style>
 
     <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
 
     <div class="summary-box">
-      <strong>Analyzed:</strong> ${Math.min(emails.length, 15)} emails, ${openTasks.length} open tasks<br>
-      <strong>Note:</strong> Review these suggestions and update tasks in monday.com as needed.
+      <strong>Analyzed:</strong> ${Math.min(emails.length, 15)} emails, ${openTasks.length} open tasks
     </div>
 
-    <div class="analysis">
-      ${analysisHtml}
-    </div>
+    <div id="status-message" class="status-msg"></div>
 
-    <div class="task-list">
-      <h4>Current Open Tasks:</h4>
-      ${openTasks.map(t => `<div class="task-item">• ${escapeHtml_(t.subject)} - <em>${escapeHtml_(t.status)}</em></div>`).join('')}
-    </div>
+    ${updatesHtml}
 
-    <p class="note">
-      💡 To update tasks, open <a href="https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}" target="_blank">monday.com Tasks board</a>
-      and search for "${escapeHtml_(vendor)}".
-    </p>
+    <script>
+      function applyUpdate(itemId, statusColumnId, newStatus, btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Updating...';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              btn.textContent = '✓ Applied';
+              btn.parentElement.parentElement.classList.add('applied');
+              showStatus('Updated: ' + newStatus, 'success');
+            } else {
+              btn.textContent = '✗ Failed';
+              btn.disabled = false;
+              showStatus('Error: ' + result.error, 'error');
+            }
+          })
+          .withFailureHandler(function(error) {
+            btn.textContent = '✗ Failed';
+            btn.disabled = false;
+            showStatus('Error: ' + error.message, 'error');
+          })
+          .updateTaskStatus(itemId, statusColumnId, newStatus);
+      }
+
+      function skipUpdate(btn) {
+        btn.parentElement.parentElement.classList.add('skipped');
+        btn.parentElement.innerHTML = '<em>Skipped</em>';
+      }
+
+      function showStatus(message, type) {
+        var el = document.getElementById('status-message');
+        el.textContent = message;
+        el.className = 'status-msg ' + type;
+        setTimeout(function() { el.className = 'status-msg'; }, 5000);
+      }
+    </script>
   `;
 
   // Show dialog
   const htmlOutput = HtmlService.createHtmlOutput(html)
-    .setWidth(700)
-    .setHeight(600);
+    .setWidth(850)
+    .setHeight(750);
 
   ui.showModalDialog(htmlOutput, '🤖 Task Status Analysis');
+}
+
+/**
+ * Parse Claude's response to extract task update suggestions
+ */
+function parseTaskSuggestions_(claudeResponse, openTasks) {
+  const suggestions = [];
+
+  // Match patterns like: - "Task Name" → New Status
+  const updatePattern = /-\s*"([^"]+)"\s*→\s*(Waiting on Client|Waiting on Profitise|Waiting on Phonexa|Done)/gi;
+
+  // Also capture the reason that follows
+  const lines = claudeResponse.split('\n');
+  let currentUpdate = null;
+
+  for (const line of lines) {
+    const match = line.match(/-\s*"([^"]+)"\s*→\s*(Waiting on Client|Waiting on Profitise|Waiting on Phonexa|Done)/i);
+    if (match) {
+      // Find the matching task to get itemId and statusColumnId
+      const taskName = match[1];
+      const newStatus = match[2];
+
+      const matchingTask = openTasks.find(t =>
+        t.subject.toLowerCase().includes(taskName.toLowerCase()) ||
+        taskName.toLowerCase().includes(t.subject.replace(/ - [^-]+$/, '').toLowerCase())
+      );
+
+      if (matchingTask) {
+        currentUpdate = {
+          taskName: matchingTask.subject,
+          itemId: matchingTask.itemId,
+          statusColumnId: matchingTask.statusColumnId,
+          currentStatus: matchingTask.status,
+          newStatus: newStatus,
+          reason: ''
+        };
+        suggestions.push(currentUpdate);
+      }
+    } else if (currentUpdate && line.toLowerCase().includes('reason:')) {
+      // Extract reason
+      currentUpdate.reason = line.replace(/.*reason:\s*/i, '').trim();
+    }
+  }
+
+  return suggestions;
+}
+
+/**
+ * Get background color for a status
+ */
+function getStatusColor_(status) {
+  const statusLower = (status || '').toLowerCase();
+  if (statusLower.includes('client')) return '#fff2cc';
+  if (statusLower.includes('profitise')) return '#e3f2fd';
+  if (statusLower.includes('phonexa')) return '#ffcdd2';
+  if (statusLower === 'done') return '#c8e6c9';
+  return '#f5f5f5';
+}
+
+/**
+ * Update a task's status in Monday.com (called from dialog)
+ */
+function updateTaskStatus(itemId, statusColumnId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  Logger.log(`Updating task ${itemId} status to: ${newStatus}`);
+
+  // Monday.com status columns use label values, need to format as JSON
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value (
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_id: "${statusColumnId}",
+        value: "${escapedValue}"
+      ) { id }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: mutation }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    Logger.log(`Monday.com response: ${JSON.stringify(result)}`);
+
+    if (result.errors && result.errors.length > 0) {
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task: ${e.message}`);
+    return { success: false, error: e.message };
+  }
 }
