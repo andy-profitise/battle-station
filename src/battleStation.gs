@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:55 PST
+ * Last Updated: 2025-12-24 01:05 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7559,6 +7559,29 @@ function createDraftAndGetUrl_(thread, responseBody) {
     return match ? match[1].toLowerCase() : str.toLowerCase().trim();
   };
 
+  // Helper to split email addresses respecting quoted names (handles "Name, Inc" <email>)
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
   // Collect all unique participants from the thread (excluding me)
   const allParticipants = new Set();
 
@@ -7567,8 +7590,12 @@ function createDraftAndGetUrl_(thread, responseBody) {
     const to = msg.getTo() || '';
     const cc = msg.getCc() || '';
 
-    // Parse all addresses
-    const allAddresses = [from, to, cc].join(',').split(',').map(s => s.trim()).filter(s => s);
+    // Parse all addresses (respecting quoted names with commas)
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
 
     for (const addr of allAddresses) {
       const email = extractEmail(addr);
@@ -7592,9 +7619,19 @@ function createDraftAndGetUrl_(thread, responseBody) {
   }
 
   // Build recipient strings
-  const toRecipients = externalRecipients.join(', ');
-  let ccRecipients = internalRecipients.join(', ');
+  // If no external recipients, internal go to To instead of Cc
+  let toRecipients = '';
+  let ccRecipients = '';
   let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    // Normal case: external to To, internal to Cc
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    // All internal: put them in To
+    toRecipients = internalRecipients.join(', ');
+  }
 
   // Check if sales@profitise.com should be added
   const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
@@ -7603,8 +7640,10 @@ function createDraftAndGetUrl_(thread, responseBody) {
   if (!salesAlreadyIncluded) {
     if (ccRecipients) {
       bccRecipients = 'sales@profitise.com';
+    } else if (toRecipients) {
+      bccRecipients = 'sales@profitise.com';
     } else {
-      ccRecipients = 'sales@profitise.com';
+      toRecipients = 'sales@profitise.com';
     }
   }
 
