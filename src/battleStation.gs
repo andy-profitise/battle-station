@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 10:49 PST
+ * Last Updated: 2025-12-23 16:26 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1191,7 +1191,23 @@ function loadVendorData(vendorIndex, options) {
         }
         Logger.log(`Combined Box results: ${boxDocs.length} unique documents`);
       }
-      
+
+      // Dedupe documents with same id + folder + modified + matchedOn
+      // (Box API sometimes returns duplicates)
+      const seen = new Set();
+      const beforeDedupeCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => {
+        const key = `${doc.id}|${doc.folderName || ''}|${doc.modifiedAt || ''}|${doc.matchedOn || ''}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+      if (beforeDedupeCount !== boxDocs.length) {
+        Logger.log(`Deduped Box results: ${beforeDedupeCount} -> ${boxDocs.length}`);
+      }
+
       // Apply blacklist - remove files blacklisted for this vendor
       if (boxBlacklist[vendor]) {
         const blacklistedIds = boxBlacklist[vendor];
@@ -7381,6 +7397,18 @@ function createDraftAndGetUrl_(thread, responseBody) {
     }
   }
 
+  // Log computed recipients
+  Logger.log('=== RECIPIENT CALCULATION ===');
+  Logger.log(`My email: ${myEmail}`);
+  Logger.log(`All participants (${allParticipants.size}): ${[...allParticipants].join('; ')}`);
+  Logger.log(`External (To): ${toRecipients || '(none)'}`);
+  Logger.log(`Internal (Cc): ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log(`Last message From: ${messages[messages.length - 1].getFrom()}`);
+  Logger.log(`Last message To: ${messages[messages.length - 1].getTo()}`);
+  Logger.log(`Last message Cc: ${messages[messages.length - 1].getCc() || '(none)'}`);
+  Logger.log('=============================');
+
   // Step 1: Create draft using createDraftReplyAll for proper threading AND quoted message
   const draft = lastMessage.createDraftReplyAll(responseBody);
   const draftId = draft.getId();
@@ -7395,6 +7423,9 @@ function createDraftAndGetUrl_(thread, responseBody) {
 
     // Step 2a: Get the draft to get the message ID
     const draftData = Gmail.Users.Drafts.get('me', draftId);
+    Logger.log(`Draft data keys: ${Object.keys(draftData || {}).join(', ')}`);
+    Logger.log(`Draft message object: ${JSON.stringify(draftData?.message)}`);
+
     const messageId = draftData && draftData.message ? draftData.message.id : null;
     Logger.log(`Draft message ID: ${messageId}`);
 
@@ -7404,14 +7435,37 @@ function createDraftAndGetUrl_(thread, responseBody) {
     }
 
     // Step 2b: Get the message in raw format using Messages.get
+    Logger.log(`Calling Messages.get with messageId: ${messageId}`);
     const messageData = Gmail.Users.Messages.get('me', messageId, { format: 'raw' });
-    let rawEncoded = messageData ? messageData.raw : null;
-    Logger.log(`Raw encoded length: ${rawEncoded ? rawEncoded.length : 'null'}, type: ${typeof rawEncoded}`);
+    Logger.log(`Message data keys: ${Object.keys(messageData || {}).join(', ')}`);
+    Logger.log(`Message data threadId: ${messageData?.threadId}`);
+    Logger.log(`Message data raw type: ${typeof messageData?.raw}`);
+    if (messageData?.raw) {
+      Logger.log(`Message data raw constructor: ${messageData.raw.constructor?.name || 'unknown'}`);
+    }
 
-    // Convert to string if needed (API might return different types)
-    if (rawEncoded && typeof rawEncoded !== 'string') {
-      rawEncoded = String(rawEncoded);
-      Logger.log(`Converted to string, new length: ${rawEncoded.length}`);
+    let rawEncoded = messageData ? messageData.raw : null;
+    Logger.log(`Raw encoded initial: length=${rawEncoded ? (rawEncoded.length || 'no length prop') : 'null'}, type=${typeof rawEncoded}`);
+
+    // If it's a Blob or byte array, try to get string from it
+    if (rawEncoded && typeof rawEncoded === 'object') {
+      Logger.log(`Raw is object. Keys: ${Object.keys(rawEncoded).slice(0, 10).join(', ')}`);
+      if (typeof rawEncoded.getDataAsString === 'function') {
+        // It's a Blob
+        Logger.log('Raw is a Blob, getting string...');
+        rawEncoded = rawEncoded.getDataAsString();
+      } else if (Array.isArray(rawEncoded) || rawEncoded.byteLength !== undefined) {
+        // It's a byte array or typed array
+        Logger.log('Raw is byte array, converting...');
+        rawEncoded = Utilities.newBlob(rawEncoded).getDataAsString();
+      } else {
+        // Log the object structure
+        const sample = JSON.stringify(rawEncoded).substring(0, 300);
+        Logger.log(`Raw object sample: ${sample}`);
+        // Try to convert to string anyway
+        rawEncoded = String(rawEncoded);
+      }
+      Logger.log(`After object conversion: length=${rawEncoded.length}, type=${typeof rawEncoded}`);
     }
 
     if (rawEncoded && typeof rawEncoded === 'string' && rawEncoded.length > 0) {
