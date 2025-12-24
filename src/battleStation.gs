@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 07:50 PST
+ * Last Updated: 2025-12-24 08:15 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -3961,12 +3961,23 @@ function battleStationQuickRefresh() {
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
     SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
-  
+
+  // Check for pending archive threads (from Email Responses) and archive if I sent the reply
+  const didArchive = checkAndArchivePendingThreads_();
+  if (didArchive) {
+    // Threads were archived - need to wait for Gmail to update, then refresh
+    ss.toast('Archived sent emails, waiting for Gmail to update...', '📬 Auto-Archive', 2);
+    Utilities.sleep(2000);
+    // Do a Quick Refresh Until Changed to catch the archive
+    battleStationQuickRefreshUntilChanged();
+    return;
+  }
+
   ss.toast('Refreshing emails only...', '⚡ Quick Refresh', 2);
   
   // Get current vendor info
@@ -7528,7 +7539,7 @@ ${threadContent}
 
 /**
  * Create Gmail draft and return the URL
- * Uses createDraftReplyAll for proper threading, then updates recipients via Gmail API
+ * Uses createDraftReplyAll for proper threading, then updates content via Gmail API
  */
 function createDraftAndGetUrl_(thread, responseBody) {
   const messages = thread.getMessages();
@@ -7664,26 +7675,7 @@ function createDraftAndGetUrl_(thread, responseBody) {
   Logger.log(`External (To): ${toRecipients || '(none)'}`);
   Logger.log(`Internal (Cc): ${ccRecipients || '(none)'}`);
   Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
-  Logger.log(`Last message From: ${lastMessage.getFrom()}`);
-  Logger.log(`Last message To: ${lastMessage.getTo()}`);
-  Logger.log(`Last message Cc: ${lastMessage.getCc() || '(none)'}`);
   Logger.log('=============================');
-
-  // Get threading headers from the last message for proper reply threading
-  const lastMessageId = lastMessage.getHeader('Message-ID') || lastMessage.getHeader('Message-Id');
-  const existingRefs = lastMessage.getHeader('References') || '';
-
-  // Build References header: existing refs + last message ID
-  let referencesHeader = existingRefs;
-  if (lastMessageId) {
-    referencesHeader = referencesHeader ? `${referencesHeader} ${lastMessageId}` : lastMessageId;
-  }
-
-  // Get subject (add Re: if not already there)
-  let subject = thread.getFirstMessageSubject();
-  if (!subject.toLowerCase().startsWith('re:')) {
-    subject = 'Re: ' + subject;
-  }
 
   // Build the quoted original message
   const lastMsgDate = lastMessage.getDate();
@@ -7706,59 +7698,139 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Convert response body to HTML (preserve line breaks)
   const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
 
-  // Build quoted message using blockquote to preserve original HTML formatting
-  const quoteHeaderHtml = `<br><br><div style="color:#555;">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:</div>`;
-  const quotedBodyHtml = `<blockquote style="margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex">${lastMsgBody}</blockquote>`;
+  // Build quoted message using Gmail's standard format
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
 
   // Full email body with signature and quote (HTML format)
-  let fullBodyHtml = `<div>${responseHtml}</div>`;
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
   if (signature) {
-    fullBodyHtml += `<br>${signature}`;
+    fullBodyHtml += `<br><br>${signature}`;
   }
-  fullBodyHtml += quoteHeaderHtml + quotedBodyHtml;
+  fullBodyHtml += `</div>${quoteHeaderHtml}${quotedBodyHtml}`;
 
-  // Build RFC 2822 message from scratch
-  const boundary = 'boundary_' + Utilities.getUuid();
-  let rawMessage = '';
+  // Step 1: Create a draft reply using GmailApp (this ensures proper threading)
+  Logger.log('Creating draft reply with proper threading...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draft = draftReply.getMessage();
+  const draftId = draftReply.getId();
 
-  // Headers
-  rawMessage += `From: ${myEmail}\r\n`;
-  if (toRecipients) rawMessage += `To: ${toRecipients}\r\n`;
-  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
-  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
-  rawMessage += `Subject: =?UTF-8?B?${Utilities.base64Encode(subject, Utilities.Charset.UTF_8)}?=\r\n`;
-  if (lastMessageId) rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
-  if (referencesHeader) rawMessage += `References: ${referencesHeader}\r\n`;
-  rawMessage += `MIME-Version: 1.0\r\n`;
-  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n`;
-  rawMessage += `Content-Transfer-Encoding: base64\r\n`;
-  rawMessage += `\r\n`;
+  // Step 2: Get the draft via Gmail API to update it with HTML content
+  const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+  const messageId = gmailDraft.message.id;
 
-  // Body (base64 encoded HTML)
-  rawMessage += Utilities.base64Encode(fullBodyHtml, Utilities.Charset.UTF_8);
-
-  // Encode the entire message for Gmail API
-  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
-
-  // Create draft via Gmail API with proper threading
-  const draftResource = {
+  // Step 3: Build the updated message with our HTML body and correct recipients
+  const updateResource = {
     message: {
-      raw: encodedMessage,
-      threadId: thread.getId()
+      raw: Utilities.base64EncodeWebSafe(
+        `From: ${myEmail}\r\n` +
+        `To: ${toRecipients}\r\n` +
+        (ccRecipients ? `Cc: ${ccRecipients}\r\n` : '') +
+        (bccRecipients ? `Bcc: ${bccRecipients}\r\n` : '') +
+        `Subject: ${draft.getSubject()}\r\n` +
+        `MIME-Version: 1.0\r\n` +
+        `Content-Type: text/html; charset="UTF-8"\r\n` +
+        `\r\n` +
+        fullBodyHtml
+      )
     }
   };
 
-  Logger.log('Creating draft via Gmail API with custom recipients...');
-  const draft = Gmail.Users.Drafts.create(draftResource, 'me');
-  const draftId = draft.id;
-  Logger.log(`Draft created with ID: ${draftId}`);
+  // Step 4: Update the draft with correct content and recipients
+  Logger.log('Updating draft with HTML content and recipients...');
+  Gmail.Users.Drafts.update(updateResource, 'me', draftId);
 
-  // Get the message ID for the URL
-  const updatedDraft = Gmail.Users.Drafts.get('me', draftId);
-  const msgId = updatedDraft.message.id;
+  // Track this thread for auto-archive after sending
+  addPendingArchiveThread_(thread.getId());
+  Logger.log(`Added thread ${thread.getId()} to pending archive list`);
 
-  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${msgId}`;
+  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${messageId}`;
   return gmailUrl;
+}
+
+/**
+ * Add a thread ID to the pending archive list (stored in Script Properties)
+ * These threads will be archived on next email refresh once Last=ME
+ */
+function addPendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+
+  if (!pending.includes(threadId)) {
+    pending.push(threadId);
+    props.setProperty('pendingArchiveThreads', JSON.stringify(pending));
+  }
+}
+
+/**
+ * Get pending archive thread IDs
+ */
+function getPendingArchiveThreads_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  return JSON.parse(pendingJson);
+}
+
+/**
+ * Remove a thread ID from pending archive list (after archiving)
+ */
+function removePendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+  const updated = pending.filter(id => id !== threadId);
+  props.setProperty('pendingArchiveThreads', JSON.stringify(updated));
+}
+
+/**
+ * Check and archive threads that were responded to via Email Response
+ * Called during email refresh - archives threads where Last=ME
+ * Returns true if any threads were archived (to trigger refresh)
+ */
+function checkAndArchivePendingThreads_() {
+  const pendingIds = getPendingArchiveThreads_();
+  if (pendingIds.length === 0) return false;
+
+  Logger.log(`Checking ${pendingIds.length} pending archive threads...`);
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  let archivedCount = 0;
+
+  for (const threadId of pendingIds) {
+    try {
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        // Thread no longer exists, remove from pending
+        removePendingArchiveThread_(threadId);
+        continue;
+      }
+
+      const messages = thread.getMessages();
+      if (messages.length === 0) continue;
+
+      const lastMessage = messages[messages.length - 1];
+      const lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if I sent the last message
+      if (lastSender.includes(myEmail)) {
+        Logger.log(`Archiving thread ${threadId} - Last sender is ME`);
+        thread.moveToArchive();
+        removePendingArchiveThread_(threadId);
+        archivedCount++;
+      }
+    } catch (e) {
+      Logger.log(`Error checking thread ${threadId}: ${e.message}`);
+      // Remove from pending to avoid repeated errors
+      removePendingArchiveThread_(threadId);
+    }
+  }
+
+  if (archivedCount > 0) {
+    Logger.log(`Archived ${archivedCount} threads`);
+    SpreadsheetApp.getActive().toast(`Archived ${archivedCount} sent email(s)`, '📬 Auto-Archive', 3);
+  }
+
+  return archivedCount > 0;
 }
 
 /**
