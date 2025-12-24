@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 22:38 PST
+ * Last Updated: 2025-12-23 22:42 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8235,7 +8235,7 @@ function analyzeTasksFromEmails() {
   }
 
   // Get tasks for this vendor
-  const tasks = getMondayTasksForVendor_(vendor, source);
+  const tasks = getTasksForVendor_(vendor, listRow);
   const openTasks = tasks.filter(t => !t.isDone);
 
   if (openTasks.length === 0) {
