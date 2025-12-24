@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:45 PST
+ * Last Updated: 2025-12-24 00:55 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1326,20 +1326,27 @@ function loadVendorData(vendorIndex, options) {
     bsSh.getRange(boxRow, 9).setValue('Matched').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
     boxRow++;
 
-    // Check if there's a document in "Profitise > VENDOR_NAME" folder
-    // If so, other documents should be grayed out (secondary/older versions)
-    const vendorLower = vendor.toLowerCase();
-    const hasProfitiseVendorFolder = boxDocs.some(doc => {
-      const folderPath = (doc.folderPath || '').toLowerCase();
-      // Match "profitise/vendorname" or "profitise > vendorname" patterns
-      return folderPath.includes('profitise/') && folderPath.includes(vendorLower);
-    });
+    // Check if there's a document in "Profitise > VENDOR_NAME" folder (the primary/final location)
+    // System folders to exclude from being considered "vendor folders"
+    const systemFolders = ['w-9', 'w9', 'new publishers', 'my sign', 'my signed', 'templates'];
+
+    // Helper to check if a folder path is a vendor-specific Profitise folder
+    const isProfitiseVendorFolder = (path) => {
+      const pathLower = (path || '').toLowerCase();
+      if (!pathLower.includes('profitise/')) return false;
+      // Check it's not a system folder
+      return !systemFolders.some(sys => pathLower.includes(sys));
+    };
+
+    // Find if any doc is in a Profitise vendor folder
+    const hasProfitiseVendorFolder = boxDocs.some(doc => isProfitiseVendorFolder(doc.folderPath));
 
     for (const doc of boxDocs.slice(0, 10)) {
-      // Check if this doc is in the primary "Profitise > Vendor" folder
       const folderPath = (doc.folderPath || '').toLowerCase();
-      const isInProfitiseVendorFolder = folderPath.includes('profitise/') && folderPath.includes(vendorLower);
-      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder;
+      const isInProfitiseVendorFolder = isProfitiseVendorFolder(doc.folderPath);
+      const isInW9Folder = folderPath.includes('w-9') || folderPath.includes('w9');
+      // Gray out if: there's a vendor folder doc AND this isn't in vendor folder AND this isn't W-9
+      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder && !isInW9Folder;
 
       // Document name - clickable link to Box
       const docName = doc.name.length > 40 ? doc.name.substring(0, 37) + '...' : doc.name;
