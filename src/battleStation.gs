@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 09:00 PST
+ * Last Updated: 2025-12-24 09:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2599,7 +2599,8 @@ function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
 
     // Extract vendor label (zzzvendors-*) from URL
     // Format: label%3Azzzvendors-vendorname or label:zzzvendors-vendorname
-    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_-]+)/i);
+    // Include periods, underscores, hyphens in vendor name (e.g., "inc." in "american-remodeling-enterprises-inc.")
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
     if (!vendorLabelMatch) {
       Logger.log('Could not extract vendor label from Gmail link');
       return [];
@@ -5003,7 +5004,8 @@ function generateVendorLabelChecksum_(gmailLink) {
     const gmailLinkStr = gmailLink.toString();
 
     // Extract the vendor label (zzzvendors-*) from the URL
-    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_-]+)/i);
+    // Include periods in vendor name (e.g., "inc." in "american-remodeling-enterprises-inc.")
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
     if (!vendorLabelMatch) {
       Logger.log('Could not extract vendor label from Gmail link');
       return null;
