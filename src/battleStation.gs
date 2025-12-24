@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 16:45 PST
+ * Last Updated: 2025-12-23 22:35 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -209,6 +209,7 @@ function onOpen() {
     .addItem('💤 Snooze Vendor...', 'battleStationSnoozeVendor')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
+    .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addToUi();
 
@@ -7868,4 +7869,327 @@ function emailResponseCustom() {
       generateEmailResponse_(customType);
     }
   }
+}
+
+/************************************************************
+ * CONTACT DISCOVERY FROM GMAIL
+ * Searches Gmail for potential new contacts or updated info
+ * based on domains of existing contacts
+ ************************************************************/
+
+/**
+ * Discover potential new contacts or updates from Gmail
+ * Searches for emails from the same domains as existing contacts
+ */
+function discoverContactsFromGmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 2).getValue() || '';
+
+  ss.toast('Analyzing contacts and searching Gmail...', '🔍 Contact Discovery', 5);
+
+  // Get existing contacts for this vendor
+  const contactData = getContactsForVendor_(vendor, source);
+  const existingContacts = contactData.contacts || [];
+
+  if (existingContacts.length === 0) {
+    ui.alert('No existing contacts found for this vendor.');
+    return;
+  }
+
+  // Extract unique domains from existing contacts
+  const domains = new Set();
+  const existingEmails = new Set();
+  const existingPhones = new Set();
+
+  for (const contact of existingContacts) {
+    if (contact.email) {
+      existingEmails.add(contact.email.toLowerCase());
+      const domain = contact.email.split('@')[1];
+      if (domain && !isGenericDomain_(domain)) {
+        domains.add(domain.toLowerCase());
+      }
+    }
+    if (contact.phone) {
+      // Normalize phone to just digits for comparison
+      const normalizedPhone = contact.phone.replace(/\D/g, '');
+      if (normalizedPhone.length >= 10) {
+        existingPhones.add(normalizedPhone.slice(-10)); // Last 10 digits
+      }
+    }
+  }
+
+  if (domains.size === 0) {
+    ui.alert('No company domains found in existing contacts (only generic email domains like gmail.com).');
+    return;
+  }
+
+  Logger.log(`=== CONTACT DISCOVERY ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Existing contacts: ${existingContacts.length}`);
+  Logger.log(`Domains to search: ${[...domains].join(', ')}`);
+  Logger.log(`Existing emails: ${[...existingEmails].join(', ')}`);
+
+  // Search Gmail for emails from these domains
+  const potentialNewContacts = [];
+  const potentialUpdates = [];
+  const emailsSearched = new Set();
+
+  for (const domain of domains) {
+    ss.toast(`Searching emails from @${domain}...`, '🔍 Scanning', 3);
+
+    try {
+      // Search for emails from this domain in the last 6 months
+      const query = `from:@${domain}`;
+      const threads = GmailApp.search(query, 0, 50); // Get up to 50 threads
+
+      Logger.log(`Found ${threads.length} threads from @${domain}`);
+
+      for (const thread of threads) {
+        const messages = thread.getMessages();
+
+        for (const message of messages) {
+          const from = message.getFrom() || '';
+          const body = message.getPlainBody() || '';
+          const date = message.getDate();
+
+          // Extract email from "Name <email>" format
+          const emailMatch = from.match(/<([^>]+)>/) || [null, from.trim()];
+          const email = emailMatch[1].toLowerCase();
+
+          // Skip if we've already processed this email address
+          if (emailsSearched.has(email)) continue;
+          emailsSearched.add(email);
+
+          // Extract name from "Name <email>" format
+          const nameMatch = from.match(/^([^<]+)</);
+          const name = nameMatch ? nameMatch[1].trim().replace(/"/g, '') : email.split('@')[0];
+
+          // Check if this is a new contact
+          if (!existingEmails.has(email)) {
+            // Extract phone numbers from signature (last 500 chars of body)
+            const signature = body.slice(-500);
+            const phones = extractPhoneNumbers_(signature);
+
+            potentialNewContacts.push({
+              name: name,
+              email: email,
+              phone: phones.length > 0 ? phones[0] : '',
+              lastSeen: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+              domain: domain
+            });
+
+            Logger.log(`Potential new contact: ${name} <${email}>`);
+          } else {
+            // Existing contact - check for phone updates
+            const signature = body.slice(-500);
+            const phones = extractPhoneNumbers_(signature);
+
+            for (const phone of phones) {
+              const normalized = phone.replace(/\D/g, '').slice(-10);
+              if (normalized.length === 10 && !existingPhones.has(normalized)) {
+                // Found a new phone number for an existing contact
+                const existingContact = existingContacts.find(c =>
+                  c.email && c.email.toLowerCase() === email
+                );
+
+                if (existingContact) {
+                  potentialUpdates.push({
+                    name: existingContact.name,
+                    email: email,
+                    currentPhone: existingContact.phone || '(none)',
+                    newPhone: phone,
+                    foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                  });
+
+                  Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      Logger.log(`Error searching domain ${domain}: ${e.message}`);
+    }
+  }
+
+  // Sort results
+  potentialNewContacts.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen)); // Most recent first
+  potentialUpdates.sort((a, b) => b.foundIn.localeCompare(a.foundIn));
+
+  // Build results HTML
+  let html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 10px; }
+      h2 { color: #1a73e8; margin-top: 20px; margin-bottom: 10px; }
+      h3 { color: #333; margin-top: 15px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f8f9fa; font-weight: bold; }
+      tr:nth-child(even) { background-color: #f9f9f9; }
+      .new-contact { background-color: #e8f5e9; }
+      .update { background-color: #fff3e0; }
+      .none { color: #666; font-style: italic; }
+      .summary { background: #f0f0f0; padding: 10px; border-radius: 5px; margin-bottom: 15px; }
+    </style>
+
+    <h2>📇 Contact Discovery for ${vendor}</h2>
+
+    <div class="summary">
+      <strong>Searched domains:</strong> ${[...domains].map(d => '@' + d).join(', ')}<br>
+      <strong>Existing contacts:</strong> ${existingContacts.length}<br>
+      <strong>Potential new contacts found:</strong> ${potentialNewContacts.length}<br>
+      <strong>Potential phone updates found:</strong> ${potentialUpdates.length}
+    </div>
+  `;
+
+  // New contacts section
+  html += `<h3>🆕 Potential New Contacts (${potentialNewContacts.length})</h3>`;
+
+  if (potentialNewContacts.length === 0) {
+    html += `<p class="none">No new contacts discovered.</p>`;
+  } else {
+    html += `
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Last Seen</th></tr>
+    `;
+    for (const contact of potentialNewContacts.slice(0, 20)) { // Limit to 20
+      html += `
+        <tr class="new-contact">
+          <td>${escapeHtml_(contact.name)}</td>
+          <td>${escapeHtml_(contact.email)}</td>
+          <td>${contact.phone || '<span class="none">-</span>'}</td>
+          <td>${contact.lastSeen}</td>
+        </tr>
+      `;
+    }
+    html += `</table>`;
+    if (potentialNewContacts.length > 20) {
+      html += `<p class="none">...and ${potentialNewContacts.length - 20} more</p>`;
+    }
+  }
+
+  // Phone updates section
+  html += `<h3>📱 Potential Phone Updates (${potentialUpdates.length})</h3>`;
+
+  if (potentialUpdates.length === 0) {
+    html += `<p class="none">No phone updates discovered.</p>`;
+  } else {
+    html += `
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Current Phone</th><th>New Phone</th><th>Found In</th></tr>
+    `;
+    for (const update of potentialUpdates.slice(0, 20)) {
+      html += `
+        <tr class="update">
+          <td>${escapeHtml_(update.name)}</td>
+          <td>${escapeHtml_(update.email)}</td>
+          <td>${escapeHtml_(update.currentPhone)}</td>
+          <td><strong>${escapeHtml_(update.newPhone)}</strong></td>
+          <td>${update.foundIn}</td>
+        </tr>
+      `;
+    }
+    html += `</table>`;
+    if (potentialUpdates.length > 20) {
+      html += `<p class="none">...and ${potentialUpdates.length - 20} more</p>`;
+    }
+  }
+
+  html += `
+    <h3>👤 Existing Contacts</h3>
+    <table>
+      <tr><th>Name</th><th>Email</th><th>Phone</th><th>Type</th><th>Status</th></tr>
+  `;
+  for (const contact of existingContacts) {
+    html += `
+      <tr>
+        <td>${escapeHtml_(contact.name || '')}</td>
+        <td>${escapeHtml_(contact.email || '')}</td>
+        <td>${escapeHtml_(contact.phone || '')}</td>
+        <td>${escapeHtml_(contact.contactType || '')}</td>
+        <td>${escapeHtml_(contact.status || '')}</td>
+      </tr>
+    `;
+  }
+  html += `</table>`;
+
+  // Show dialog
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(800)
+    .setHeight(600);
+
+  ui.showModalDialog(htmlOutput, '📇 Contact Discovery');
+
+  Logger.log(`Contact discovery complete: ${potentialNewContacts.length} new, ${potentialUpdates.length} updates`);
+}
+
+/**
+ * Check if a domain is a generic email provider (not company-specific)
+ */
+function isGenericDomain_(domain) {
+  const genericDomains = [
+    'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
+    'icloud.com', 'me.com', 'mac.com', 'msn.com', 'live.com',
+    'protonmail.com', 'proton.me', 'zoho.com', 'ymail.com',
+    'mail.com', 'email.com', 'inbox.com', 'fastmail.com'
+  ];
+  return genericDomains.includes(domain.toLowerCase());
+}
+
+/**
+ * Extract phone numbers from text (signature, body, etc.)
+ */
+function extractPhoneNumbers_(text) {
+  if (!text) return [];
+
+  // Regex patterns for various phone formats
+  const patterns = [
+    /\b(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\b/g,           // 123-456-7890, 123.456.7890, 123 456 7890
+    /\b\((\d{3})\)\s*(\d{3})[-.\s]?(\d{4})\b/g,       // (123) 456-7890
+    /\b(\d{3})[-.\s](\d{4})\b/g,                       // 456-7890 (7 digit)
+    /\+1[-.\s]?(\d{3})[-.\s]?(\d{3})[-.\s]?(\d{4})\b/g // +1 123-456-7890
+  ];
+
+  const phones = new Set();
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      // Normalize to just digits
+      const digits = match[0].replace(/\D/g, '');
+      if (digits.length >= 10) {
+        // Format nicely
+        const last10 = digits.slice(-10);
+        const formatted = `(${last10.slice(0,3)}) ${last10.slice(3,6)}-${last10.slice(6)}`;
+        phones.add(formatted);
+      }
+    }
+  }
+
+  return [...phones];
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
