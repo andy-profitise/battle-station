@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 16:42 PST
+ * Last Updated: 2025-12-23 16:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1190,6 +1190,13 @@ function loadVendorData(vendorIndex, options) {
           }
         }
         Logger.log(`Combined Box results: ${boxDocs.length} unique documents`);
+      }
+
+      // Filter out "Signing Log" documents (Box Sign creates these alongside the actual document)
+      const beforeSigningLogCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => !(doc.name || '').toLowerCase().includes('signing log'));
+      if (beforeSigningLogCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeSigningLogCount - boxDocs.length} Signing Log documents`);
       }
 
       // Dedupe documents with same name + folder + modified + matchedOn
