@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 01:45 PST
+ * Last Updated: 2025-12-24 07:50 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7688,12 +7688,13 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Build the quoted original message
   const lastMsgDate = lastMessage.getDate();
   const lastMsgFrom = lastMessage.getFrom();
-  const lastMsgBody = lastMessage.getPlainBody() || '';
+  // Use getBody() to preserve HTML formatting (images, fonts, styling)
+  const lastMsgBody = lastMessage.getBody() || '';
 
   // Format date for quote header
   const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
 
-  // Helper to escape HTML special characters
+  // Helper to escape HTML special characters (for our text, not the original email)
   const escapeHtml = (text) => {
     return text
       .replace(/&/g, '&amp;')
@@ -7705,16 +7706,16 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Convert response body to HTML (preserve line breaks)
   const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
 
-  // Build quoted message in HTML
-  const quotedBodyHtml = lastMsgBody.split('\n').map(line => '&gt; ' + escapeHtml(line)).join('<br>');
-  const quoteHeaderHtml = `<br><br>On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br>`;
+  // Build quoted message using blockquote to preserve original HTML formatting
+  const quoteHeaderHtml = `<br><br><div style="color:#555;">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:</div>`;
+  const quotedBodyHtml = `<blockquote style="margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex">${lastMsgBody}</blockquote>`;
 
   // Full email body with signature and quote (HTML format)
   let fullBodyHtml = `<div>${responseHtml}</div>`;
   if (signature) {
     fullBodyHtml += `<br>${signature}`;
   }
-  fullBodyHtml += `<div style="color:#555;">${quoteHeaderHtml}${quotedBodyHtml}</div>`;
+  fullBodyHtml += quoteHeaderHtml + quotedBodyHtml;
 
   // Build RFC 2822 message from scratch
   const boundary = 'boundary_' + Utilities.getUuid();
