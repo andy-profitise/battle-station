@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 09:45 PST
+ * Last Updated: 2025-12-24 11:20 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1216,24 +1216,61 @@ function loadVendorData(vendorIndex, options) {
         Logger.log(`Deduped Box results: ${beforeDedupeCount} -> ${boxDocs.length}`);
       }
 
+      // Helper to strip file extension for comparison
+      const stripExtension = (name) => {
+        return (name || '').toLowerCase().replace(/\.(pdf|doc|docx|xlsx|xls|ppt|pptx)$/i, '');
+      };
+
+      // Helper to check if file is a PDF
+      const isPdf = (name) => (name || '').toLowerCase().endsWith('.pdf');
+
       // Remove "My Sign Requests" documents if same document exists in another folder
       // (My Sign Requests is a draft/pending folder, prefer the final version)
+      // Compare without extensions so "file.pdf" and "file.docx" are considered duplicates
       const docNamesInOtherFolders = new Set();
       for (const doc of boxDocs) {
         const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
         if (!folderPath.includes('my sign requests')) {
-          docNamesInOtherFolders.add((doc.name || '').toLowerCase());
+          docNamesInOtherFolders.add(stripExtension(doc.name));
         }
       }
       const beforeSignReqCount = boxDocs.length;
       boxDocs = boxDocs.filter(doc => {
         const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
-        const docName = (doc.name || '').toLowerCase();
+        const docNameNoExt = stripExtension(doc.name);
         // Keep if not in My Sign Requests, OR if no duplicate exists elsewhere
-        return !folderPath.includes('my sign requests') || !docNamesInOtherFolders.has(docName);
+        return !folderPath.includes('my sign requests') || !docNamesInOtherFolders.has(docNameNoExt);
       });
       if (beforeSignReqCount !== boxDocs.length) {
         Logger.log(`Removed ${beforeSignReqCount - boxDocs.length} My Sign Requests duplicates`);
+      }
+
+      // Dedupe by base name (without extension), preferring PDF over DOC/DOCX
+      const seenBaseNames = new Map(); // baseName -> doc (prefer PDF)
+      for (const doc of boxDocs) {
+        const baseName = stripExtension(doc.name);
+        const existing = seenBaseNames.get(baseName);
+        if (!existing) {
+          seenBaseNames.set(baseName, doc);
+        } else {
+          // Prefer PDF over non-PDF
+          if (isPdf(doc.name) && !isPdf(existing.name)) {
+            seenBaseNames.set(baseName, doc);
+          }
+          // If both same type, keep the one in a better folder (Profitise > others)
+          else if (isPdf(doc.name) === isPdf(existing.name)) {
+            const docFolder = (doc.folderPath || '').toLowerCase();
+            const existingFolder = (existing.folderPath || '').toLowerCase();
+            if (docFolder.includes('profitise') && !existingFolder.includes('profitise')) {
+              seenBaseNames.set(baseName, doc);
+            }
+          }
+        }
+      }
+      const beforeExtDedupeCount = boxDocs.length;
+      boxDocs = [...seenBaseNames.values()];
+      if (beforeExtDedupeCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeExtDedupeCount - boxDocs.length} extension duplicates (preferring PDF)`);
       }
 
       // Apply blacklist - remove files blacklisted for this vendor
@@ -8288,6 +8325,10 @@ function discoverContactsFromGmail() {
           // Skip if we've already processed this email address
           if (emailsSearched.has(email)) continue;
           emailsSearched.add(email);
+
+          // Only consider contacts from the vendor's domains (not internal or other external)
+          const emailDomain = email.split('@')[1];
+          if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
 
           // Extract name from "Name <email>" format
           const nameMatch = from.match(/^([^<]+)</);
