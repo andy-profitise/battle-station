@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 07:50 PST
+ * Last Updated: 2025-12-24 08:05 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -3961,12 +3961,23 @@ function battleStationQuickRefresh() {
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
     SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
-  
+
+  // Check for pending archive threads (from Email Responses) and archive if I sent the reply
+  const didArchive = checkAndArchivePendingThreads_();
+  if (didArchive) {
+    // Threads were archived - need to wait for Gmail to update, then refresh
+    ss.toast('Archived sent emails, waiting for Gmail to update...', '📬 Auto-Archive', 2);
+    Utilities.sleep(2000);
+    // Do a Quick Refresh Until Changed to catch the archive
+    battleStationQuickRefreshUntilChanged();
+    return;
+  }
+
   ss.toast('Refreshing emails only...', '⚡ Quick Refresh', 2);
   
   // Get current vendor info
@@ -7757,8 +7768,97 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const updatedDraft = Gmail.Users.Drafts.get('me', draftId);
   const msgId = updatedDraft.message.id;
 
+  // Track this thread for auto-archive after sending
+  addPendingArchiveThread_(thread.getId());
+  Logger.log(`Added thread ${thread.getId()} to pending archive list`);
+
   const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${msgId}`;
   return gmailUrl;
+}
+
+/**
+ * Add a thread ID to the pending archive list (stored in Script Properties)
+ * These threads will be archived on next email refresh once Last=ME
+ */
+function addPendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+
+  if (!pending.includes(threadId)) {
+    pending.push(threadId);
+    props.setProperty('pendingArchiveThreads', JSON.stringify(pending));
+  }
+}
+
+/**
+ * Get pending archive thread IDs
+ */
+function getPendingArchiveThreads_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  return JSON.parse(pendingJson);
+}
+
+/**
+ * Remove a thread ID from pending archive list (after archiving)
+ */
+function removePendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+  const updated = pending.filter(id => id !== threadId);
+  props.setProperty('pendingArchiveThreads', JSON.stringify(updated));
+}
+
+/**
+ * Check and archive threads that were responded to via Email Response
+ * Called during email refresh - archives threads where Last=ME
+ * Returns true if any threads were archived (to trigger refresh)
+ */
+function checkAndArchivePendingThreads_() {
+  const pendingIds = getPendingArchiveThreads_();
+  if (pendingIds.length === 0) return false;
+
+  Logger.log(`Checking ${pendingIds.length} pending archive threads...`);
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  let archivedCount = 0;
+
+  for (const threadId of pendingIds) {
+    try {
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        // Thread no longer exists, remove from pending
+        removePendingArchiveThread_(threadId);
+        continue;
+      }
+
+      const messages = thread.getMessages();
+      if (messages.length === 0) continue;
+
+      const lastMessage = messages[messages.length - 1];
+      const lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if I sent the last message
+      if (lastSender.includes(myEmail)) {
+        Logger.log(`Archiving thread ${threadId} - Last sender is ME`);
+        thread.moveToArchive();
+        removePendingArchiveThread_(threadId);
+        archivedCount++;
+      }
+    } catch (e) {
+      Logger.log(`Error checking thread ${threadId}: ${e.message}`);
+      // Remove from pending to avoid repeated errors
+      removePendingArchiveThread_(threadId);
+    }
+  }
+
+  if (archivedCount > 0) {
+    Logger.log(`Archived ${archivedCount} threads`);
+    SpreadsheetApp.getActive().toast(`Archived ${archivedCount} sent email(s)`, '📬 Auto-Archive', 3);
+  }
+
+  return archivedCount > 0;
 }
 
 /**
