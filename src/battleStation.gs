@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 08:55 PST
+ * Last Updated: 2025-12-24 09:00 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7707,7 +7707,7 @@ function createDraftAndGetUrl_(thread, responseBody) {
   if (signature) {
     fullBodyHtml += `<br><br>${signature}`;
   }
-  fullBodyHtml += `</div>${quoteHeaderHtml}${quotedBodyHtml}`;
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
 
   // Step 1: Create a draft reply using GmailApp (this ensures proper threading)
   Logger.log('Creating draft reply with proper threading...');
