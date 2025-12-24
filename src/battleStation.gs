@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:55 PST
+ * Last Updated: 2025-12-24 01:00 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7592,9 +7592,19 @@ function createDraftAndGetUrl_(thread, responseBody) {
   }
 
   // Build recipient strings
-  const toRecipients = externalRecipients.join(', ');
-  let ccRecipients = internalRecipients.join(', ');
+  // If no external recipients, internal go to To instead of Cc
+  let toRecipients = '';
+  let ccRecipients = '';
   let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    // Normal case: external to To, internal to Cc
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    // All internal: put them in To
+    toRecipients = internalRecipients.join(', ');
+  }
 
   // Check if sales@profitise.com should be added
   const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
@@ -7603,8 +7613,10 @@ function createDraftAndGetUrl_(thread, responseBody) {
   if (!salesAlreadyIncluded) {
     if (ccRecipients) {
       bccRecipients = 'sales@profitise.com';
+    } else if (toRecipients) {
+      bccRecipients = 'sales@profitise.com';
     } else {
-      ccRecipients = 'sales@profitise.com';
+      toRecipients = 'sales@profitise.com';
     }
   }
 
