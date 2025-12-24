@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:15 PST
+ * Last Updated: 2025-12-24 00:25 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8342,12 +8342,16 @@ function analyzeTasksFromEmails() {
   const taskSettings = getTaskAnalysisSettings_();
 
   // Build email summaries with content snippets (most recent first, limit to 25 for full context)
+  // Also build a map of email index to thread ID for linking
+  const emailThreadMap = {};
   const emailSummaries = emails.slice(0, 25).map((e, i) => {
     // Handle labels - could be array or string
     const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || '');
     // Include snippet for context (truncate if too long)
     const snippet = (e.snippet || '').substring(0, 300);
     const msgCount = e.messageCount ? ` [${e.messageCount} msgs in thread]` : '';
+    // Store thread ID for linking
+    emailThreadMap[i + 1] = e.threadId;
     return `EMAIL ${i + 1} (${e.date})${msgCount}:
 Subject: ${e.subject}
 From: ${e.from || 'Unknown'}
@@ -8448,6 +8452,17 @@ SUMMARY:
   // Build suggested updates HTML with Apply buttons
   const allStatuses = ['Waiting on Profitise', 'Waiting on Client', 'Waiting on Phonexa', 'Done'];
 
+  // Helper to linkify "EMAIL X" references in reason text
+  const linkifyEmailRefs = (text) => {
+    return escapeHtml_(text).replace(/EMAIL\s*(\d+)/gi, (match, num) => {
+      const threadId = emailThreadMap[parseInt(num)];
+      if (threadId) {
+        return `<a href="https://mail.google.com/mail/u/0/#inbox/${threadId}" target="_blank" style="color: #1a73e8;">EMAIL ${num}</a>`;
+      }
+      return match;
+    });
+  };
+
   let updatesHtml = '';
   if (suggestedUpdates.length > 0) {
     updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
@@ -8474,10 +8489,10 @@ SUMMARY:
             <span class="old-status">${escapeHtml_(update.currentStatus)}</span> →
             <span style="background: ${statusBg}; padding: 2px 6px; border-radius: 3px;">${escapeHtml_(update.newStatus)}</span>
           </div>
-          <div class="update-reason"><em>Reason:</em> ${escapeHtml_(update.reason)}</div>
+          <div class="update-reason"><em>Reason:</em> ${linkifyEmailRefs(update.reason)}</div>
           <div class="update-actions">
             <button class="apply-btn" onclick="applyUpdate('${update.itemId}', '${update.statusColumnId}', '${escapeHtml_(update.newStatus)}', this)">✓ Apply</button>
-            <button class="skip-btn" onclick="skipUpdate(this)">✗ Skip</button>
+            <button class="skip-btn" onclick="skipUpdate('${escapedTaskName}', '${escapeHtml_(update.currentStatus)}', this)">✗ Skip</button>
             ${altButtonsHtml}
           </div>
         </div>
@@ -8561,7 +8576,17 @@ SUMMARY:
           .updateTaskStatus(itemId, statusColumnId, newStatus);
       }
 
-      function skipUpdate(btn) {
+      function skipUpdate(taskName, currentStatus, btn) {
+        var reason = prompt('Why are you skipping this suggestion?\\n\\nThis will be saved to Settings for future reference.');
+        if (reason === null) return; // Cancelled
+
+        // Save skip reason to Settings
+        if (reason && reason.trim() !== '') {
+          google.script.run
+            .withFailureHandler(function(e) { console.log('Failed to save skip reason: ' + e); })
+            .saveStatusOverride(taskName, 'SKIP (keep ' + currentStatus + ')', reason);
+        }
+
         btn.parentElement.parentElement.classList.add('skipped');
         btn.parentElement.innerHTML = '<em>Skipped</em>';
       }
