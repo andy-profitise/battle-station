@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 08:15 PST
+ * Last Updated: 2025-12-24 08:25 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7738,13 +7738,18 @@ function createDraftAndGetUrl_(thread, responseBody) {
 
   // Step 4: Update the draft with correct content and recipients
   Logger.log('Updating draft with HTML content and recipients...');
-  Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+  const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+
+  // Get the message ID from the updated draft for the URL
+  const updatedMessageId = updatedDraft.message.id;
+  Logger.log(`Draft updated, message ID: ${updatedMessageId}`);
 
   // Track this thread for auto-archive after sending
   addPendingArchiveThread_(thread.getId());
   Logger.log(`Added thread ${thread.getId()} to pending archive list`);
 
-  const gmailUrl = `https://mail.google.com/mail/u/0/#inbox?compose=${messageId}`;
+  // Use the draft message ID to open compose window
+  const gmailUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedMessageId}`;
   return gmailUrl;
 }
 
