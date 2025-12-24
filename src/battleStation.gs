@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:35 PST
+ * Last Updated: 2025-12-24 00:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1216,6 +1216,26 @@ function loadVendorData(vendorIndex, options) {
         Logger.log(`Deduped Box results: ${beforeDedupeCount} -> ${boxDocs.length}`);
       }
 
+      // Remove "My Sign Requests" documents if same document exists in another folder
+      // (My Sign Requests is a draft/pending folder, prefer the final version)
+      const docNamesInOtherFolders = new Set();
+      for (const doc of boxDocs) {
+        const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
+        if (!folderPath.includes('my sign requests')) {
+          docNamesInOtherFolders.add((doc.name || '').toLowerCase());
+        }
+      }
+      const beforeSignReqCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => {
+        const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
+        const docName = (doc.name || '').toLowerCase();
+        // Keep if not in My Sign Requests, OR if no duplicate exists elsewhere
+        return !folderPath.includes('my sign requests') || !docNamesInOtherFolders.has(docName);
+      });
+      if (beforeSignReqCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeSignReqCount - boxDocs.length} My Sign Requests duplicates`);
+      }
+
       // Apply blacklist - remove files blacklisted for this vendor
       if (boxBlacklist[vendor]) {
         const blacklistedIds = boxBlacklist[vendor];
@@ -1305,15 +1325,34 @@ function loadVendorData(vendorIndex, options) {
     bsSh.getRange(boxRow, 8).setValue('Modified').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
     bsSh.getRange(boxRow, 9).setValue('Matched').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
     boxRow++;
-    
+
+    // Check if there's a document in "Profitise > VENDOR_NAME" folder
+    // If so, other documents should be grayed out (secondary/older versions)
+    const vendorLower = vendor.toLowerCase();
+    const hasProfitiseVendorFolder = boxDocs.some(doc => {
+      const folderPath = (doc.folderPath || '').toLowerCase();
+      // Match "profitise/vendorname" or "profitise > vendorname" patterns
+      return folderPath.includes('profitise/') && folderPath.includes(vendorLower);
+    });
+
     for (const doc of boxDocs.slice(0, 10)) {
+      // Check if this doc is in the primary "Profitise > Vendor" folder
+      const folderPath = (doc.folderPath || '').toLowerCase();
+      const isInProfitiseVendorFolder = folderPath.includes('profitise/') && folderPath.includes(vendorLower);
+      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder;
+
       // Document name - clickable link to Box
       const docName = doc.name.length > 40 ? doc.name.substring(0, 37) + '...' : doc.name;
-      bsSh.getRange(boxRow, 6)
+      const docCell = bsSh.getRange(boxRow, 6)
         .setFormula(`=HYPERLINK("${doc.webUrl}", "${docName.replace(/"/g, '""')}")`)
-        .setFontColor('#1a73e8')
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
+
+      if (shouldGrayOut) {
+        docCell.setFontColor('#999999');
+      } else {
+        docCell.setFontColor('#1a73e8');
+      }
       
       // Folder - show full path with underscores, clickable link to parent folder
       // folderPath is like "All Files/Profitise/Company Name" 
@@ -1337,23 +1376,26 @@ function loadVendorData(vendorIndex, options) {
       }
       
       const folderUrl = doc.parentFolderUrl || '';
+      const folderCell = bsSh.getRange(boxRow, 7);
       if (folderUrl) {
-        bsSh.getRange(boxRow, 7)
+        folderCell
           .setFormula(`=HYPERLINK("${folderUrl}", "${folderDisplayName.replace(/"/g, '""')}")`)
-          .setFontColor('#1a73e8')
           .setHorizontalAlignment('left')
           .setVerticalAlignment('top');
       } else {
-        bsSh.getRange(boxRow, 7).setValue(folderDisplayName).setHorizontalAlignment('left').setVerticalAlignment('top');
+        folderCell.setValue(folderDisplayName).setHorizontalAlignment('left').setVerticalAlignment('top');
       }
-      
+      folderCell.setFontColor(shouldGrayOut ? '#999999' : '#1a73e8');
+
       // Modified date
       const modDate = doc.modifiedAt ? Utilities.formatDate(new Date(doc.modifiedAt), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
-      bsSh.getRange(boxRow, 8).setValue(modDate).setHorizontalAlignment('left').setVerticalAlignment('top');
-      
+      const modCell = bsSh.getRange(boxRow, 8).setValue(modDate).setHorizontalAlignment('left').setVerticalAlignment('top');
+      if (shouldGrayOut) modCell.setFontColor('#999999');
+
       // Matched search term (in quotes)
       const matchedTerm = doc.matchedOn ? `"${doc.matchedOn}"` : '';
-      bsSh.getRange(boxRow, 9).setValue(matchedTerm).setFontStyle('italic').setFontColor('#666666').setHorizontalAlignment('left').setVerticalAlignment('top');
+      const matchCell = bsSh.getRange(boxRow, 9).setValue(matchedTerm).setFontStyle('italic').setHorizontalAlignment('left').setVerticalAlignment('top');
+      matchCell.setFontColor(shouldGrayOut ? '#999999' : '#666666');
       
       boxRow++;
     }
