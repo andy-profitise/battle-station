@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 09:45 PST
+ * Last Updated: 2025-12-24 11:10 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8288,6 +8288,10 @@ function discoverContactsFromGmail() {
           // Skip if we've already processed this email address
           if (emailsSearched.has(email)) continue;
           emailsSearched.add(email);
+
+          // Only consider contacts from the vendor's domains (not internal or other external)
+          const emailDomain = email.split('@')[1];
+          if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
 
           // Extract name from "Name <email>" format
           const nameMatch = from.match(/^([^<]+)</);
