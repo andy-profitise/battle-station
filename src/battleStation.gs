@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 22:35 PST
+ * Last Updated: 2025-12-23 22:38 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -211,6 +211,7 @@ function onOpen() {
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addToUi();
 
   // Refresh menu - refresh current vendor view
@@ -8192,4 +8193,189 @@ function escapeHtml_(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/************************************************************
+ * TASK STATUS ANALYSIS FROM EMAILS
+ * Uses Claude to analyze emails and suggest task status updates
+ ************************************************************/
+
+/**
+ * Analyze emails to suggest task status updates
+ * Uses AI to determine if tasks should be updated based on email content
+ */
+function analyzeTasksFromEmails() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 2).getValue() || '';
+
+  ss.toast('Fetching emails and tasks...', '🤖 Task Analysis', 3);
+
+  // Get emails for this vendor
+  const emails = getEmailsForVendor_(vendor, listRow);
+  if (!emails || emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  // Get tasks for this vendor
+  const tasks = getMondayTasksForVendor_(vendor, source);
+  const openTasks = tasks.filter(t => !t.isDone);
+
+  if (openTasks.length === 0) {
+    ui.alert('No open tasks found for this vendor.');
+    return;
+  }
+
+  ss.toast('Analyzing with Claude AI...', '🤖 Task Analysis', 5);
+
+  // Build email summaries (most recent first, limit to 15)
+  const emailSummaries = emails.slice(0, 15).map((e, i) => {
+    return `EMAIL ${i + 1} (${e.date}):
+Subject: ${e.subject}
+From: ${e.from || 'Unknown'}
+Labels: ${(e.labels || []).join(', ')}
+---`;
+  }).join('\n\n');
+
+  // Build task list
+  const taskList = openTasks.map((t, i) => {
+    return `${i + 1}. "${t.subject}" - Status: ${t.status}${t.taskDate ? ` (Date: ${t.taskDate})` : ''}`;
+  }).join('\n');
+
+  // Build the prompt
+  const prompt = `You are analyzing a vendor's email thread and their monday.com onboarding tasks to suggest status updates.
+
+VENDOR: ${vendor}
+
+CURRENT OPEN TASKS:
+${taskList}
+
+POSSIBLE TASK STATUSES:
+- "Waiting on Profitise" - We need to do something
+- "Waiting on Client" - We're waiting for them to do something
+- "Waiting on Phonexa" - We're waiting for Phonexa (our platform team) to do something
+- "Done" - Task is complete
+
+RECENT EMAILS (most recent first):
+${emailSummaries}
+
+IMPORTANT CONTEXT:
+- Onboarding tasks are typically done in a linear sequence
+- If later tasks are being worked on, earlier tasks may already be complete
+- Look for evidence in emails that suggests task status changes:
+  * If we sent them something and are waiting for response → "Waiting on Client"
+  * If they requested something and we haven't done it → "Waiting on Profitise"
+  * If we mention Phonexa needs to do something → "Waiting on Phonexa"
+  * If something is confirmed done in emails → "Done"
+
+Common task patterns:
+- "Signup on Profitise Portal" - Done when they have portal access
+- "Send Projections/Determine Pricing" - Done when pricing is agreed
+- "Sign Contract" - Done when contract is executed, Waiting on Client if sent to them
+- "Approve Landing Pages" - Usually involves back and forth
+- "Setup Delivery Methods" - Done when we've configured their integration, Waiting on Client if we sent test leads
+- "Turn Off Test Mode" - Done when we flip them to live
+- "Add to TCPA Lists" - Internal/External lists for compliance
+- "Go Live" - Final step, they're actively receiving leads
+
+Analyze the emails and provide your recommendations in this EXACT format:
+
+TASK UPDATES:
+[For each task that should change status, use this format:]
+- "Task Name" → New Status
+  Reason: [Brief explanation based on email evidence]
+
+NO CHANGE NEEDED:
+[List any tasks where current status seems correct]
+
+SUMMARY:
+[2-3 sentences summarizing what's happening with this vendor based on emails]`;
+
+  // Call Claude API
+  const response = callClaudeAPI_(prompt, claudeApiKey);
+
+  if (response.error) {
+    ui.alert(`Claude API Error: ${response.error}`);
+    return;
+  }
+
+  Logger.log(`=== TASK ANALYSIS ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Open tasks: ${openTasks.length}`);
+  Logger.log(`Emails analyzed: ${Math.min(emails.length, 15)}`);
+  Logger.log(`Claude response: ${response.content}`);
+
+  // Build results HTML
+  const analysisHtml = (response.content || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+    .replace(/→/g, '→')
+    .replace(/"([^"]+)"/g, '<strong>"$1"</strong>')
+    .replace(/TASK UPDATES:/g, '<h3 style="color: #1a73e8; margin-top: 15px;">📋 TASK UPDATES:</h3>')
+    .replace(/NO CHANGE NEEDED:/g, '<h3 style="color: #666; margin-top: 15px;">✓ NO CHANGE NEEDED:</h3>')
+    .replace(/SUMMARY:/g, '<h3 style="color: #333; margin-top: 15px;">📝 SUMMARY:</h3>')
+    .replace(/Reason:/g, '<em style="color: #666;">Reason:</em>')
+    .replace(/Waiting on Client/g, '<span style="background: #fff2cc; padding: 2px 6px; border-radius: 3px;">Waiting on Client</span>')
+    .replace(/Waiting on Profitise/g, '<span style="background: #e3f2fd; padding: 2px 6px; border-radius: 3px;">Waiting on Profitise</span>')
+    .replace(/Waiting on Phonexa/g, '<span style="background: #ffcdd2; padding: 2px 6px; border-radius: 3px;">Waiting on Phonexa</span>')
+    .replace(/Done/g, '<span style="background: #c8e6c9; padding: 2px 6px; border-radius: 3px;">Done</span>');
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      .summary-box { background: #f8f9fa; padding: 12px; border-radius: 5px; margin-bottom: 15px; }
+      .analysis { background: white; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+      .task-list { background: #fafafa; padding: 10px; margin-top: 15px; border-radius: 5px; }
+      .task-item { padding: 5px 0; border-bottom: 1px solid #eee; }
+      .note { color: #666; font-style: italic; margin-top: 15px; font-size: 12px; }
+    </style>
+
+    <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
+
+    <div class="summary-box">
+      <strong>Analyzed:</strong> ${Math.min(emails.length, 15)} emails, ${openTasks.length} open tasks<br>
+      <strong>Note:</strong> Review these suggestions and update tasks in monday.com as needed.
+    </div>
+
+    <div class="analysis">
+      ${analysisHtml}
+    </div>
+
+    <div class="task-list">
+      <h4>Current Open Tasks:</h4>
+      ${openTasks.map(t => `<div class="task-item">• ${escapeHtml_(t.subject)} - <em>${escapeHtml_(t.status)}</em></div>`).join('')}
+    </div>
+
+    <p class="note">
+      💡 To update tasks, open <a href="https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}" target="_blank">monday.com Tasks board</a>
+      and search for "${escapeHtml_(vendor)}".
+    </p>
+  `;
+
+  // Show dialog
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(600);
+
+  ui.showModalDialog(htmlOutput, '🤖 Task Status Analysis');
 }
