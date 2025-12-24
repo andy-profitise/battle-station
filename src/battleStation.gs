@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:30 PST
+ * Last Updated: 2025-12-24 00:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -218,7 +218,6 @@ function onOpen() {
   ui.createMenu('🔄 Refresh')
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
-    .addItem('🔄 Full Refresh', 'battleStationRefresh')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
     .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
