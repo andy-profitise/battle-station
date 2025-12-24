@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:15 PST
+ * Last Updated: 2025-12-23 23:57 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -218,7 +218,6 @@ function onOpen() {
   ui.createMenu('🔄 Refresh')
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
-    .addItem('🔄 Full Refresh', 'battleStationRefresh')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
     .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
@@ -2529,6 +2528,79 @@ function getEmailsForVendor_(vendor, listRow) {
     
   } catch (e) {
     Logger.log(`ERROR in getEmailsForVendor_: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get ALL emails from vendor's Gmail sublabel for task analysis context
+ * Uses label search (not filtered search) to get complete email history
+ * @param {number} listRow - The row number in the list sheet
+ * @param {number} maxThreads - Maximum threads to fetch (default 50)
+ * @returns {Array} - Array of email objects with full context
+ */
+function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return [];
+
+  try {
+    // Get the Gmail link to extract the vendor label
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return [];
+
+    const gmailLinkStr = gmailLinkAll.toString();
+
+    // Extract vendor label (zzzvendors-*) from URL
+    // Format: label%3Azzzvendors-vendorname or label:zzzvendors-vendorname
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_-]+)/i);
+    if (!vendorLabelMatch) {
+      Logger.log('Could not extract vendor label from Gmail link');
+      return [];
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+    // Convert dash format to slash format for GmailApp: zzzvendors-name -> zzzVendors/Name
+    const labelPath = vendorLabel.replace('zzzvendors-', 'zzzVendors/').replace(/-/g, ' ');
+
+    Logger.log(`Searching vendor label: ${labelPath}`);
+
+    // Search by label only - no filters, get ALL emails
+    const searchQuery = `label:${vendorLabel}`;
+    const threads = GmailApp.search(searchQuery, 0, maxThreads);
+
+    Logger.log(`Found ${threads.length} threads in vendor label`);
+
+    const emails = [];
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const firstMessage = messages[0];
+
+      // Get labels for this thread
+      const labels = thread.getLabels().map(l => l.getName());
+
+      emails.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        from: lastMessage.getFrom(),
+        snippet: lastMessage.getPlainBody().substring(0, 500),
+        messageCount: messages.length,
+        labels: labels,
+        isUnread: thread.isUnread(),
+        lastMessageDate: lastMessage.getDate()
+      });
+    }
+
+    // Sort by date descending
+    emails.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+
+    return emails;
+
+  } catch (e) {
+    Logger.log(`ERROR in getAllEmailsFromVendorLabel_: ${e.message}`);
     return [];
   }
 }
@@ -8294,10 +8366,11 @@ function analyzeTasksFromEmails() {
   const hasContacts = (contactData.contacts || []).length > 0;
   const hasPhonexaLink = !!contactData.phonexaLink;
 
-  // Get emails for this vendor
-  const emails = getEmailsForVendor_(vendor, listRow);
+  // Get ALL emails from vendor's Gmail sublabel (not filtered search)
+  // This gives full context including processed/dealt-with emails
+  const emails = getAllEmailsFromVendorLabel_(listRow, 50);
   if (!emails || emails.length === 0) {
-    ui.alert('No emails found for this vendor.');
+    ui.alert('No emails found in vendor label.');
     return;
   }
 
@@ -8315,13 +8388,14 @@ function analyzeTasksFromEmails() {
   // Get task analysis settings from Settings sheet
   const taskSettings = getTaskAnalysisSettings_();
 
-  // Build email summaries with content snippets (most recent first, limit to 15)
-  const emailSummaries = emails.slice(0, 15).map((e, i) => {
+  // Build email summaries with content snippets (most recent first, limit to 25 for full context)
+  const emailSummaries = emails.slice(0, 25).map((e, i) => {
     // Handle labels - could be array or string
     const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || '');
     // Include snippet for context (truncate if too long)
     const snippet = (e.snippet || '').substring(0, 300);
-    return `EMAIL ${i + 1} (${e.date}):
+    const msgCount = e.messageCount ? ` [${e.messageCount} msgs in thread]` : '';
+    return `EMAIL ${i + 1} (${e.date})${msgCount}:
 Subject: ${e.subject}
 From: ${e.from || 'Unknown'}
 Labels: ${labelsStr}
@@ -8492,12 +8566,18 @@ SUMMARY:
     <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
 
     <div class="summary-box">
-      <strong>Analyzed:</strong> ${Math.min(emails.length, 15)} emails, ${openTasks.length} open tasks
+      <strong>Analyzed:</strong> ${Math.min(emails.length, 25)} emails from label (${emails.length} total), ${openTasks.length} open tasks
     </div>
 
     <div id="status-message" class="status-msg"></div>
 
     ${updatesHtml}
+
+    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
+      <button id="done-btn" style="background: #1a73e8; color: white; border: none; padding: 10px 30px; border-radius: 5px; font-size: 14px; cursor: pointer;">
+        ✓ Done - Refresh View
+      </button>
+    </div>
 
     <script>
       function applyUpdate(itemId, statusColumnId, newStatus, btn) {
@@ -8570,6 +8650,21 @@ SUMMARY:
         el.className = 'status-msg ' + type;
         setTimeout(function() { el.className = 'status-msg'; }, 5000);
       }
+
+      // Done button - trigger hard refresh and close dialog
+      document.getElementById('done-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = '⏳ Refreshing...';
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(e) {
+            alert('Refresh failed: ' + e.message);
+            google.script.host.close();
+          })
+          .battleStationHardRefresh();
+      });
     </script>
   `;
 
