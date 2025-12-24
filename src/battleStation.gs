@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 01:30 PST
+ * Last Updated: 2025-12-24 07:50 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7189,15 +7189,6 @@ function getSelectedEmailThread_() {
     throw new Error('A(I)DEN sheet not found');
   }
 
-  const selection = bsSh.getSelection();
-  const activeCell = selection.getCurrentCell();
-
-  if (!activeCell) {
-    throw new Error('No cell selected. Please click on an email row first.');
-  }
-
-  const row = activeCell.getRow();
-
   // Check if we're in the emails section by looking for the subject column (column A)
   // and checking if the row is after the EMAILS header
   const values = bsSh.getDataRange().getValues();
@@ -7219,15 +7210,23 @@ function getSelectedEmailThread_() {
   // Email rows start at emailsHeaderRow + 2
   const emailDataStartRow = emailsHeaderRow + 2;
 
-  if (row < emailDataStartRow) {
-    throw new Error('Please select an email row (click on a Subject)');
+  // Determine which row to use - selected row if valid, otherwise first email row
+  const selection = bsSh.getSelection();
+  const activeCell = selection.getCurrentCell();
+  let row = emailDataStartRow; // Default to first email (newest)
+
+  if (activeCell) {
+    const selectedRow = activeCell.getRow();
+    if (selectedRow >= emailDataStartRow) {
+      row = selectedRow; // Use selected row if it's in the email section
+    }
   }
 
-  // Get the subject from the selected row
+  // Get the subject from the row
   const subject = String(bsSh.getRange(row, 1).getValue() || '').trim();
 
   if (!subject || subject === 'No emails found') {
-    throw new Error('No valid email selected');
+    throw new Error('No emails available');
   }
 
   // Try to get the thread ID from the hyperlink formula
@@ -7535,12 +7534,25 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const messages = thread.getMessages();
   const lastMessage = messages[messages.length - 1];
 
-  // Get signature from settings
-  const emailSettings = getEmailResponseSettings_();
-  const signature = emailSettings.signature || '';
-
   // Get my email address to exclude from recipients
   const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      // Find the primary send-as (or the one matching user's email)
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
 
   // Internal domains - people in these domains go to CC
   const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
@@ -7676,12 +7688,13 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Build the quoted original message
   const lastMsgDate = lastMessage.getDate();
   const lastMsgFrom = lastMessage.getFrom();
-  const lastMsgBody = lastMessage.getPlainBody() || '';
+  // Use getBody() to preserve HTML formatting (images, fonts, styling)
+  const lastMsgBody = lastMessage.getBody() || '';
 
   // Format date for quote header
   const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
 
-  // Helper to escape HTML special characters
+  // Helper to escape HTML special characters (for our text, not the original email)
   const escapeHtml = (text) => {
     return text
       .replace(/&/g, '&amp;')
@@ -7693,16 +7706,16 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Convert response body to HTML (preserve line breaks)
   const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
 
-  // Build quoted message in HTML
-  const quotedBodyHtml = lastMsgBody.split('\n').map(line => '&gt; ' + escapeHtml(line)).join('<br>');
-  const quoteHeaderHtml = `<br><br>On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br>`;
+  // Build quoted message using blockquote to preserve original HTML formatting
+  const quoteHeaderHtml = `<br><br><div style="color:#555;">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:</div>`;
+  const quotedBodyHtml = `<blockquote style="margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex">${lastMsgBody}</blockquote>`;
 
   // Full email body with signature and quote (HTML format)
   let fullBodyHtml = `<div>${responseHtml}</div>`;
   if (signature) {
     fullBodyHtml += `<br>${signature}`;
   }
-  fullBodyHtml += `<div style="color:#555;">${quoteHeaderHtml}${quotedBodyHtml}</div>`;
+  fullBodyHtml += quoteHeaderHtml + quotedBodyHtml;
 
   // Build RFC 2822 message from scratch
   const boundary = 'boundary_' + Utilities.getUuid();
