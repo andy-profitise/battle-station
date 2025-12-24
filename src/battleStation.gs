@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 08:35 PST
+ * Last Updated: 2025-12-24 08:55 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7718,18 +7718,28 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Step 2: Get threading headers from the draft (these were set by createDraftReplyAll)
   const inReplyTo = draft.getHeader('In-Reply-To') || '';
   const references = draft.getHeader('References') || '';
-  Logger.log(`Threading headers - In-Reply-To: ${inReplyTo}, References: ${references ? 'present' : 'none'}`);
+  Logger.log(`Thread ID: ${thread.getId()}`);
+  Logger.log(`Thread first subject: ${thread.getFirstMessageSubject()}`);
+  Logger.log(`Draft subject: ${draft.getSubject()}`);
+  Logger.log(`Threading - In-Reply-To: ${inReplyTo || '(empty)'}`);
+  Logger.log(`Threading - References: ${references || '(empty)'}`);
 
   // Step 3: Get the draft via Gmail API
   const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
   const messageId = gmailDraft.message.id;
 
   // Step 4: Build the updated message preserving threading headers
+  // Use thread's first message subject to avoid [External] tags added by recipients
+  let subject = thread.getFirstMessageSubject();
+  if (!subject.toLowerCase().startsWith('re:')) {
+    subject = 'Re: ' + subject;
+  }
+
   let rawHeaders = `From: ${myEmail}\r\n`;
   rawHeaders += `To: ${toRecipients}\r\n`;
   if (ccRecipients) rawHeaders += `Cc: ${ccRecipients}\r\n`;
   if (bccRecipients) rawHeaders += `Bcc: ${bccRecipients}\r\n`;
-  rawHeaders += `Subject: ${draft.getSubject()}\r\n`;
+  rawHeaders += `Subject: ${subject}\r\n`;
   // CRITICAL: Include threading headers for proper reply threading
   if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
   if (references) rawHeaders += `References: ${references}\r\n`;
