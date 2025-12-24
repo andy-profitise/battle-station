@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:10 PST
+ * Last Updated: 2025-12-24 00:15 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8429,8 +8429,12 @@ SUMMARY:
   Logger.log(`Claude response: ${response.content}`);
 
   // Parse Claude's response to extract suggested updates
-  const suggestedUpdates = parseTaskSuggestions_(response.content, openTasks);
-  Logger.log(`Parsed ${suggestedUpdates.length} suggested updates`);
+  let suggestedUpdates = parseTaskSuggestions_(response.content, openTasks);
+  Logger.log(`Parsed ${suggestedUpdates.length} suggested updates (before filtering)`);
+
+  // Filter out suggestions where status isn't actually changing
+  suggestedUpdates = suggestedUpdates.filter(u => u.currentStatus !== u.newStatus);
+  Logger.log(`After filtering same-status: ${suggestedUpdates.length} updates`);
 
   // Store task data for the dialog to use
   const taskDataForDialog = openTasks.map(t => ({
@@ -8480,7 +8484,7 @@ SUMMARY:
       `;
     }
   } else {
-    updatesHtml = '<h3 style="color: #666; margin-top: 15px;">✓ No updates suggested</h3>';
+    updatesHtml = '<h3 style="color: #666; margin-top: 15px;">✓ No status changes suggested</h3><p style="color: #888; font-size: 13px;">All tasks appear to have appropriate statuses based on the email history.</p>';
   }
 
 
