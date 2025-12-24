@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 22:42 PST
+ * Last Updated: 2025-12-23 22:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8247,10 +8247,12 @@ function analyzeTasksFromEmails() {
 
   // Build email summaries (most recent first, limit to 15)
   const emailSummaries = emails.slice(0, 15).map((e, i) => {
+    // Handle labels - could be array or string
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || '');
     return `EMAIL ${i + 1} (${e.date}):
 Subject: ${e.subject}
 From: ${e.from || 'Unknown'}
-Labels: ${(e.labels || []).join(', ')}
+Labels: ${labelsStr}
 ---`;
   }).join('\n\n');
 
