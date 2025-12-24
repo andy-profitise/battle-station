@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 01:35 PST
+ * Last Updated: 2025-12-24 01:45 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7534,12 +7534,25 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const messages = thread.getMessages();
   const lastMessage = messages[messages.length - 1];
 
-  // Get signature from settings
-  const emailSettings = getEmailResponseSettings_();
-  const signature = emailSettings.signature || '';
-
   // Get my email address to exclude from recipients
   const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      // Find the primary send-as (or the one matching user's email)
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
 
   // Internal domains - people in these domains go to CC
   const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
