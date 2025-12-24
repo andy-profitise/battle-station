@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 01:05 PST
+ * Last Updated: 2025-12-24 01:30 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1348,10 +1348,9 @@ function loadVendorData(vendorIndex, options) {
       // Gray out if: there's a vendor folder doc AND this isn't in vendor folder AND this isn't W-9
       const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder && !isInW9Folder;
 
-      // Document name - clickable link to Box
-      const docName = doc.name.length > 40 ? doc.name.substring(0, 37) + '...' : doc.name;
+      // Document name - clickable link to Box (no truncation - user controls column width)
       const docCell = bsSh.getRange(boxRow, 6)
-        .setFormula(`=HYPERLINK("${doc.webUrl}", "${docName.replace(/"/g, '""')}")`)
+        .setFormula(`=HYPERLINK("${doc.webUrl}", "${doc.name.replace(/"/g, '""')}")`)
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
 
@@ -1372,16 +1371,7 @@ function loadVendorData(vendorIndex, options) {
         folderDisplayName = doc.parentFolder;
       }
       
-      // Truncate if too long but keep the path structure visible
-      if (folderDisplayName.length > 45) {
-        const parts = folderDisplayName.split(' > ');
-        if (parts.length > 2) {
-          folderDisplayName = parts[0] + ' > ... > ' + parts[parts.length - 1];
-        } else {
-          folderDisplayName = folderDisplayName.substring(0, 42) + '...';
-        }
-      }
-      
+      // No truncation - user controls column width
       const folderUrl = doc.parentFolderUrl || '';
       const folderCell = bsSh.getRange(boxRow, 7);
       if (folderUrl) {
@@ -1580,10 +1570,9 @@ function loadVendorData(vendorIndex, options) {
     gDriveRow++;
     
     for (const file of gDriveFiles.slice(0, 10)) {
-      // File name - clickable link
-      const fileName = file.name.length > 40 ? file.name.substring(0, 37) + '...' : file.name;
+      // File name - clickable link (no truncation - user controls column width)
       bsSh.getRange(gDriveRow, 6)
-        .setFormula(`=HYPERLINK("${file.url}", "${fileName.replace(/"/g, '""')}")`)
+        .setFormula(`=HYPERLINK("${file.url}", "${file.name.replace(/"/g, '""')}")`)
         .setFontColor('#1a73e8')
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
@@ -7278,18 +7267,20 @@ function getSelectedEmailThread_() {
  * Row: "Cold Outreach - Follow Up" | "Be persistent but polite"
  * Row: "Schedule a Call" | "Always offer specific times"
  * Row: "General" | "Instructions that apply to all response types"
+ * Row: "Signature" | "<html signature here>"
  */
 function getEmailResponseSettings_() {
   const ss = SpreadsheetApp.getActive();
   const settingsSh = ss.getSheetByName('Settings');
 
   if (!settingsSh) {
-    return { typeInstructions: {}, generalInstructions: '' };
+    return { typeInstructions: {}, generalInstructions: '', signature: '' };
   }
 
   const data = settingsSh.getDataRange().getValues();
   const typeInstructions = {};
   let generalInstructions = '';
+  let signature = '';
   let inSection = false;
   let startCol = -1;
 
@@ -7320,16 +7311,19 @@ function getEmailResponseSettings_() {
     }
 
     // Parse settings
-    if (typeCell !== '' && instructionsCell !== '') {
-      if (typeCell.toLowerCase() === 'general') {
+    if (typeCell !== '') {
+      const typeLower = typeCell.toLowerCase();
+      if (typeLower === 'general') {
         generalInstructions = instructionsCell;
-      } else {
+      } else if (typeLower === 'signature') {
+        signature = instructionsCell;
+      } else if (instructionsCell !== '') {
         typeInstructions[typeCell] = instructionsCell;
       }
     }
   }
 
-  return { typeInstructions, generalInstructions };
+  return { typeInstructions, generalInstructions, signature };
 }
 
 /**
@@ -7541,6 +7535,10 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const messages = thread.getMessages();
   const lastMessage = messages[messages.length - 1];
 
+  // Get signature from settings
+  const emailSettings = getEmailResponseSettings_();
+  const signature = emailSettings.signature || '';
+
   // Get my email address to exclude from recipients
   const myEmail = Session.getActiveUser().getEmail().toLowerCase();
 
@@ -7682,11 +7680,29 @@ function createDraftAndGetUrl_(thread, responseBody) {
 
   // Format date for quote header
   const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
-  const quotedBody = lastMsgBody.split('\n').map(line => '> ' + line).join('\n');
-  const quoteHeader = `\n\nOn ${dateStr}, ${lastMsgFrom} wrote:\n`;
 
-  // Full email body with quote
-  const fullBody = responseBody + quoteHeader + quotedBody;
+  // Helper to escape HTML special characters
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML (preserve line breaks)
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message in HTML
+  const quotedBodyHtml = lastMsgBody.split('\n').map(line => '&gt; ' + escapeHtml(line)).join('<br>');
+  const quoteHeaderHtml = `<br><br>On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br>`;
+
+  // Full email body with signature and quote (HTML format)
+  let fullBodyHtml = `<div>${responseHtml}</div>`;
+  if (signature) {
+    fullBodyHtml += `<br>${signature}`;
+  }
+  fullBodyHtml += `<div style="color:#555;">${quoteHeaderHtml}${quotedBodyHtml}</div>`;
 
   // Build RFC 2822 message from scratch
   const boundary = 'boundary_' + Utilities.getUuid();
@@ -7701,12 +7717,12 @@ function createDraftAndGetUrl_(thread, responseBody) {
   if (lastMessageId) rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
   if (referencesHeader) rawMessage += `References: ${referencesHeader}\r\n`;
   rawMessage += `MIME-Version: 1.0\r\n`;
-  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n`;
+  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n`;
   rawMessage += `Content-Transfer-Encoding: base64\r\n`;
   rawMessage += `\r\n`;
 
-  // Body (base64 encoded)
-  rawMessage += Utilities.base64Encode(fullBody, Utilities.Charset.UTF_8);
+  // Body (base64 encoded HTML)
+  rawMessage += Utilities.base64Encode(fullBodyHtml, Utilities.Charset.UTF_8);
 
   // Encode the entire message for Gmail API
   const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
