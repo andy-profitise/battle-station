@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 00:05 PST
+ * Last Updated: 2025-12-24 00:10 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7672,7 +7672,7 @@ function generateEmailResponse_(responseType) {
     PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
 
     // Show preview - draft only created when user confirms
-    showDraftPreviewDialog_(responseBody);
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
 
   } catch (e) {
     ui.alert('Error', e.message, ui.ButtonSet.OK);
@@ -7683,8 +7683,11 @@ function generateEmailResponse_(responseType) {
  * Show the draft preview dialog with revision option
  * Draft is only created when user clicks "Create Draft"
  */
-function showDraftPreviewDialog_(responseBody) {
+function showDraftPreviewDialog_(responseBody, threadId) {
   const ui = SpreadsheetApp.getUi();
+
+  // Build Gmail thread URL
+  const threadUrl = threadId ? `https://mail.google.com/mail/u/0/#inbox/${threadId}` : '';
 
   // Safely escape the response for embedding in HTML
   const escapedResponse = responseBody
@@ -7746,7 +7749,7 @@ function showDraftPreviewDialog_(responseBody) {
   </style>
 </head>
 <body>
-  <div class="header">Preview Generated Response</div>
+  <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
   <div class="buttons">
     <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft and Open</button>
     <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
