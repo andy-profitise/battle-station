@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-23 16:26 PST
+ * Last Updated: 2025-12-23 16:28 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -1751,6 +1751,9 @@ function loadVendorData(vendorIndex, options) {
         bsSh.getRange(currentRow, 1, 1, 4)
           .setFontLine('line-through')
           .setFontColor('#999999');
+      } else if (task.status && task.status.toLowerCase().includes('waiting on phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2');  // Red for waiting on phonexa
       } else if (task.status && task.status.toLowerCase().includes('waiting on client')) {
         bsSh.getRange(currentRow, 1, 1, 4)
           .setBackground('#fff2cc');  // Yellow for waiting on client
