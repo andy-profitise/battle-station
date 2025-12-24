@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 08:25 PST
+ * Last Updated: 2025-12-24 08:35 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -7715,24 +7715,32 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const draft = draftReply.getMessage();
   const draftId = draftReply.getId();
 
-  // Step 2: Get the draft via Gmail API to update it with HTML content
+  // Step 2: Get threading headers from the draft (these were set by createDraftReplyAll)
+  const inReplyTo = draft.getHeader('In-Reply-To') || '';
+  const references = draft.getHeader('References') || '';
+  Logger.log(`Threading headers - In-Reply-To: ${inReplyTo}, References: ${references ? 'present' : 'none'}`);
+
+  // Step 3: Get the draft via Gmail API
   const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
   const messageId = gmailDraft.message.id;
 
-  // Step 3: Build the updated message with our HTML body and correct recipients
+  // Step 4: Build the updated message preserving threading headers
+  let rawHeaders = `From: ${myEmail}\r\n`;
+  rawHeaders += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawHeaders += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawHeaders += `Bcc: ${bccRecipients}\r\n`;
+  rawHeaders += `Subject: ${draft.getSubject()}\r\n`;
+  // CRITICAL: Include threading headers for proper reply threading
+  if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
+  if (references) rawHeaders += `References: ${references}\r\n`;
+  rawHeaders += `MIME-Version: 1.0\r\n`;
+  rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n`;
+  rawHeaders += `\r\n`;
+
   const updateResource = {
     message: {
-      raw: Utilities.base64EncodeWebSafe(
-        `From: ${myEmail}\r\n` +
-        `To: ${toRecipients}\r\n` +
-        (ccRecipients ? `Cc: ${ccRecipients}\r\n` : '') +
-        (bccRecipients ? `Bcc: ${bccRecipients}\r\n` : '') +
-        `Subject: ${draft.getSubject()}\r\n` +
-        `MIME-Version: 1.0\r\n` +
-        `Content-Type: text/html; charset="UTF-8"\r\n` +
-        `\r\n` +
-        fullBodyHtml
-      )
+      raw: Utilities.base64EncodeWebSafe(rawHeaders + fullBodyHtml),
+      threadId: thread.getId()  // Also explicitly set threadId
     }
   };
 
@@ -8197,7 +8205,7 @@ function discoverContactsFromGmail() {
   ss.toast('Analyzing contacts and searching Gmail...', '🔍 Contact Discovery', 5);
 
   // Get existing contacts for this vendor
-  const contactData = getContactsForVendor_(vendor, source);
+  const contactData = getVendorContacts_(vendor, listRow);
   const existingContacts = contactData.contacts || [];
 
   if (existingContacts.length === 0) {
