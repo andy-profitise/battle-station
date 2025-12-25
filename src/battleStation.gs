@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 22:38 PST
+ * Last Updated: 2025-12-24 23:00 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -6076,6 +6076,24 @@ function skipToNextChanged(trackComeback) {
       ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
     }
 
+    // Safeguard: After 30 skips, stop on this vendor to avoid 6-minute timeout
+    const MAX_SKIPS = 30;
+    if (skippedCount >= MAX_SKIPS) {
+      ss.toast(`Stopped after ${skippedCount} skips to avoid timeout`, '⚠️ Safeguard', 5);
+
+      // Update Skip 5 session if active
+      if (skip5Session) {
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
+      }
+
+      // Load this vendor with a note about the safeguard
+      loadVendorData(currentIdx, { forceChanged: false, changeType: `No changes - stopped after ${skippedCount} skips (timeout safeguard)` });
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+      if (trackComeback) checkComeback_();
+      return;
+    }
+
     // Use the centralized change detection helper
     const changeResult = checkVendorForChanges_(vendor, listRow, source);
 
@@ -8520,7 +8538,7 @@ function discoverContactsFromGmail() {
         <label style="margin-left: 15px;"><input type="checkbox" id="selectAllUpdates" onchange="toggleSelectAllUpdates()"> Select All</label>
       </div>
       <table id="updatesTable">
-        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Type</th><th>Current</th><th>New Value</th><th>Found</th></tr>
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Field</th><th>Current</th><th>New Value</th><th>Found</th></tr>
     `;
     for (let i = 0; i < Math.min(potentialUpdates.length, 20); i++) {
       const update = potentialUpdates[i];
@@ -8684,13 +8702,17 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
         columnValues['email_mkrk53z4'] = contact.email;
       }
 
-      // Phone column - simple string format
+      // Phone column - simple string format (digits only)
       if (contact.phone) {
-        columnValues['phone_mkrkzxq2'] = contact.phone;
+        // Strip to digits only for Monday.com phone column
+        const phoneDigits = contact.phone.replace(/\D/g, '');
+        if (phoneDigits.length >= 10) {
+          columnValues['phone_mkrkzxq2'] = phoneDigits;
+        }
       }
 
-      // Contact Type (color column) - set to Primary for new contacts
-      columnValues['color_mkrkh4bk'] = { label: 'Primary' };
+      // Note: Skipping color_mkrkh4bk (Contact Type) as it requires specific label values
+      // Contact type can be set manually in Monday.com after creation
 
       const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
 
