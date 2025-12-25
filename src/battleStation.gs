@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 23:00 PST
+ * Last Updated: 2025-12-24 23:02 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8922,8 +8922,17 @@ function applyContactUpdates(updates, existingContacts) {
 
       } else if (update.updateType === 'jobTitle') {
         // For job title, we'll update the item name to include the title
-        // Format: "Name | Job Title" or just append to existing
-        const newName = `${contact.name.split('|')[0].trim()} | ${update.newValue}`;
+        // Format: "Name | Job Title"
+        // If newValue already contains a pipe (e.g., "Name | Title"), extract just the title part
+        let titleOnly = update.newValue;
+        if (titleOnly.includes('|')) {
+          titleOnly = titleOnly.split('|').pop().trim();
+        }
+        // Also strip any leading/trailing asterisks or special chars from signatures
+        titleOnly = titleOnly.replace(/^[\*\s]+|[\*\s]+$/g, '').trim();
+
+        const baseName = contact.name.split('|')[0].trim();
+        const newName = `${baseName} | ${titleOnly}`;
         const escapedName = newName.replace(/"/g, '\\"');
 
         const mutation = `
