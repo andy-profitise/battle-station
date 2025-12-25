@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 12:43 PST
+ * Last Updated: 2025-12-24 22:27 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2720,14 +2720,28 @@ function searchGmailFromLink_(gmailLink, querySetName) {
     for (const thread of threads) {
       const messages = thread.getMessages();
       if (messages.length === 0) continue;
-      
-      const lastMessage = messages[messages.length - 1]; // Most recent message
+
+      // Find the last message from a real person (skip bounces/system messages)
+      let lastMessage = messages[messages.length - 1];
+      let lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if last message is a bounce/system message, if so find the previous real message
+      if (isSystemOrBounceEmail_(lastSender)) {
+        for (let i = messages.length - 2; i >= 0; i--) {
+          const prevSender = messages[i].getFrom().toLowerCase();
+          if (!isSystemOrBounceEmail_(prevSender)) {
+            lastMessage = messages[i];
+            lastSender = prevSender;
+            break;
+          }
+        }
+      }
+
       const subject = thread.getFirstMessageSubject();
-      const date = lastMessage.getDate(); // Use last message date
+      const date = lastMessage.getDate(); // Use last real message date
 
       // Determine who sent the last message
       const myEmail = Session.getActiveUser().getEmail().toLowerCase();
-      const lastSender = lastMessage.getFrom().toLowerCase();
       let lastFrom = 'VENDOR';
       if (lastSender.includes(myEmail)) {
         lastFrom = 'ME';
@@ -8437,6 +8451,9 @@ function discoverContactsFromGmail() {
       .btn-primary { background: #1a73e8; color: white; }
       .btn-primary:hover { background: #1557b0; }
       .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-secondary { background: #ff9800; color: white; }
+      .btn-secondary:hover { background: #f57c00; }
+      .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
       .checkbox-cell { width: 30px; text-align: center; }
       .job-title { color: #666; font-size: 12px; }
       .status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
@@ -8493,19 +8510,25 @@ function discoverContactsFromGmail() {
   const phoneUpdates = potentialUpdates.filter(u => u.updateType === 'phone');
   const titleUpdates = potentialUpdates.filter(u => u.updateType === 'jobTitle');
 
-  html += `<h3>📱 Potential Updates (${potentialUpdates.length})</h3>`;
+  html += `<h3>📝 Potential Updates (${potentialUpdates.length})</h3>`;
 
   if (potentialUpdates.length === 0) {
     html += `<p class="none">No updates discovered.</p>`;
   } else {
     html += `
-      <table>
-        <tr><th>Name</th><th>Email</th><th>Type</th><th>Current</th><th>New Value</th><th>Found</th></tr>
+      <div style="margin-bottom: 10px;">
+        <button class="btn btn-secondary" onclick="applySelectedUpdates()" id="updateBtn">📝 Apply Selected Updates</button>
+        <label style="margin-left: 15px;"><input type="checkbox" id="selectAllUpdates" onchange="toggleSelectAllUpdates()"> Select All</label>
+      </div>
+      <table id="updatesTable">
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Type</th><th>Current</th><th>New Value</th><th>Found</th></tr>
     `;
-    for (const update of potentialUpdates.slice(0, 20)) {
+    for (let i = 0; i < Math.min(potentialUpdates.length, 20); i++) {
+      const update = potentialUpdates[i];
       const typeLabel = update.updateType === 'phone' ? '📱 Phone' : '💼 Job Title';
       html += `
         <tr class="update">
+          <td class="checkbox-cell"><input type="checkbox" class="update-cb" data-index="${i}"></td>
           <td>${escapeHtml_(update.name)}</td>
           <td>${escapeHtml_(update.email)}</td>
           <td>${typeLabel}</td>
@@ -8516,6 +8539,9 @@ function discoverContactsFromGmail() {
       `;
     }
     html += `</table>`;
+    if (potentialUpdates.length > 20) {
+      html += `<p class="none">...and ${potentialUpdates.length - 20} more</p>`;
+    }
   }
 
   html += `
@@ -8579,6 +8605,45 @@ function discoverContactsFromGmail() {
           })
           .addContactsToMonday(selected, dialogData.mondayItemId, dialogData.boardId);
       }
+
+      function toggleSelectAllUpdates() {
+        const selectAll = document.getElementById('selectAllUpdates').checked;
+        document.querySelectorAll('.update-cb').forEach(cb => cb.checked = selectAll);
+      }
+
+      function applySelectedUpdates() {
+        const selected = [];
+        document.querySelectorAll('.update-cb:checked').forEach(cb => {
+          const idx = parseInt(cb.dataset.index);
+          selected.push(dialogData.potentialUpdates[idx]);
+        });
+
+        if (selected.length === 0) {
+          alert('Please select at least one update to apply.');
+          return;
+        }
+
+        document.getElementById('updateBtn').disabled = true;
+        document.getElementById('updateBtn').textContent = 'Applying...';
+        document.getElementById('statusMsg').innerHTML = '<div class="status-msg">Applying ' + selected.length + ' update(s)...</div>';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-success">' + result + '</div>';
+            document.getElementById('updateBtn').textContent = '✓ Done';
+            // Uncheck applied updates
+            document.querySelectorAll('.update-cb:checked').forEach(cb => {
+              cb.checked = false;
+              cb.closest('tr').style.opacity = '0.5';
+            });
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-error">Error: ' + error.message + '</div>';
+            document.getElementById('updateBtn').disabled = false;
+            document.getElementById('updateBtn').textContent = '📝 Apply Selected Updates';
+          })
+          .applyContactUpdates(selected, dialogData.existingContacts);
+      }
     </script>
   `;
 
@@ -8612,26 +8677,21 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
 
   for (const contact of contacts) {
     try {
-      // Build column values JSON
+      // Build column values JSON - use only known columns with correct formats
       const columnValues = {};
 
-      // Email column
+      // Email column - simple string format
       if (contact.email) {
-        columnValues['email_mkrk53z4'] = { email: contact.email, text: contact.email };
+        columnValues['email_mkrk53z4'] = contact.email;
       }
 
-      // Phone column
+      // Phone column - simple string format
       if (contact.phone) {
-        columnValues['phone_mkrkzxq2'] = { phone: contact.phone, countryShortName: 'US' };
+        columnValues['phone_mkrkzxq2'] = contact.phone;
       }
 
-      // Notes with job title (using long_text column if it exists)
-      if (contact.jobTitle) {
-        columnValues['long_text_mkrkpdbx'] = { text: `Job Title: ${contact.jobTitle}` };
-      }
-
-      // Status - set to "Active" for new contacts
-      columnValues['status'] = { label: 'Active' };
+      // Contact Type (color column) - set to Primary for new contacts
+      columnValues['color_mkrkh4bk'] = { label: 'Primary' };
 
       const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
 
@@ -8743,6 +8803,182 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
   }
 
   return `Successfully added ${createdContactIds.length} contact(s) to Monday.com and linked to vendor!`;
+}
+
+/**
+ * Apply updates to existing contacts in Monday.com
+ * @param {Array} updates - Array of update objects with name, email, updateType, newValue
+ * @param {Array} existingContacts - Array of existing contact objects to find contact IDs
+ * @returns {string} Success message
+ */
+function applyContactUpdates(updates, existingContacts) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const contactsBoardId = BS_CFG.CONTACTS_BOARD_ID;
+
+  Logger.log(`=== APPLYING CONTACT UPDATES ===`);
+  Logger.log(`Applying ${updates.length} update(s)`);
+
+  // First, we need to find the contact item IDs by searching the contacts board
+  // Query contacts board to get item IDs for matching emails
+  const emails = updates.map(u => u.email.toLowerCase());
+  const uniqueEmails = [...new Set(emails)];
+
+  Logger.log(`Looking up contacts for emails: ${uniqueEmails.join(', ')}`);
+
+  // Query to find contact items
+  const searchQuery = `
+    query {
+      boards(ids: [${contactsBoardId}]) {
+        items_page(limit: 500) {
+          items {
+            id
+            name
+            column_values(ids: ["email_mkrk53z4", "phone_mkrkzxq2"]) {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const searchResult = mondayApiRequest_(searchQuery, apiToken);
+  const contactMap = new Map(); // email -> { id, name, phone }
+
+  if (searchResult.data?.boards?.[0]?.items_page?.items) {
+    for (const item of searchResult.data.boards[0].items_page.items) {
+      const emailCol = item.column_values.find(c => c.id === 'email_mkrk53z4');
+      const phoneCol = item.column_values.find(c => c.id === 'phone_mkrkzxq2');
+      if (emailCol?.text) {
+        contactMap.set(emailCol.text.toLowerCase(), {
+          id: item.id,
+          name: item.name,
+          phone: phoneCol?.text || ''
+        });
+      }
+    }
+  }
+
+  Logger.log(`Found ${contactMap.size} contacts in Monday.com`);
+
+  const successCount = { phone: 0, jobTitle: 0 };
+  const errors = [];
+
+  for (const update of updates) {
+    const contact = contactMap.get(update.email.toLowerCase());
+    if (!contact) {
+      Logger.log(`Contact not found for email: ${update.email}`);
+      errors.push(`${update.name}: contact not found`);
+      continue;
+    }
+
+    try {
+      if (update.updateType === 'phone') {
+        // Update phone column
+        const phoneValue = update.newValue;
+        const mutation = `
+          mutation {
+            change_column_value (
+              board_id: ${contactsBoardId},
+              item_id: ${contact.id},
+              column_id: "phone_mkrkzxq2",
+              value: "${phoneValue}"
+            ) { id }
+          }
+        `;
+
+        Logger.log(`Updating phone for ${update.name} (${contact.id}): ${phoneValue}`);
+        const result = mondayApiRequest_(mutation, apiToken);
+
+        if (result.errors && result.errors.length > 0) {
+          Logger.log(`Error updating phone: ${result.errors[0].message}`);
+          errors.push(`${update.name} phone: ${result.errors[0].message}`);
+        } else {
+          successCount.phone++;
+          Logger.log(`Successfully updated phone for ${update.name}`);
+        }
+
+      } else if (update.updateType === 'jobTitle') {
+        // For job title, we'll update the item name to include the title
+        // Format: "Name | Job Title" or just append to existing
+        const newName = `${contact.name.split('|')[0].trim()} | ${update.newValue}`;
+        const escapedName = newName.replace(/"/g, '\\"');
+
+        const mutation = `
+          mutation {
+            change_column_value (
+              board_id: ${contactsBoardId},
+              item_id: ${contact.id},
+              column_id: "name",
+              value: "\\"${escapedName}\\""
+            ) { id }
+          }
+        `;
+
+        Logger.log(`Updating name/title for ${update.name} (${contact.id}): ${newName}`);
+        const result = mondayApiRequest_(mutation, apiToken);
+
+        if (result.errors && result.errors.length > 0) {
+          Logger.log(`Error updating job title: ${result.errors[0].message}`);
+          errors.push(`${update.name} title: ${result.errors[0].message}`);
+        } else {
+          successCount.jobTitle++;
+          Logger.log(`Successfully updated job title for ${update.name}`);
+        }
+      }
+
+    } catch (e) {
+      Logger.log(`Exception updating ${update.name}: ${e.message}`);
+      errors.push(`${update.name}: ${e.message}`);
+    }
+  }
+
+  // Build result message
+  const parts = [];
+  if (successCount.phone > 0) parts.push(`${successCount.phone} phone update(s)`);
+  if (successCount.jobTitle > 0) parts.push(`${successCount.jobTitle} job title update(s)`);
+
+  if (errors.length > 0) {
+    if (parts.length > 0) {
+      return `Applied ${parts.join(', ')} with ${errors.length} error(s): ${errors.slice(0, 3).join('; ')}`;
+    } else {
+      throw new Error(`Failed to apply updates: ${errors.join('; ')}`);
+    }
+  }
+
+  return `Successfully applied ${parts.join(' and ')}!`;
+}
+
+/**
+ * Check if an email sender is a system/bounce message (not a real person)
+ */
+function isSystemOrBounceEmail_(sender) {
+  if (!sender) return false;
+  const lowerSender = sender.toLowerCase();
+
+  // Common system/bounce email patterns
+  const systemPatterns = [
+    'mailer-daemon',
+    'postmaster',
+    'mail delivery subsystem',
+    'noreply',
+    'no-reply',
+    'do-not-reply',
+    'donotreply',
+    'bounce',
+    'auto-reply',
+    'autoreply',
+    'automated',
+    'notification@',
+    'notifications@',
+    'alert@',
+    'alerts@',
+    'system@',
+    'daemon@'
+  ];
+
+  return systemPatterns.some(pattern => lowerSender.includes(pattern));
 }
 
 /**
