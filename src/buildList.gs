@@ -229,9 +229,9 @@ function buildListWithGmailAndNotes() {
       if (gmailSublabelMap.has(vendorKey)) {
         vendorSlug = gmailSublabelMap.get(vendorKey);
       } else {
-        // Fallback: generate slug from vendor name (preserve hyphens)
+        // Fallback: generate slug from vendor name (preserve hyphens and periods)
         vendorSlug = v.name.toLowerCase()
-          .replace(/[^a-z0-9-]+/g, '-')
+          .replace(/[^a-z0-9.-]+/g, '-')
           .replace(/^-+|-+$/g, '');
       }
 
