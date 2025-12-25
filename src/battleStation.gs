@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 11:20 PST
+ * Last Updated: 2025-12-24 12:43 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8336,38 +8336,55 @@ function discoverContactsFromGmail() {
 
           // Check if this is a new contact
           if (!existingEmails.has(email)) {
-            // Extract phone numbers from signature (last 500 chars of body)
+            // Extract phone numbers and job title from signature (last 500 chars of body)
             const signature = body.slice(-500);
             const phones = extractPhoneNumbers_(signature);
+            const jobTitle = extractJobTitle_(signature, name);
 
             potentialNewContacts.push({
               name: name,
               email: email,
               phone: phones.length > 0 ? phones[0] : '',
+              jobTitle: jobTitle,
               lastSeen: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
               domain: domain
             });
 
-            Logger.log(`Potential new contact: ${name} <${email}>`);
+            Logger.log(`Potential new contact: ${name} <${email}> - ${jobTitle || 'no title'}`);
           } else {
-            // Existing contact - check for phone updates
+            // Existing contact - check for phone updates and job title
             const signature = body.slice(-500);
             const phones = extractPhoneNumbers_(signature);
+            const jobTitle = extractJobTitle_(signature, name);
+
+            // Check for job title updates
+            const existingContact = existingContacts.find(c =>
+              c.email && c.email.toLowerCase() === email
+            );
+
+            if (existingContact && jobTitle && !existingContact.notes?.includes(jobTitle)) {
+              potentialUpdates.push({
+                name: existingContact.name,
+                email: email,
+                updateType: 'jobTitle',
+                currentValue: existingContact.notes || '(none)',
+                newValue: jobTitle,
+                foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+              });
+              Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+            }
 
             for (const phone of phones) {
               const normalized = phone.replace(/\D/g, '').slice(-10);
               if (normalized.length === 10 && !existingPhones.has(normalized)) {
                 // Found a new phone number for an existing contact
-                const existingContact = existingContacts.find(c =>
-                  c.email && c.email.toLowerCase() === email
-                );
-
                 if (existingContact) {
                   potentialUpdates.push({
                     name: existingContact.name,
                     email: email,
-                    currentPhone: existingContact.phone || '(none)',
-                    newPhone: phone,
+                    updateType: 'phone',
+                    currentValue: existingContact.phone || '(none)',
+                    newValue: phone,
                     foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
                   });
 
@@ -8387,7 +8404,22 @@ function discoverContactsFromGmail() {
   potentialNewContacts.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen)); // Most recent first
   potentialUpdates.sort((a, b) => b.foundIn.localeCompare(a.foundIn));
 
-  // Build results HTML
+  // Get Monday.com IDs for linking contacts
+  const mondayItemId = contactData.mondayItemId;
+  const boardId = contactData.boardId;
+
+  // Prepare data for the dialog
+  const dialogData = {
+    vendor: vendor,
+    mondayItemId: mondayItemId,
+    boardId: boardId,
+    domains: [...domains],
+    existingContacts: existingContacts,
+    potentialNewContacts: potentialNewContacts.slice(0, 20),
+    potentialUpdates: potentialUpdates.slice(0, 20)
+  };
+
+  // Build results HTML with interactive elements
   let html = `
     <style>
       body { font-family: Arial, sans-serif; font-size: 13px; padding: 10px; }
@@ -8401,34 +8433,52 @@ function discoverContactsFromGmail() {
       .update { background-color: #fff3e0; }
       .none { color: #666; font-style: italic; }
       .summary { background: #f0f0f0; padding: 10px; border-radius: 5px; margin-bottom: 15px; }
+      .btn { padding: 8px 16px; margin: 5px; cursor: pointer; border: none; border-radius: 4px; font-size: 13px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      .btn-primary:hover { background: #1557b0; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .checkbox-cell { width: 30px; text-align: center; }
+      .job-title { color: #666; font-size: 12px; }
+      .status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
+      .status-success { background: #d4edda; color: #155724; }
+      .status-error { background: #f8d7da; color: #721c24; }
     </style>
 
-    <h2>📇 Contact Discovery for ${vendor}</h2>
+    <h2>📇 Contact Discovery for ${escapeHtml_(vendor)}</h2>
 
     <div class="summary">
       <strong>Searched domains:</strong> ${[...domains].map(d => '@' + d).join(', ')}<br>
       <strong>Existing contacts:</strong> ${existingContacts.length}<br>
       <strong>Potential new contacts found:</strong> ${potentialNewContacts.length}<br>
-      <strong>Potential phone updates found:</strong> ${potentialUpdates.length}
+      <strong>Potential updates found:</strong> ${potentialUpdates.length}
     </div>
+
+    <div id="statusMsg"></div>
   `;
 
-  // New contacts section
+  // New contacts section with checkboxes
   html += `<h3>🆕 Potential New Contacts (${potentialNewContacts.length})</h3>`;
 
   if (potentialNewContacts.length === 0) {
     html += `<p class="none">No new contacts discovered.</p>`;
   } else {
     html += `
-      <table>
-        <tr><th>Name</th><th>Email</th><th>Phone</th><th>Last Seen</th></tr>
+      <div style="margin-bottom: 10px;">
+        <button class="btn btn-primary" onclick="addSelectedContacts()" id="addBtn">➕ Add Selected to Monday.com</button>
+        <label style="margin-left: 15px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> Select All</label>
+      </div>
+      <table id="newContactsTable">
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Phone</th><th>Job Title</th><th>Last Seen</th></tr>
     `;
-    for (const contact of potentialNewContacts.slice(0, 20)) { // Limit to 20
+    for (let i = 0; i < Math.min(potentialNewContacts.length, 20); i++) {
+      const contact = potentialNewContacts[i];
       html += `
         <tr class="new-contact">
+          <td class="checkbox-cell"><input type="checkbox" class="contact-cb" data-index="${i}"></td>
           <td>${escapeHtml_(contact.name)}</td>
           <td>${escapeHtml_(contact.email)}</td>
           <td>${contact.phone || '<span class="none">-</span>'}</td>
+          <td class="job-title">${contact.jobTitle ? escapeHtml_(contact.jobTitle) : '<span class="none">-</span>'}</td>
           <td>${contact.lastSeen}</td>
         </tr>
       `;
@@ -8439,31 +8489,33 @@ function discoverContactsFromGmail() {
     }
   }
 
-  // Phone updates section
-  html += `<h3>📱 Potential Phone Updates (${potentialUpdates.length})</h3>`;
+  // Updates section (phone and job title)
+  const phoneUpdates = potentialUpdates.filter(u => u.updateType === 'phone');
+  const titleUpdates = potentialUpdates.filter(u => u.updateType === 'jobTitle');
+
+  html += `<h3>📱 Potential Updates (${potentialUpdates.length})</h3>`;
 
   if (potentialUpdates.length === 0) {
-    html += `<p class="none">No phone updates discovered.</p>`;
+    html += `<p class="none">No updates discovered.</p>`;
   } else {
     html += `
       <table>
-        <tr><th>Name</th><th>Email</th><th>Current Phone</th><th>New Phone</th><th>Found In</th></tr>
+        <tr><th>Name</th><th>Email</th><th>Type</th><th>Current</th><th>New Value</th><th>Found</th></tr>
     `;
     for (const update of potentialUpdates.slice(0, 20)) {
+      const typeLabel = update.updateType === 'phone' ? '📱 Phone' : '💼 Job Title';
       html += `
         <tr class="update">
           <td>${escapeHtml_(update.name)}</td>
           <td>${escapeHtml_(update.email)}</td>
-          <td>${escapeHtml_(update.currentPhone)}</td>
-          <td><strong>${escapeHtml_(update.newPhone)}</strong></td>
+          <td>${typeLabel}</td>
+          <td>${escapeHtml_(update.currentValue)}</td>
+          <td><strong>${escapeHtml_(update.newValue)}</strong></td>
           <td>${update.foundIn}</td>
         </tr>
       `;
     }
     html += `</table>`;
-    if (potentialUpdates.length > 20) {
-      html += `<p class="none">...and ${potentialUpdates.length - 20} more</p>`;
-    }
   }
 
   html += `
@@ -8484,14 +8536,213 @@ function discoverContactsFromGmail() {
   }
   html += `</table>`;
 
+  // Add JavaScript for interactivity
+  html += `
+    <script>
+      const dialogData = ${JSON.stringify(dialogData)};
+
+      function toggleSelectAll() {
+        const selectAll = document.getElementById('selectAll').checked;
+        document.querySelectorAll('.contact-cb').forEach(cb => cb.checked = selectAll);
+      }
+
+      function addSelectedContacts() {
+        const selected = [];
+        document.querySelectorAll('.contact-cb:checked').forEach(cb => {
+          const idx = parseInt(cb.dataset.index);
+          selected.push(dialogData.potentialNewContacts[idx]);
+        });
+
+        if (selected.length === 0) {
+          alert('Please select at least one contact to add.');
+          return;
+        }
+
+        document.getElementById('addBtn').disabled = true;
+        document.getElementById('addBtn').textContent = 'Adding...';
+        document.getElementById('statusMsg').innerHTML = '<div class="status-msg">Adding ' + selected.length + ' contact(s)...</div>';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-success">' + result + '</div>';
+            document.getElementById('addBtn').textContent = '✓ Done';
+            // Uncheck added contacts
+            document.querySelectorAll('.contact-cb:checked').forEach(cb => {
+              cb.checked = false;
+              cb.closest('tr').style.opacity = '0.5';
+            });
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-error">Error: ' + error.message + '</div>';
+            document.getElementById('addBtn').disabled = false;
+            document.getElementById('addBtn').textContent = '➕ Add Selected to Monday.com';
+          })
+          .addContactsToMonday(selected, dialogData.mondayItemId, dialogData.boardId);
+      }
+    </script>
+  `;
+
   // Show dialog
   const htmlOutput = HtmlService.createHtmlOutput(html)
-    .setWidth(800)
-    .setHeight(600);
+    .setWidth(900)
+    .setHeight(700);
 
   ui.showModalDialog(htmlOutput, '📇 Contact Discovery');
 
   Logger.log(`Contact discovery complete: ${potentialNewContacts.length} new, ${potentialUpdates.length} updates`);
+}
+
+/**
+ * Add contacts to Monday.com from the Contact Discovery dialog
+ * @param {Array} contacts - Array of contact objects with name, email, phone, jobTitle
+ * @param {string} vendorItemId - Monday.com item ID of the vendor
+ * @param {string} vendorBoardId - Monday.com board ID of the vendor (Buyers or Affiliates)
+ * @returns {string} Success message
+ */
+function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const contactsBoardId = BS_CFG.CONTACTS_BOARD_ID;
+
+  Logger.log(`=== ADDING CONTACTS TO MONDAY.COM ===`);
+  Logger.log(`Adding ${contacts.length} contact(s)`);
+  Logger.log(`Vendor item: ${vendorItemId} on board ${vendorBoardId}`);
+
+  const createdContactIds = [];
+  const errors = [];
+
+  for (const contact of contacts) {
+    try {
+      // Build column values JSON
+      const columnValues = {};
+
+      // Email column
+      if (contact.email) {
+        columnValues['email_mkrk53z4'] = { email: contact.email, text: contact.email };
+      }
+
+      // Phone column
+      if (contact.phone) {
+        columnValues['phone_mkrkzxq2'] = { phone: contact.phone, countryShortName: 'US' };
+      }
+
+      // Notes with job title (using long_text column if it exists)
+      if (contact.jobTitle) {
+        columnValues['long_text_mkrkpdbx'] = { text: `Job Title: ${contact.jobTitle}` };
+      }
+
+      // Status - set to "Active" for new contacts
+      columnValues['status'] = { label: 'Active' };
+
+      const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
+
+      // Create the contact item
+      const createMutation = `
+        mutation {
+          create_item (
+            board_id: ${contactsBoardId},
+            item_name: "${contact.name.replace(/"/g, '\\"')}",
+            column_values: ${columnValuesJson}
+          ) {
+            id
+            name
+          }
+        }
+      `;
+
+      Logger.log(`Creating contact: ${contact.name}`);
+
+      const createResult = mondayApiRequest_(createMutation, apiToken);
+
+      if (createResult.errors && createResult.errors.length > 0) {
+        Logger.log(`Error creating contact ${contact.name}: ${createResult.errors[0].message}`);
+        errors.push(`${contact.name}: ${createResult.errors[0].message}`);
+        continue;
+      }
+
+      if (createResult.data?.create_item?.id) {
+        const newContactId = createResult.data.create_item.id;
+        createdContactIds.push(newContactId);
+        Logger.log(`Created contact ${contact.name} with ID: ${newContactId}`);
+      }
+
+    } catch (e) {
+      Logger.log(`Exception creating contact ${contact.name}: ${e.message}`);
+      errors.push(`${contact.name}: ${e.message}`);
+    }
+  }
+
+  // Link created contacts to the vendor item
+  if (createdContactIds.length > 0 && vendorItemId && vendorBoardId) {
+    try {
+      // Determine which contacts column to use based on vendor board
+      const contactsColumnId = vendorBoardId === BS_CFG.BUYERS_BOARD_ID
+        ? BS_CFG.BUYERS_CONTACTS_COLUMN
+        : BS_CFG.AFFILIATES_CONTACTS_COLUMN;
+
+      // Get existing linked contacts first
+      const existingQuery = `
+        query {
+          items(ids: [${vendorItemId}]) {
+            column_values(ids: ["${contactsColumnId}"]) {
+              ... on BoardRelationValue {
+                linked_item_ids
+              }
+            }
+          }
+        }
+      `;
+
+      const existingResult = mondayApiRequest_(existingQuery, apiToken);
+      let existingIds = [];
+
+      if (existingResult.data?.items?.[0]?.column_values?.[0]?.linked_item_ids) {
+        existingIds = existingResult.data.items[0].column_values[0].linked_item_ids;
+      }
+
+      // Combine existing and new contact IDs
+      const allContactIds = [...existingIds, ...createdContactIds];
+
+      // Update the board relation column with all contact IDs
+      const linkValue = JSON.stringify({ item_ids: allContactIds });
+      const escapedLinkValue = linkValue.replace(/"/g, '\\"');
+
+      const linkMutation = `
+        mutation {
+          change_column_value (
+            board_id: ${vendorBoardId},
+            item_id: ${vendorItemId},
+            column_id: "${contactsColumnId}",
+            value: "${escapedLinkValue}"
+          ) { id }
+        }
+      `;
+
+      Logger.log(`Linking ${createdContactIds.length} new contacts to vendor`);
+      const linkResult = mondayApiRequest_(linkMutation, apiToken);
+
+      if (linkResult.errors && linkResult.errors.length > 0) {
+        Logger.log(`Error linking contacts: ${linkResult.errors[0].message}`);
+        errors.push(`Linking: ${linkResult.errors[0].message}`);
+      } else {
+        Logger.log(`Successfully linked contacts to vendor`);
+      }
+
+    } catch (e) {
+      Logger.log(`Exception linking contacts: ${e.message}`);
+      errors.push(`Linking: ${e.message}`);
+    }
+  }
+
+  // Build result message
+  if (errors.length > 0) {
+    if (createdContactIds.length > 0) {
+      return `Added ${createdContactIds.length} contact(s) with ${errors.length} error(s): ${errors.join('; ')}`;
+    } else {
+      throw new Error(`Failed to add contacts: ${errors.join('; ')}`);
+    }
+  }
+
+  return `Successfully added ${createdContactIds.length} contact(s) to Monday.com and linked to vendor!`;
 }
 
 /**
@@ -8538,6 +8789,68 @@ function extractPhoneNumbers_(text) {
   }
 
   return [...phones];
+}
+
+/**
+ * Extract job title from email signature
+ * Looks for common job title patterns near the person's name
+ */
+function extractJobTitle_(text, name) {
+  if (!text || !name) return '';
+
+  // Common job title keywords
+  const titleKeywords = [
+    'Director', 'Manager', 'President', 'VP', 'Vice President', 'CEO', 'CFO', 'COO', 'CTO',
+    'Owner', 'Partner', 'Principal', 'Founder', 'Co-Founder',
+    'Coordinator', 'Specialist', 'Analyst', 'Associate', 'Assistant',
+    'Executive', 'Officer', 'Administrator', 'Supervisor', 'Lead',
+    'Representative', 'Agent', 'Consultant', 'Advisor', 'Counsel',
+    'Engineer', 'Developer', 'Architect', 'Designer',
+    'Sales', 'Marketing', 'Operations', 'Finance', 'HR', 'Human Resources',
+    'Account', 'Business Development', 'Customer', 'Client', 'Support',
+    'Regional', 'National', 'Senior', 'Junior', 'Chief'
+  ];
+
+  // Build regex to find title patterns
+  const titlePattern = new RegExp(
+    `(?:^|\\n|\\|)\\s*((?:${titleKeywords.join('|')})(?:\\s+(?:of\\s+)?[A-Za-z]+){0,4})\\s*(?:\\n|\\||$)`,
+    'im'
+  );
+
+  // Also look for title right after or before the name
+  const firstName = name.split(/\s+/)[0];
+  const lines = text.split(/[\n\r]+/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // If this line contains the person's name or first name
+    if (line.toLowerCase().includes(firstName.toLowerCase())) {
+      // Check the next line for a title
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim();
+        if (nextLine && nextLine.length < 80) {
+          // Check if it looks like a title
+          for (const keyword of titleKeywords) {
+            if (nextLine.toLowerCase().includes(keyword.toLowerCase())) {
+              return nextLine;
+            }
+          }
+        }
+      }
+    }
+
+    // Check if this line itself is a title (after finding name)
+    if (line.length < 80 && line.length > 3) {
+      for (const keyword of titleKeywords) {
+        if (line.toLowerCase().includes(keyword.toLowerCase()) && !line.includes('@')) {
+          return line;
+        }
+      }
+    }
+  }
+
+  return '';
 }
 
 /**
