@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 12:43 PST
+ * Last Updated: 2025-12-24 19:02 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2720,14 +2720,28 @@ function searchGmailFromLink_(gmailLink, querySetName) {
     for (const thread of threads) {
       const messages = thread.getMessages();
       if (messages.length === 0) continue;
-      
-      const lastMessage = messages[messages.length - 1]; // Most recent message
+
+      // Find the last message from a real person (skip bounces/system messages)
+      let lastMessage = messages[messages.length - 1];
+      let lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if last message is a bounce/system message, if so find the previous real message
+      if (isSystemOrBounceEmail_(lastSender)) {
+        for (let i = messages.length - 2; i >= 0; i--) {
+          const prevSender = messages[i].getFrom().toLowerCase();
+          if (!isSystemOrBounceEmail_(prevSender)) {
+            lastMessage = messages[i];
+            lastSender = prevSender;
+            break;
+          }
+        }
+      }
+
       const subject = thread.getFirstMessageSubject();
-      const date = lastMessage.getDate(); // Use last message date
+      const date = lastMessage.getDate(); // Use last real message date
 
       // Determine who sent the last message
       const myEmail = Session.getActiveUser().getEmail().toLowerCase();
-      const lastSender = lastMessage.getFrom().toLowerCase();
       let lastFrom = 'VENDOR';
       if (lastSender.includes(myEmail)) {
         lastFrom = 'ME';
@@ -8743,6 +8757,37 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
   }
 
   return `Successfully added ${createdContactIds.length} contact(s) to Monday.com and linked to vendor!`;
+}
+
+/**
+ * Check if an email sender is a system/bounce message (not a real person)
+ */
+function isSystemOrBounceEmail_(sender) {
+  if (!sender) return false;
+  const lowerSender = sender.toLowerCase();
+
+  // Common system/bounce email patterns
+  const systemPatterns = [
+    'mailer-daemon',
+    'postmaster',
+    'mail delivery subsystem',
+    'noreply',
+    'no-reply',
+    'do-not-reply',
+    'donotreply',
+    'bounce',
+    'auto-reply',
+    'autoreply',
+    'automated',
+    'notification@',
+    'notifications@',
+    'alert@',
+    'alerts@',
+    'system@',
+    'daemon@'
+  ];
+
+  return systemPatterns.some(pattern => lowerSender.includes(pattern));
 }
 
 /**
