@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-24 22:27 PST
+ * Last Updated: 2025-12-24 23:02 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -5978,12 +5978,41 @@ function skipToNextChanged(trackComeback) {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   const props = PropertiesService.getScriptProperties();
-  
+
   if (!bsSh || !listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
+  // Check if there's an active Skip 5 & Return session
+  let skip5Session = null;
+  const skip5Str = props.getProperty('BS_SKIP5_SESSION');
+  if (skip5Str) {
+    try {
+      skip5Session = JSON.parse(skip5Str);
+
+      // Check if session is marked complete (ready to return)
+      if (skip5Session.complete) {
+        ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 Skip 5 Complete', 3);
+        Utilities.sleep(500);
+        loadVendorData(skip5Session.originIdx);
+        props.deleteProperty('BS_SKIP5_SESSION');
+
+        SpreadsheetApp.getUi().alert(
+          'Skip 5 & Return Complete',
+          `Found ${skip5Session.changedFound} changed vendor(s).\n` +
+          `Skipped ${skip5Session.skippedCount || 0} unchanged vendor(s).\n\n` +
+          `Returned to: ${skip5Session.originVendor}`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+        return;
+      }
+    } catch (e) {
+      props.deleteProperty('BS_SKIP5_SESSION');
+      skip5Session = null;
+    }
+  }
+
   // If trackComeback wasn't explicitly passed, check if there's an existing comeback pending
   if (trackComeback === undefined) {
     const comebackStr = props.getProperty('BS_COMEBACK');
@@ -5991,38 +6020,101 @@ function skipToNextChanged(trackComeback) {
       trackComeback = true;  // Auto-enable if comeback is pending
     }
   }
-  
+
   const listData = listSh.getDataRange().getValues();
   const totalVendors = listData.length - 1;
-  
+
   // Get current index using the same function as other navigation
   let currentIdx = getCurrentVendorIndex_() || 1;
-  
+
   let skippedCount = 0;
-  
-  ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
-  
+
+  // Show progress message based on session state
+  if (skip5Session) {
+    ss.toast(`Skip 5 & Return: ${skip5Session.changedFound}/${skip5Session.changedTarget} found. Searching...`, '🔄 Skip 5', -1);
+  } else {
+    ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
+  }
+
   // Loop through vendors looking for one with changes - start from NEXT vendor
   while (true) {
     currentIdx++;  // Move to next vendor FIRST
-    
+
     // Stop at end
     if (currentIdx > totalVendors) {
       ss.toast('');
+
+      // If Skip 5 session is active, return to origin
+      if (skip5Session) {
+        ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 End of List', 3);
+        Utilities.sleep(500);
+        loadVendorData(skip5Session.originIdx);
+        props.deleteProperty('BS_SKIP5_SESSION');
+
+        SpreadsheetApp.getUi().alert(
+          'Skip 5 & Return Complete',
+          `Reached end of list.\n` +
+          `Found ${skip5Session.changedFound} changed vendor(s).\n` +
+          `Skipped ${skippedCount + (skip5Session.skippedCount || 0)} unchanged vendor(s).\n\n` +
+          `Returned to: ${skip5Session.originVendor}`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+        return;
+      }
+
       SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
       return;
     }
-    
+
     const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
     const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
     const listRow = currentIdx + 1;
-    
-    ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
-    
+
+    if (skip5Session) {
+      ss.toast(`Checking ${vendor}... (${skip5Session.changedFound}/${skip5Session.changedTarget}, ${skippedCount} skipped)`, '🔄 Skip 5', -1);
+    } else {
+      ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
+    }
+
+    // Safeguard: After 30 skips, stop on this vendor to avoid 6-minute timeout
+    const MAX_SKIPS = 30;
+    if (skippedCount >= MAX_SKIPS) {
+      ss.toast(`Stopped after ${skippedCount} skips to avoid timeout`, '⚠️ Safeguard', 5);
+
+      // Update Skip 5 session if active
+      if (skip5Session) {
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
+      }
+
+      // Load this vendor with a note about the safeguard
+      loadVendorData(currentIdx, { forceChanged: false, changeType: `No changes - stopped after ${skippedCount} skips (timeout safeguard)` });
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+      if (trackComeback) checkComeback_();
+      return;
+    }
+
     // Use the centralized change detection helper
     const changeResult = checkVendorForChanges_(vendor, listRow, source);
-    
+
     if (changeResult.hasChanges) {
+      // If Skip 5 session is active, update it
+      if (skip5Session) {
+        skip5Session.changedFound++;
+        skip5Session.currentIdx = currentIdx;
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+
+        // Check if we've found all 5
+        if (skip5Session.changedFound >= skip5Session.changedTarget) {
+          skip5Session.complete = true;
+          ss.toast(`Found ${skip5Session.changedFound}/${skip5Session.changedTarget}! Next skip will return to ${skip5Session.originVendor}`, '🔄 5/5 Found', 5);
+        } else {
+          ss.toast(`Skip 5: ${skip5Session.changedFound}/${skip5Session.changedTarget} - ${vendor}`, '🔄 Skip 5', 3);
+        }
+
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
+      }
+
       // Show what changed in a toast BEFORE loading modules
       const changeLabel = formatChangeType_(changeResult.changeType);
       ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
@@ -6033,7 +6125,7 @@ function skipToNextChanged(trackComeback) {
       if (trackComeback) checkComeback_();
       return;
     }
-    
+
     // No changes - mark as skipped (yellow)
     setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
     skippedCount++;
@@ -6216,45 +6308,33 @@ function viewComebackStatus() {
 /**
  * Skip to next changed vendor 5 times, then return to the original
  * Useful for putting things in motion and letting them process while reviewing others
+ * This function initializes a session and delegates to skipToNextChanged()
  */
 function skip5AndReturn() {
   const ss = SpreadsheetApp.getActive();
-  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   const props = PropertiesService.getScriptProperties();
-  
-  if (!bsSh || !listSh) {
+
+  if (!listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
   // Check if we're already in a "Skip 5 & Return" session
   const sessionStr = props.getProperty('BS_SKIP5_SESSION');
-  let session = null;
-  
-  if (sessionStr) {
-    try {
-      session = JSON.parse(sessionStr);
-    } catch (e) {
-      props.deleteProperty('BS_SKIP5_SESSION');
-    }
-  }
-  
-  const totalVendors = listSh.getLastRow() - 1;
-  const listData = listSh.getDataRange().getValues();
-  
-  // If no active session, start a new one
-  if (!session) {
+
+  if (!sessionStr) {
+    // Start a new session
     const originIdx = getCurrentVendorIndex_();
-    
+
     if (!originIdx) {
       SpreadsheetApp.getUi().alert('Could not determine current vendor index.');
       return;
     }
-    
+
     const originVendor = listSh.getRange(originIdx + 1, 1).getValue();
-    
-    session = {
+
+    const session = {
       originIdx: originIdx,
       originVendor: originVendor,
       currentIdx: originIdx,
@@ -6263,76 +6343,13 @@ function skip5AndReturn() {
       skippedCount: 0,
       startedAt: new Date().toISOString()
     };
-    
+
+    props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
     ss.toast(`Starting Skip 5 & Return from: ${originVendor}`, '🔄 Skip 5 & Return', 3);
-  } else {
-    ss.toast(`Continuing Skip 5 & Return (${session.changedFound}/${session.changedTarget} found)`, '🔄 Skip 5 & Return', 2);
   }
-  
-  // Search for next changed vendor
-  let currentIdx = session.currentIdx;
-  
-  while (currentIdx < totalVendors) {
-    currentIdx++;
-    
-    if (currentIdx > totalVendors) {
-      break;
-    }
-    
-    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
-    const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
-    const listRow = currentIdx + 1;
-    
-    ss.toast(`Checking ${vendor}... (${session.changedFound}/${session.changedTarget} changed, ${session.skippedCount} skipped)`, '🔄 Skip 5 & Return', -1);
-    
-    // Use the centralized change detection helper
-    const changeResult = checkVendorForChanges_(vendor, listRow, source);
-    
-    if (changeResult.hasChanges) {
-      session.changedFound++;
-      session.currentIdx = currentIdx;
-      
-      // Load this vendor
-      loadVendorData(currentIdx, { forceChanged: true });
-      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-      
-      // Check if we've found all 5
-      if (session.changedFound >= session.changedTarget) {
-        // Done! Next call will return to origin
-        ss.toast(`Found ${session.changedFound} changed vendors. Run again to return to ${session.originVendor}`, '🔄 5/5 Found', 5);
-        
-        // Mark session as complete (ready to return)
-        session.complete = true;
-        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
-      } else {
-        // More to find - save session and stop here
-        ss.toast(`Changed vendor ${session.changedFound}/${session.changedTarget}: ${vendor} (${changeResult.changeType})`, '🔄 Skip 5 & Return', 3);
-        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
-      }
-      return;
-    }
-    
-    // No changes - mark as skipped (yellow)
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
-    session.skippedCount++;
-  }
-  
-  // If we get here, we ran out of vendors before finding enough changed ones
-  // Return to origin
-  ss.toast(`Returning to: ${session.originVendor}`, '🔄 Returning', 2);
-  Utilities.sleep(500);
-  loadVendorData(session.originIdx);
-  
-  // Clear the session
-  props.deleteProperty('BS_SKIP5_SESSION');
-  
-  SpreadsheetApp.getUi().alert(
-    'Skip 5 & Return Complete',
-    `Found only ${session.changedFound} changed vendor(s) before end of list.\n` +
-    `Skipped ${session.skippedCount} unchanged vendor(s).\n\n` +
-    `Returned to: ${session.originVendor}`,
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
+
+  // Delegate to skipToNextChanged which now handles Skip 5 sessions
+  skipToNextChanged();
 }
 
 /**
@@ -8521,7 +8538,7 @@ function discoverContactsFromGmail() {
         <label style="margin-left: 15px;"><input type="checkbox" id="selectAllUpdates" onchange="toggleSelectAllUpdates()"> Select All</label>
       </div>
       <table id="updatesTable">
-        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Type</th><th>Current</th><th>New Value</th><th>Found</th></tr>
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Field</th><th>Current</th><th>New Value</th><th>Found</th></tr>
     `;
     for (let i = 0; i < Math.min(potentialUpdates.length, 20); i++) {
       const update = potentialUpdates[i];
@@ -8685,13 +8702,17 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
         columnValues['email_mkrk53z4'] = contact.email;
       }
 
-      // Phone column - simple string format
+      // Phone column - simple string format (digits only)
       if (contact.phone) {
-        columnValues['phone_mkrkzxq2'] = contact.phone;
+        // Strip to digits only for Monday.com phone column
+        const phoneDigits = contact.phone.replace(/\D/g, '');
+        if (phoneDigits.length >= 10) {
+          columnValues['phone_mkrkzxq2'] = phoneDigits;
+        }
       }
 
-      // Contact Type (color column) - set to Primary for new contacts
-      columnValues['color_mkrkh4bk'] = { label: 'Primary' };
+      // Note: Skipping color_mkrkh4bk (Contact Type) as it requires specific label values
+      // Contact type can be set manually in Monday.com after creation
 
       const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
 
@@ -8901,8 +8922,17 @@ function applyContactUpdates(updates, existingContacts) {
 
       } else if (update.updateType === 'jobTitle') {
         // For job title, we'll update the item name to include the title
-        // Format: "Name | Job Title" or just append to existing
-        const newName = `${contact.name.split('|')[0].trim()} | ${update.newValue}`;
+        // Format: "Name | Job Title"
+        // If newValue already contains a pipe (e.g., "Name | Title"), extract just the title part
+        let titleOnly = update.newValue;
+        if (titleOnly.includes('|')) {
+          titleOnly = titleOnly.split('|').pop().trim();
+        }
+        // Also strip any leading/trailing asterisks or special chars from signatures
+        titleOnly = titleOnly.replace(/^[\*\s]+|[\*\s]+$/g, '').trim();
+
+        const baseName = contact.name.split('|')[0].trim();
+        const newName = `${baseName} | ${titleOnly}`;
         const escapedName = newName.replace(/"/g, '\\"');
 
         const mutation = `
