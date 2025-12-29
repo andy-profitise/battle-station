@@ -727,8 +727,14 @@ function loadVendorData(vendorIndex, options) {
       return a.name.localeCompare(b.name);
     });
     
+    // Get last Contact Discovery run date for this vendor
+    const contactDiscoveryProps = PropertiesService.getScriptProperties();
+    const contactDiscoveryKey = `BS_CONTACT_DISCOVERY_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const lastDiscoveryDate = contactDiscoveryProps.getProperty(contactDiscoveryKey);
+    const discoveryDisplay = lastDiscoveryDate ? `  📅 Last scanned: ${lastDiscoveryDate}` : '';
+
     bsSh.getRange(currentRow, 1, 1, 4).merge()
-      .setValue(`👤 CONTACTS (${contacts.length})`)
+      .setValue(`👤 CONTACTS (${contacts.length})${discoveryDisplay}`)
       .setBackground('#f8f9fa')
       .setFontWeight('bold')
       .setFontSize(10)
@@ -1640,7 +1646,72 @@ function loadVendorData(vendorIndex, options) {
   
   // Update rightColumnRow to track furthest row used on right side
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
-  
+
+  // CRYSTAL BALL SECTION (right side - below Google Drive)
+  ss.toast('Analyzing emails...', '🔮 Crystal Ball', 2);
+  const crystalBall = getCrystalBallData_(vendor, listRow);
+
+  let crystalRow = rightColumnRow + 1;
+
+  // Crystal Ball header
+  const crystalCount = crystalBall.items.length + crystalBall.snoozed.length;
+  bsSh.getRange(crystalRow, 6, 1, 4).merge()
+    .setValue(`🔮 CRYSTAL BALL (${crystalCount} threads)`)
+    .setBackground('#e8f5e9')  // Light green
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#2e7d32')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(crystalRow, 24);
+  crystalRow++;
+
+  if (crystalBall.error) {
+    bsSh.getRange(crystalRow, 6, 1, 4).merge()
+      .setValue(`Error: ${crystalBall.error}`)
+      .setFontStyle('italic')
+      .setFontColor('#d32f2f')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left');
+    crystalRow++;
+  } else if (crystalBall.summary) {
+    // Display the AI-generated summary
+    const summaryLines = crystalBall.summary.split('\n').filter(l => l.trim());
+
+    for (const line of summaryLines.slice(0, 8)) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(line.trim())
+        .setFontSize(9)
+        .setBackground('#fafafa')
+        .setWrap(true)
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(crystalRow, 22);
+      crystalRow++;
+    }
+
+    if (summaryLines.length > 8) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(`... and ${summaryLines.length - 8} more items`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left');
+      crystalRow++;
+    }
+  } else {
+    bsSh.getRange(crystalRow, 6, 1, 4).merge()
+      .setValue('No outstanding items found')
+      .setFontStyle('italic')
+      .setFontColor('#666666')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left');
+    crystalRow++;
+  }
+
+  // Update rightColumnRow
+  rightColumnRow = Math.max(rightColumnRow, crystalRow);
+
   // EMAILS SECTION
   ss.toast('Searching Gmail...', '📧 Loading', 2);
   const emails = getEmailsForVendor_(vendor, listRow);
@@ -3805,6 +3876,185 @@ function getGDriveFilesForVendor_(vendorName) {
   } catch (e) {
     Logger.log(`Error searching Google Drive: ${e.message}`);
     return { files: [], folderFound: false, folderUrl: null };
+  }
+}
+
+/************************************************************
+ * CRYSTAL BALL - Vendor Email Analysis
+ * Analyzes outstanding items and snoozed emails for a vendor
+ ************************************************************/
+
+/**
+ * Get Crystal Ball analysis for a vendor
+ * Analyzes emails in 00.received and snoozed emails to determine what's outstanding
+ *
+ * @param {string} vendor - The vendor name
+ * @param {number} listRow - The row number in the list sheet
+ * @returns {object} - { items: [], snoozed: [], summary: string, error: string }
+ */
+function getCrystalBallData_(vendor, listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    return { items: [], snoozed: [], summary: '', error: 'List sheet not found' };
+  }
+
+  try {
+    // Get the Gmail link to extract the vendor label
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) {
+      return { items: [], snoozed: [], summary: '', error: 'No Gmail link found' };
+    }
+
+    const gmailLinkStr = gmailLinkAll.toString();
+
+    // Extract vendor label (zzzvendors-*) from URL
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      return { items: [], snoozed: [], summary: '', error: 'Could not extract vendor label' };
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+    Logger.log(`[Crystal Ball] Analyzing vendor: ${vendor}, label: ${vendorLabel}`);
+
+    // Search 1: Threads in 00.received with this vendor's label
+    const receivedQuery = `label:00.received label:${vendorLabel}`;
+    const receivedThreads = GmailApp.search(receivedQuery, 0, 30);
+    Logger.log(`[Crystal Ball] Found ${receivedThreads.length} threads in 00.received`);
+
+    // Search 2: Snoozed threads for this vendor
+    const snoozedQuery = `is:snoozed label:${vendorLabel}`;
+    const snoozedThreads = GmailApp.search(snoozedQuery, 0, 20);
+    Logger.log(`[Crystal Ball] Found ${snoozedThreads.length} snoozed threads`);
+
+    // Process received threads
+    const receivedItems = [];
+    for (const thread of receivedThreads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const labels = thread.getLabels().map(l => l.getName());
+
+      // Determine status based on labels
+      let status = 'inbox';
+      if (labels.some(l => l.includes('02.waiting/customer'))) status = 'waiting-customer';
+      else if (labels.some(l => l.includes('02.waiting/me'))) status = 'waiting-me';
+      else if (labels.some(l => l.includes('02.waiting/phonexa'))) status = 'waiting-phonexa';
+      else if (labels.some(l => l.includes('01.accounting'))) status = 'accounting';
+
+      // Get last sender (skip system emails)
+      let lastFrom = lastMessage.getFrom();
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const sender = messages[i].getFrom();
+        if (!isSystemOrBounceEmail_(sender)) {
+          lastFrom = sender;
+          break;
+        }
+      }
+
+      receivedItems.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        lastFrom: lastFrom,
+        status: status,
+        labels: labels.filter(l => l.startsWith('02.') || l.startsWith('01.')).join(', '),
+        snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
+      });
+    }
+
+    // Process snoozed threads
+    const snoozedItems = [];
+    for (const thread of snoozedThreads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+
+      snoozedItems.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
+      });
+    }
+
+    // If no emails, return early
+    if (receivedItems.length === 0 && snoozedItems.length === 0) {
+      return {
+        items: [],
+        snoozed: [],
+        summary: 'No outstanding emails found.',
+        error: null
+      };
+    }
+
+    // Build context for Claude analysis
+    const emailContext = receivedItems.map((e, i) =>
+      `${i+1}. [${e.status.toUpperCase()}] "${e.subject}" (${e.date})\n   From: ${e.lastFrom}\n   Labels: ${e.labels || 'none'}\n   Preview: ${e.snippet}...`
+    ).join('\n\n');
+
+    const snoozedContext = snoozedItems.map((e, i) =>
+      `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
+    ).join('\n\n');
+
+    // Call Claude for analysis
+    const prompt = `You are analyzing emails for a vendor named "${vendor}" to determine what is OUTSTANDING and needs attention.
+
+ACTIVE EMAILS IN INBOX (label:00.received):
+${emailContext || 'None'}
+
+SNOOZED EMAILS (deferred for later):
+${snoozedContext || 'None'}
+
+Analyze these emails and provide a BRIEF, ACTIONABLE summary of what's outstanding with this vendor. Focus on:
+1. What actions are needed from ME (our team)
+2. What we're waiting on from the VENDOR/CUSTOMER
+3. What's deferred (snoozed) and why it might be snoozed (invoices, follow-ups, etc.)
+
+Format your response as a SHORT bulleted list (3-6 bullets max). Be concise - each bullet should be 10 words or less.
+Start each bullet with an emoji indicating the type:
+- 🔴 = Urgent/needs immediate action
+- 🟡 = Waiting on vendor/customer
+- 🔵 = Snoozed/deferred
+- 🟢 = FYI/informational
+
+Example format:
+• 🔴 Reply to pricing request from yesterday
+• 🟡 Waiting on signed contract
+• 🔵 Invoice #123 snoozed until Jan 15`;
+
+    const apiKey = BS_CFG.CLAUDE_API_KEY;
+    if (!apiKey) {
+      // No API key - return raw data without analysis
+      return {
+        items: receivedItems,
+        snoozed: snoozedItems,
+        summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
+        error: null
+      };
+    }
+
+    const result = callClaudeAPI_(prompt, apiKey);
+
+    if (result.error) {
+      Logger.log(`[Crystal Ball] Claude API error: ${result.error}`);
+      return {
+        items: receivedItems,
+        snoozed: snoozedItems,
+        summary: `${receivedItems.length} active, ${snoozedItems.length} snoozed (analysis failed)`,
+        error: result.error
+      };
+    }
+
+    return {
+      items: receivedItems,
+      snoozed: snoozedItems,
+      summary: result.content,
+      error: null
+    };
+
+  } catch (e) {
+    Logger.log(`[Crystal Ball] Error: ${e.message}`);
+    return { items: [], snoozed: [], summary: '', error: e.message };
   }
 }
 
@@ -8707,6 +8957,12 @@ function discoverContactsFromGmail() {
     .setHeight(700);
 
   ui.showModalDialog(htmlOutput, '📇 Contact Discovery');
+
+  // Store the last run date for this vendor
+  const props = PropertiesService.getScriptProperties();
+  const lastRunKey = `BS_CONTACT_DISCOVERY_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  props.setProperty(lastRunKey, today);
 
   Logger.log(`Contact discovery complete: ${potentialNewContacts.length} new, ${potentialUpdates.length} updates`);
 }
