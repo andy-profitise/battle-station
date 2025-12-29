@@ -3944,19 +3944,28 @@ function getCrystalBallData_(vendor, listRow) {
 
       // Get last sender (skip system emails)
       let lastFrom = lastMessage.getFrom();
+      let lastSenderEmail = '';
       for (let i = messages.length - 1; i >= 0; i--) {
         const sender = messages[i].getFrom();
         if (!isSystemOrBounceEmail_(sender)) {
           lastFrom = sender;
+          // Extract email from "Name <email>" format
+          const emailMatch = sender.match(/<([^>]+)>/) || [null, sender];
+          lastSenderEmail = (emailMatch[1] || sender).toLowerCase();
           break;
         }
       }
+
+      // Determine if the last sender is from our team
+      const ourDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+      const lastSenderIsUs = ourDomains.some(d => lastSenderEmail.includes(d));
 
       receivedItems.push({
         threadId: thread.getId(),
         subject: thread.getFirstMessageSubject(),
         date: lastMessage.getDate().toISOString().split('T')[0],
         lastFrom: lastFrom,
+        lastSenderIsUs: lastSenderIsUs,
         status: status,
         labels: labels.filter(l => l.startsWith('02.') || l.startsWith('01.')).join(', '),
         snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
@@ -3987,10 +3996,11 @@ function getCrystalBallData_(vendor, listRow) {
       };
     }
 
-    // Build context for Claude analysis
-    const emailContext = receivedItems.map((e, i) =>
-      `${i+1}. [${e.status.toUpperCase()}] "${e.subject}" (${e.date})\n   From: ${e.lastFrom}\n   Labels: ${e.labels || 'none'}\n   Preview: ${e.snippet}...`
-    ).join('\n\n');
+    // Build context for Claude analysis - clearly indicate who sent the last message
+    const emailContext = receivedItems.map((e, i) => {
+      const ballInCourt = e.lastSenderIsUs ? '⚪ BALL IN THEIR COURT (we sent last)' : '🔴 BALL IN OUR COURT (they sent last)';
+      return `${i+1}. [${e.status.toUpperCase()}] "${e.subject}" (${e.date})\n   Last message from: ${e.lastFrom}\n   ${ballInCourt}\n   Labels: ${e.labels || 'none'}\n   Preview: ${e.snippet}...`;
+    }).join('\n\n');
 
     const snoozedContext = snoozedItems.map((e, i) =>
       `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
@@ -3999,28 +4009,33 @@ function getCrystalBallData_(vendor, listRow) {
     // Call Claude for analysis
     const prompt = `You are analyzing emails for a vendor named "${vendor}" to determine what is OUTSTANDING and needs attention.
 
+CRITICAL CONTEXT:
+- "OUR TEAM" = Profitise/ZeroParallel/Phonexa (emails from @profitise.com, @zeroparallel.com, @phonexa.com)
+- "VENDOR" = ${vendor} (the external party)
+- If WE sent the last message → we are WAITING on the vendor to respond (🟡)
+- If THEY sent the last message → we need to take action/respond (🔴)
+
 ACTIVE EMAILS IN INBOX (label:00.received):
 ${emailContext || 'None'}
 
 SNOOZED EMAILS (deferred for later):
 ${snoozedContext || 'None'}
 
-Analyze these emails and provide a BRIEF, ACTIONABLE summary of what's outstanding with this vendor. Focus on:
-1. What actions are needed from ME (our team)
-2. What we're waiting on from the VENDOR/CUSTOMER
-3. What's deferred (snoozed) and why it might be snoozed (invoices, follow-ups, etc.)
+Analyze these emails and provide a BRIEF, ACTIONABLE summary. Pay close attention to WHO sent the last message:
+- If our team sent the last email, we're WAITING on the vendor - use 🟡
+- If the vendor sent the last email, we need to respond - use 🔴
 
 Format your response as a SHORT bulleted list (3-6 bullets max). Be concise - each bullet should be 10 words or less.
-Start each bullet with an emoji indicating the type:
-- 🔴 = Urgent/needs immediate action
-- 🟡 = Waiting on vendor/customer
-- 🔵 = Snoozed/deferred
+Start each bullet with an emoji:
+- 🔴 = We need to respond/take action (they sent last)
+- 🟡 = Waiting on vendor to respond (we sent last)
+- 🔵 = Snoozed/deferred for later
 - 🟢 = FYI/informational
 
 Example format:
-• 🔴 Reply to pricing request from yesterday
-• 🟡 Waiting on signed contract
-• 🔵 Invoice #123 snoozed until Jan 15`;
+• 🟡 Awaiting vendor response on Invoice #123
+• 🔴 Need to reply to their pricing question
+• 🔵 Follow-up snoozed until Jan 15`;
 
     const apiKey = BS_CFG.CLAUDE_API_KEY;
     if (!apiKey) {
