@@ -212,6 +212,7 @@ function onOpen() {
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addToUi();
 
   // Refresh menu - refresh current vendor view
@@ -4070,6 +4071,307 @@ Example format:
   } catch (e) {
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
     return { items: [], snoozed: [], summary: '', error: e.message };
+  }
+}
+
+/**
+ * Ask a question about a vendor and search their emails for the answer
+ * Uses Claude to analyze all emails with the vendor's zzzVendors label
+ */
+function askAboutVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    ui.alert('No vendor currently loaded. Please navigate to a vendor first.');
+    return;
+  }
+
+  // Prompt for the question
+  const response = ui.prompt(
+    `❓ Ask About ${vendor}`,
+    'Enter your question (e.g., "What verticals do they want?", "What was their last pricing request?"):',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const question = response.getResponseText().trim();
+  if (!question) {
+    ui.alert('Please enter a question.');
+    return;
+  }
+
+  ss.toast('Searching emails and analyzing...', '🔍 Searching', 10);
+
+  // Get all emails from vendor label
+  const emails = getAllEmailsFromVendorLabel_(listRow, 100); // Get more emails for context
+
+  if (emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  Logger.log(`[Ask About Vendor] Found ${emails.length} emails for ${vendor}`);
+
+  // Build email context for Claude - include more detail than Crystal Ball
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    // Format date nicely
+    const dateStr = e.date || 'Unknown date';
+
+    // Get the content snippet
+    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
+
+    // Format labels nicely
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    return `--- Email ${i+1} ---
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+Labels: ${labelsStr}
+Content: ${snippet}`;
+  }).join('\n\n');
+
+  // Call Claude with the question
+  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+
+USER'S QUESTION: ${question}
+
+Here are the emails from this vendor (most recent first):
+
+${emailContext}
+
+Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+
+Keep your answer concise but complete.`;
+
+  const apiKey = BS_CFG.CLAUDE_API_KEY;
+  if (!apiKey) {
+    ui.alert('Claude API key not configured.');
+    return;
+  }
+
+  const result = callClaudeAPI_(prompt, apiKey);
+
+  if (result.error) {
+    ui.alert(`Error: ${result.error}`);
+    return;
+  }
+
+  // Store the question for "Search More" functionality
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('BS_ASK_VENDOR_QUESTION', question);
+  props.setProperty('BS_ASK_VENDOR_OFFSET', '100'); // Next search starts at 100
+
+  // Show answer in a dialog with "Search Older Emails" button
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      .question { background: #e8f0fe; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-weight: bold; }
+      .answer { background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; }
+      .meta { color: #666; font-size: 12px; margin-top: 15px; }
+      .btn { padding: 10px 20px; margin-top: 15px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; }
+      .btn-secondary { background: #6c757d; color: white; }
+      .btn-secondary:hover { background: #5a6268; }
+      .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
+      #loading { display: none; color: #666; margin-top: 10px; }
+    </style>
+    <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
+    <div class="question">Q: ${escapeHtml_(question)}</div>
+    <div class="answer" id="answerBox">${escapeHtml_(result.content)}</div>
+    <div class="meta" id="metaBox">Searched emails 1-${Math.min(emails.length, 50)} of ${emails.length} retrieved</div>
+    <button class="btn btn-secondary" id="searchMoreBtn" onclick="searchMore()">🔍 Search Older Emails (101-200)</button>
+    <div id="loading">⏳ Searching older emails...</div>
+
+    <script>
+      function searchMore() {
+        document.getElementById('searchMoreBtn').disabled = true;
+        document.getElementById('loading').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('loading').style.display = 'none';
+            if (result.error) {
+              alert('Error: ' + result.error);
+              document.getElementById('searchMoreBtn').disabled = false;
+            } else {
+              document.getElementById('answerBox').textContent = result.answer;
+              document.getElementById('metaBox').textContent = result.meta;
+              if (result.hasMore) {
+                document.getElementById('searchMoreBtn').textContent = '🔍 Search Even Older Emails (' + result.nextRange + ')';
+                document.getElementById('searchMoreBtn').disabled = false;
+              } else {
+                document.getElementById('searchMoreBtn').textContent = '✓ No more emails to search';
+                document.getElementById('searchMoreBtn').disabled = true;
+              }
+            }
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('loading').style.display = 'none';
+            alert('Error: ' + error.message);
+            document.getElementById('searchMoreBtn').disabled = false;
+          })
+          .askAboutVendorContinue();
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(550);
+
+  ui.showModalDialog(htmlOutput, `❓ Ask About ${vendor}`);
+
+  Logger.log(`[Ask About Vendor] Answered question for ${vendor}: "${question}"`);
+}
+
+/**
+ * Continue searching older emails for Ask About Vendor
+ * Called from the dialog when user clicks "Search Older Emails"
+ */
+function askAboutVendorContinue() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  const props = PropertiesService.getScriptProperties();
+  const question = props.getProperty('BS_ASK_VENDOR_QUESTION');
+  const offset = parseInt(props.getProperty('BS_ASK_VENDOR_OFFSET') || '100', 10);
+
+  if (!question) {
+    return { error: 'No active question. Please start a new search.' };
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  // Get emails with offset
+  const emails = getAllEmailsFromVendorLabelWithOffset_(listRow, 100, offset);
+
+  if (emails.length === 0) {
+    return {
+      error: null,
+      answer: 'No more emails found in this range.',
+      meta: `Searched emails ${offset + 1}-${offset + 100} (none found)`,
+      hasMore: false,
+      nextRange: ''
+    };
+  }
+
+  Logger.log(`[Ask About Vendor Continue] Found ${emails.length} emails at offset ${offset} for ${vendor}`);
+
+  // Build email context
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    const dateStr = e.date || 'Unknown date';
+    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    return `--- Email ${offset + i + 1} ---
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+Labels: ${labelsStr}
+Content: ${snippet}`;
+  }).join('\n\n');
+
+  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+
+USER'S QUESTION: ${question}
+
+Here are OLDER emails from this vendor (emails ${offset + 1}-${offset + emails.length}):
+
+${emailContext}
+
+Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+
+Keep your answer concise but complete.`;
+
+  const apiKey = BS_CFG.CLAUDE_API_KEY;
+  const result = callClaudeAPI_(prompt, apiKey);
+
+  if (result.error) {
+    return { error: result.error };
+  }
+
+  // Update offset for next search
+  const newOffset = offset + 100;
+  props.setProperty('BS_ASK_VENDOR_OFFSET', newOffset.toString());
+
+  const hasMore = emails.length >= 50; // If we got a full batch, there might be more
+  const nextRange = `${newOffset + 1}-${newOffset + 100}`;
+
+  return {
+    error: null,
+    answer: result.content,
+    meta: `Searched emails ${offset + 1}-${offset + Math.min(emails.length, 50)}`,
+    hasMore: hasMore,
+    nextRange: nextRange
+  };
+}
+
+/**
+ * Get emails from vendor label with offset for pagination
+ */
+function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return [];
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return [];
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) return [];
+
+    const vendorLabel = vendorLabelMatch[1];
+    const searchQuery = `label:${vendorLabel}`;
+
+    // Search with offset
+    const threads = GmailApp.search(searchQuery, offset, maxThreads);
+
+    Logger.log(`Found ${threads.length} threads at offset ${offset}`);
+
+    const emails = [];
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const labels = thread.getLabels().map(l => l.getName());
+
+      emails.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        from: lastMessage.getFrom(),
+        snippet: lastMessage.getPlainBody().substring(0, 500),
+        messageCount: messages.length,
+        labels: labels,
+        lastMessageDate: lastMessage.getDate()
+      });
+    }
+
+    emails.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+    return emails;
+
+  } catch (e) {
+    Logger.log(`ERROR in getAllEmailsFromVendorLabelWithOffset_: ${e.message}`);
+    return [];
   }
 }
 
