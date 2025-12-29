@@ -8617,15 +8617,15 @@ function discoverContactsFromGmail() {
     }
   }
 
-  if (domains.size === 0) {
-    ui.alert('No company domains found in existing contacts (only generic email domains like gmail.com).');
+  if (domains.size === 0 && existingEmails.size === 0) {
+    ui.alert('No contacts found to search for.');
     return;
   }
 
   Logger.log(`=== CONTACT DISCOVERY ===`);
   Logger.log(`Vendor: ${vendor}`);
   Logger.log(`Existing contacts: ${existingContacts.length}`);
-  Logger.log(`Domains to search: ${[...domains].join(', ')}`);
+  Logger.log(`Domains to search: ${[...domains].join(', ') || '(none - searching specific emails)'}`);
   Logger.log(`Existing emails: ${[...existingEmails].join(', ')}`);
 
   // Search Gmail for emails from these domains
@@ -8633,6 +8633,7 @@ function discoverContactsFromGmail() {
   const potentialUpdates = [];
   const emailsSearched = new Set();
 
+  // If we have company domains, search by domain
   for (const domain of domains) {
     ss.toast(`Searching emails from @${domain}...`, '🔍 Scanning', 3);
 
@@ -8733,6 +8734,98 @@ function discoverContactsFromGmail() {
     }
   }
 
+  // If no company domains were found, search for specific existing email addresses
+  // This allows us to find updates (job titles, phones) for contacts with generic domains
+  if (domains.size === 0 && existingEmails.size > 0) {
+    ss.toast('Searching for existing contacts in Gmail...', '🔍 Scanning', 3);
+
+    for (const email of existingEmails) {
+      if (emailsSearched.has(email)) continue;
+      emailsSearched.add(email);
+
+      try {
+        // Search for emails from this specific address
+        const query = `from:${email}`;
+        const threads = GmailApp.search(query, 0, 20);
+
+        Logger.log(`Found ${threads.length} threads from ${email}`);
+
+        // Find the existing contact for this email
+        const existingContact = existingContacts.find(c => c.email && c.email.toLowerCase() === email);
+        if (!existingContact) continue;
+
+        for (const thread of threads) {
+          const messages = thread.getMessages();
+
+          for (const message of messages) {
+            const from = message.getFrom() || '';
+            const body = message.getPlainBody() || '';
+            const date = message.getDate();
+
+            // Make sure this message is from the contact we're searching for
+            const msgEmailMatch = from.match(/<([^>]+)>/) || [null, from.trim()];
+            const msgEmail = msgEmailMatch[1].toLowerCase();
+            if (msgEmail !== email) continue;
+
+            // Extract info from signature
+            const signature = body.slice(-500);
+
+            // Check for job title update
+            if (!existingContact.name?.includes('|')) {
+              const jobTitle = extractJobTitle_(signature, existingContact.name);
+              if (jobTitle && jobTitle.length > 3) {
+                // Check if we already have this update
+                const existingUpdate = potentialUpdates.find(u =>
+                  u.email === email && u.updateType === 'jobTitle'
+                );
+                if (!existingUpdate) {
+                  potentialUpdates.push({
+                    contactId: existingContact.id,
+                    name: existingContact.name,
+                    email: email,
+                    updateType: 'jobTitle',
+                    currentValue: '(none)',
+                    newValue: jobTitle,
+                    foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                  });
+                  Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+                }
+              }
+            }
+
+            // Check for phone update
+            if (!existingContact.phone) {
+              const phones = extractPhoneNumbers_(signature);
+              if (phones.length > 0) {
+                const phone = phones[0];
+                const normalizedNewPhone = phone.replace(/\D/g, '').slice(-10);
+                if (!existingPhones.has(normalizedNewPhone)) {
+                  const existingUpdate = potentialUpdates.find(u =>
+                    u.email === email && u.updateType === 'phone'
+                  );
+                  if (!existingUpdate) {
+                    potentialUpdates.push({
+                      contactId: existingContact.id,
+                      name: existingContact.name,
+                      email: email,
+                      updateType: 'phone',
+                      currentValue: '(none)',
+                      newValue: phone,
+                      foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                    });
+                    Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        Logger.log(`Error searching email ${email}: ${e.message}`);
+      }
+    }
+  }
+
   // Sort results
   potentialNewContacts.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen)); // Most recent first
   potentialUpdates.sort((a, b) => b.foundIn.localeCompare(a.foundIn));
@@ -8783,7 +8876,7 @@ function discoverContactsFromGmail() {
     <h2>📇 Contact Discovery for ${escapeHtml_(vendor)}</h2>
 
     <div class="summary">
-      <strong>Searched domains:</strong> ${[...domains].map(d => '@' + d).join(', ')}<br>
+      <strong>Searched:</strong> ${domains.size > 0 ? [...domains].map(d => '@' + d).join(', ') : 'Specific email addresses (no company domains)'}<br>
       <strong>Existing contacts:</strong> ${existingContacts.length}<br>
       <strong>Potential new contacts found:</strong> ${potentialNewContacts.length}<br>
       <strong>Potential updates found:</strong> ${potentialUpdates.length}
