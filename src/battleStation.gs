@@ -9372,55 +9372,108 @@ function extractPhoneNumbers_(text) {
 function extractJobTitle_(text, name) {
   if (!text || !name) return '';
 
-  // Common job title keywords
+  // Common job title keywords - these should START the title or be key parts
   const titleKeywords = [
-    'Director', 'Manager', 'President', 'VP', 'Vice President', 'CEO', 'CFO', 'COO', 'CTO',
+    'Director', 'Manager', 'President', 'VP', 'Vice President', 'CEO', 'CFO', 'COO', 'CTO', 'CMO',
     'Owner', 'Partner', 'Principal', 'Founder', 'Co-Founder',
-    'Coordinator', 'Specialist', 'Analyst', 'Associate', 'Assistant',
-    'Executive', 'Officer', 'Administrator', 'Supervisor', 'Lead',
-    'Representative', 'Agent', 'Consultant', 'Advisor', 'Counsel',
+    'Coordinator', 'Specialist', 'Analyst', 'Associate',
+    'Executive', 'Administrator', 'Supervisor', 'Lead', 'Head',
+    'Representative', 'Consultant', 'Advisor', 'Counsel',
     'Engineer', 'Developer', 'Architect', 'Designer',
-    'Sales', 'Marketing', 'Operations', 'Finance', 'HR', 'Human Resources',
-    'Account', 'Business Development', 'Customer', 'Client', 'Support',
     'Regional', 'National', 'Senior', 'Junior', 'Chief'
   ];
 
-  // Build regex to find title patterns
-  const titlePattern = new RegExp(
-    `(?:^|\\n|\\|)\\s*((?:${titleKeywords.join('|')})(?:\\s+(?:of\\s+)?[A-Za-z]+){0,4})\\s*(?:\\n|\\||$)`,
-    'im'
-  );
+  // Phrases that indicate this is NOT a job title (confidentiality notices, email content, etc.)
+  const excludePhrases = [
+    'responsible for delivery',
+    'intended recipient',
+    'confidential',
+    'dissemination',
+    'strictly prohibited',
+    'received this',
+    'notify us',
+    'delete it',
+    'phone call',
+    'let me know',
+    'ready to',
+    'buying from',
+    'get started',
+    'employee or agent',
+    'click here',
+    'unsubscribe',
+    'view in browser'
+  ];
 
-  // Also look for title right after or before the name
+  // Helper function to check if line is valid job title candidate
+  const isValidTitleLine = (line) => {
+    const lowerLine = line.toLowerCase();
+
+    // Skip empty or too long lines (real job titles are usually under 50 chars)
+    if (!line || line.length > 50 || line.length < 5) return false;
+
+    // Skip lines starting with quote markers, bullets, or asterisks
+    if (/^[>\*\-•\[]/.test(line.trim())) return false;
+
+    // Skip lines with email addresses, URLs, or phone patterns in context
+    if (line.includes('@') || line.includes('http') || line.includes('www.')) return false;
+
+    // Skip lines containing exclusion phrases
+    for (const phrase of excludePhrases) {
+      if (lowerLine.includes(phrase)) return false;
+    }
+
+    // Must contain at least one title keyword
+    let hasKeyword = false;
+    for (const keyword of titleKeywords) {
+      if (lowerLine.includes(keyword.toLowerCase())) {
+        hasKeyword = true;
+        break;
+      }
+    }
+    if (!hasKeyword) return false;
+
+    // Title should be mostly letters and spaces (at least 85% alphanumeric)
+    const alphaRatio = (line.match(/[a-zA-Z\s,&]/g) || []).length / line.length;
+    if (alphaRatio < 0.85) return false;
+
+    return true;
+  };
+
   const firstName = name.split(/\s+/)[0];
   const lines = text.split(/[\n\r]+/);
 
+  // First pass: look for title right after the person's name
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
-    // If this line contains the person's name or first name
-    if (line.toLowerCase().includes(firstName.toLowerCase())) {
-      // Check the next line for a title
-      if (i + 1 < lines.length) {
-        const nextLine = lines[i + 1].trim();
-        if (nextLine && nextLine.length < 80) {
-          // Check if it looks like a title
-          for (const keyword of titleKeywords) {
-            if (nextLine.toLowerCase().includes(keyword.toLowerCase())) {
-              return nextLine;
-            }
+    // If this line contains the person's name
+    if (line.toLowerCase().includes(firstName.toLowerCase()) && line.length < 100) {
+      // Check if there's a pipe separator with title after name (e.g., "John Smith | Director of Sales")
+      if (line.includes('|')) {
+        const parts = line.split('|');
+        for (let j = 1; j < parts.length; j++) {
+          const part = parts[j].trim();
+          if (isValidTitleLine(part)) {
+            return part;
           }
         }
       }
-    }
 
-    // Check if this line itself is a title (after finding name)
-    if (line.length < 80 && line.length > 3) {
-      for (const keyword of titleKeywords) {
-        if (line.toLowerCase().includes(keyword.toLowerCase()) && !line.includes('@')) {
-          return line;
+      // Check the next line for a title
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim();
+        if (isValidTitleLine(nextLine)) {
+          return nextLine;
         }
       }
+    }
+  }
+
+  // Second pass: look for standalone title lines near the top (signature block area)
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    const line = lines[i].trim();
+    if (isValidTitleLine(line)) {
+      return line;
     }
   }
 
