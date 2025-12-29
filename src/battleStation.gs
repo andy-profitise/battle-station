@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-29 07:27 PST
+ * Last Updated: 2025-12-29 11:06 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -2741,7 +2741,8 @@ function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
         subject: thread.getFirstMessageSubject(),
         date: lastMessage.getDate().toISOString().split('T')[0],
         from: lastMessage.getFrom(),
-        snippet: lastMessage.getPlainBody().substring(0, 500),
+        to: lastMessage.getTo(),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
         messageCount: messages.length,
         labels: labels,
         isUnread: thread.isUnread(),
@@ -4141,6 +4142,7 @@ function askAboutVendor() {
 Subject: ${e.subject}
 Date: ${dateStr}
 From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
 Labels: ${labelsStr}
 Content: ${snippet}`;
   }).join('\n\n');
@@ -4284,6 +4286,7 @@ function askAboutVendorContinue() {
 Subject: ${e.subject}
 Date: ${dateStr}
 From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
 Labels: ${labelsStr}
 Content: ${snippet}`;
   }).join('\n\n');
@@ -4359,7 +4362,8 @@ function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
         subject: thread.getFirstMessageSubject(),
         date: lastMessage.getDate().toISOString().split('T')[0],
         from: lastMessage.getFrom(),
-        snippet: lastMessage.getPlainBody().substring(0, 500),
+        to: lastMessage.getTo(),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
         messageCount: messages.length,
         labels: labels,
         lastMessageDate: lastMessage.getDate()
