@@ -9397,20 +9397,19 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
 
   for (const contact of contacts) {
     try {
-      // Build column values JSON - use only known columns with correct formats
+      // Build column values JSON - Monday.com requires specific formats for each column type
       const columnValues = {};
 
-      // Email column - simple string format
+      // Email column - Monday.com email column format
       if (contact.email) {
-        columnValues['email_mkrk53z4'] = contact.email;
+        columnValues['email_mkrk53z4'] = { email: contact.email, text: contact.email };
       }
 
-      // Phone column - simple string format (digits only)
+      // Phone column - Monday.com phone column format
       if (contact.phone) {
-        // Strip to digits only for Monday.com phone column
         const phoneDigits = contact.phone.replace(/\D/g, '');
         if (phoneDigits.length >= 10) {
-          columnValues['phone_mkrkzxq2'] = phoneDigits;
+          columnValues['phone_mkrkzxq2'] = { phone: phoneDigits, countryShortName: 'US' };
         }
       }
 
@@ -9599,20 +9598,22 @@ function applyContactUpdates(updates, existingContacts) {
 
     try {
       if (update.updateType === 'phone') {
-        // Update phone column
-        const phoneValue = update.newValue;
+        // Update phone column - Monday.com requires JSON format for phone columns
+        const phoneDigits = update.newValue.replace(/\D/g, '');
+        const phoneJson = JSON.stringify({ phone: phoneDigits, countryShortName: 'US' });
+
         const mutation = `
           mutation {
             change_column_value (
               board_id: ${contactsBoardId},
               item_id: ${contact.id},
               column_id: "phone_mkrkzxq2",
-              value: "${phoneValue}"
+              value: ${JSON.stringify(phoneJson)}
             ) { id }
           }
         `;
 
-        Logger.log(`Updating phone for ${update.name} (${contact.id}): ${phoneValue}`);
+        Logger.log(`Updating phone for ${update.name} (${contact.id}): ${phoneDigits}`);
         const result = mondayApiRequest_(mutation, apiToken);
 
         if (result.errors && result.errors.length > 0) {
@@ -9733,6 +9734,12 @@ function isGenericDomain_(domain) {
 function extractPhoneNumbers_(text) {
   if (!text) return [];
 
+  // Blacklisted phone numbers (our company numbers - should not be picked up as contact info)
+  const blacklistedPhones = [
+    '8884004868',  // Profitise main line
+    '18884004868', // With country code
+  ];
+
   // Regex patterns for various phone formats
   const patterns = [
     /\b(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\b/g,           // 123-456-7890, 123.456.7890, 123 456 7890
@@ -9749,8 +9756,14 @@ function extractPhoneNumbers_(text) {
       // Normalize to just digits
       const digits = match[0].replace(/\D/g, '');
       if (digits.length >= 10) {
-        // Format nicely
         const last10 = digits.slice(-10);
+
+        // Skip blacklisted numbers
+        if (blacklistedPhones.includes(last10) || blacklistedPhones.includes(digits)) {
+          continue;
+        }
+
+        // Format nicely
         const formatted = `(${last10.slice(0,3)}) ${last10.slice(3,6)}-${last10.slice(6)}`;
         phones.add(formatted);
       }
