@@ -2741,6 +2741,7 @@ function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
         subject: thread.getFirstMessageSubject(),
         date: lastMessage.getDate().toISOString().split('T')[0],
         from: lastMessage.getFrom(),
+        to: lastMessage.getTo(),
         snippet: lastMessage.getPlainBody().substring(0, 500),
         messageCount: messages.length,
         labels: labels,
@@ -4141,6 +4142,7 @@ function askAboutVendor() {
 Subject: ${e.subject}
 Date: ${dateStr}
 From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
 Labels: ${labelsStr}
 Content: ${snippet}`;
   }).join('\n\n');
@@ -4284,6 +4286,7 @@ function askAboutVendorContinue() {
 Subject: ${e.subject}
 Date: ${dateStr}
 From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
 Labels: ${labelsStr}
 Content: ${snippet}`;
   }).join('\n\n');
@@ -4359,6 +4362,7 @@ function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
         subject: thread.getFirstMessageSubject(),
         date: lastMessage.getDate().toISOString().split('T')[0],
         from: lastMessage.getFrom(),
+        to: lastMessage.getTo(),
         snippet: lastMessage.getPlainBody().substring(0, 500),
         messageCount: messages.length,
         labels: labels,
