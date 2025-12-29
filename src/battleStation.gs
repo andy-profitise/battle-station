@@ -2742,7 +2742,7 @@ function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
         date: lastMessage.getDate().toISOString().split('T')[0],
         from: lastMessage.getFrom(),
         to: lastMessage.getTo(),
-        snippet: lastMessage.getPlainBody().substring(0, 500),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
         messageCount: messages.length,
         labels: labels,
         isUnread: thread.isUnread(),
@@ -4363,7 +4363,7 @@ function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
         date: lastMessage.getDate().toISOString().split('T')[0],
         from: lastMessage.getFrom(),
         to: lastMessage.getTo(),
-        snippet: lastMessage.getPlainBody().substring(0, 500),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
         messageCount: messages.length,
         labels: labels,
         lastMessageDate: lastMessage.getDate()
