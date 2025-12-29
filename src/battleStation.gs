@@ -212,6 +212,7 @@ function onOpen() {
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addToUi();
 
   // Refresh menu - refresh current vendor view
@@ -4071,6 +4072,127 @@ Example format:
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
     return { items: [], snoozed: [], summary: '', error: e.message };
   }
+}
+
+/**
+ * Ask a question about a vendor and search their emails for the answer
+ * Uses Claude to analyze all emails with the vendor's zzzVendors label
+ */
+function askAboutVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    ui.alert('No vendor currently loaded. Please navigate to a vendor first.');
+    return;
+  }
+
+  // Prompt for the question
+  const response = ui.prompt(
+    `❓ Ask About ${vendor}`,
+    'Enter your question (e.g., "What verticals do they want?", "What was their last pricing request?"):',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const question = response.getResponseText().trim();
+  if (!question) {
+    ui.alert('Please enter a question.');
+    return;
+  }
+
+  ss.toast('Searching emails and analyzing...', '🔍 Searching', 10);
+
+  // Get all emails from vendor label
+  const emails = getAllEmailsFromVendorLabel_(listRow, 100); // Get more emails for context
+
+  if (emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  Logger.log(`[Ask About Vendor] Found ${emails.length} emails for ${vendor}`);
+
+  // Build email context for Claude - include more detail than Crystal Ball
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    // Format date nicely
+    const dateStr = e.date || 'Unknown date';
+
+    // Get the content snippet
+    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
+
+    // Format labels nicely
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    return `--- Email ${i+1} ---
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+Labels: ${labelsStr}
+Content: ${snippet}`;
+  }).join('\n\n');
+
+  // Call Claude with the question
+  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+
+USER'S QUESTION: ${question}
+
+Here are the emails from this vendor (most recent first):
+
+${emailContext}
+
+Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+
+Keep your answer concise but complete.`;
+
+  const apiKey = BS_CFG.CLAUDE_API_KEY;
+  if (!apiKey) {
+    ui.alert('Claude API key not configured.');
+    return;
+  }
+
+  const result = callClaudeAPI_(prompt, apiKey);
+
+  if (result.error) {
+    ui.alert(`Error: ${result.error}`);
+    return;
+  }
+
+  // Show answer in a dialog
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      .question { background: #e8f0fe; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-weight: bold; }
+      .answer { background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; }
+      .meta { color: #666; font-size: 12px; margin-top: 15px; }
+    </style>
+    <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
+    <div class="question">Q: ${escapeHtml_(question)}</div>
+    <div class="answer">${escapeHtml_(result.content)}</div>
+    <div class="meta">Searched ${emails.length} emails</div>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(500);
+
+  ui.showModalDialog(htmlOutput, `❓ Ask About ${vendor}`);
+
+  Logger.log(`[Ask About Vendor] Answered question for ${vendor}: "${question}"`);
 }
 
 /**
