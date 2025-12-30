@@ -201,7 +201,7 @@ const BS_CFG = {
   // Use <CONTACT_NAME> and <VENDOR_NAME> as placeholders in the docs
   // To get the ID: https://docs.google.com/document/d/[THIS_IS_THE_ID]/edit
   CANNED_RESPONSE_DOCS: {
-    REFERRAL_PROGRAM: null  // Set to Google Doc ID once created
+    REFERRAL_PROGRAM: '1tn3uQMvVR6ZItk1p0k-0-BclMJxbNBDzuh4jSt8PT9c'
   }
 };
 
@@ -9361,15 +9361,38 @@ function createCannedResponseDraft_(threadId, templateKey, contactName, vendor) 
     }
 
     // Replace placeholders in both plain text and HTML
-    const plainBody = templateData.text
+    let plainBody = templateData.text
       .replace(/<CONTACT_NAME>/g, contactName)
       .replace(/<VENDOR_NAME>/g, vendor);
 
-    const htmlBody = templateData.html
+    let htmlBody = templateData.html
       .replace(/&lt;CONTACT_NAME&gt;/g, contactName)
       .replace(/&lt;VENDOR_NAME&gt;/g, vendor)
       .replace(/<CONTACT_NAME>/g, contactName)
       .replace(/<VENDOR_NAME>/g, vendor);
+
+    // Get Gmail signature and append it
+    const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+    let signature = '';
+    try {
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Append signature to body
+    if (signature) {
+      plainBody += '\n\n' + signature.replace(/<[^>]*>/g, ''); // Strip HTML for plain text
+      htmlBody += '<br><br>' + signature;
+    }
 
     // Get attachment if configured for this template
     let attachments = [];
