@@ -159,11 +159,16 @@ const BS_CFG = {
   AIRTABLE_API_TOKEN: 'pat9P76pQ7lJ8Cwoa.2a614804ad532a6e957e931e65f0e4f228928e9f2ce3d57b5d918dde832842db',
   AIRTABLE_BASE_ID: 'appc6xu9qLlOP5G5m',
   
+  // Contracts 2026
+  AIRTABLE_CONTRACTS_TABLE_2026: 'Contracts 2026',
+  AIRTABLE_CONTRACTS_TABLE_ID_2026: 'tblYszexANBGGnyki',
+  AIRTABLE_CONTRACTS_VIEW_ID_2026: 'viwfL5bDrEAvlmL7f',
+
   // Contracts 2025
   AIRTABLE_CONTRACTS_TABLE_2025: 'Contracts 2025',
   AIRTABLE_CONTRACTS_TABLE_ID_2025: 'tblREBd6zFUUZV5eU',
   AIRTABLE_CONTRACTS_VIEW_ID_2025: 'viw8X7acqwTJEUi1R',
-  
+
   // Contracts 2024
   AIRTABLE_CONTRACTS_TABLE_2024: 'Contracts 2024',
   AIRTABLE_CONTRACTS_TABLE_ID_2024: 'tblYn8yBux9xe6sO0',
@@ -1028,7 +1033,7 @@ function loadVendorData(vendorIndex, options) {
   // Use helpfulLinksStartRow to align with Contacts section
   let contractsRow = helpfulLinksStartRow;
   
-  const airtableContractsUrl = 'https://airtable.com/appc6xu9qLlOP5G5m/tblREBd6zFUUZV5eU/viw8X7acqwTJEUi1R?blocks=hide';
+  const airtableContractsUrl = 'https://airtable.com/appc6xu9qLlOP5G5m/tblYszexANBGGnyki/viwfL5bDrEAvlmL7f?blocks=hide';
   // Escape quotes in matchedOn for use in formula
   const escapedMatchedOn = contractsMatchedOn ? contractsMatchedOn.replace(/"/g, '""') : '';
   const matchedDisplay = escapedMatchedOn && contractsMatchedOn !== vendor ? ` (matched ""${escapedMatchedOn}"")` : '';
@@ -3398,8 +3403,9 @@ function getAllContracts_(useCache) {
   
   const allRecords = [];
   
-  // Fetch from both tables
+  // Fetch from all contract tables
   const tables = [
+    { name: 'Contracts 2026', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2026, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2026 },
     { name: 'Contracts 2025', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2025 },
     { name: 'Contracts 2024', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2024, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2024 }
   ];
@@ -3670,10 +3676,11 @@ function getVendorContracts_(vendorName) {
  */
 function testAirtableConnection() {
   const tables = [
+    { name: 'Contracts 2026', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2026 },
     { name: 'Contracts 2025', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025 },
     { name: 'Contracts 2024', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2024 }
   ];
-  
+
   let allSuccess = true;
   
   for (const table of tables) {
