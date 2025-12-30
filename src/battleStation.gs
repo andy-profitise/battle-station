@@ -8542,6 +8542,52 @@ function checkAndArchivePendingThreads_() {
 }
 
 /**
+ * Check if there's a future meeting today for the current vendor
+ * Returns warning message if found, null otherwise
+ */
+function checkForFutureMeetingToday_() {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    if (!listSh) return null;
+
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex) return null;
+
+    const listRow = currentIndex + 1; // +1 for header row
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+    if (!vendor) return null;
+
+    // Get contact emails for calendar search
+    const contactEmails = [];
+    // Try to get from cached/stored data first, or just search by vendor name
+
+    // Get meetings for this vendor
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    const meetings = meetingsResult.meetings || [];
+
+    // Find meetings that are today but in the future
+    const now = new Date();
+    const futureMeetingsToday = meetings.filter(m => {
+      if (!m.isToday || m.isPast) return false;
+      // Double-check: meeting start time is in the future
+      if (m.startTime && m.startTime > now) return true;
+      return false;
+    });
+
+    if (futureMeetingsToday.length > 0) {
+      const meetingList = futureMeetingsToday.map(m => `• ${m.title} at ${m.time}`).join('\n');
+      return `You have a meeting with ${vendor} later today:\n\n${meetingList}`;
+    }
+
+    return null;
+  } catch (e) {
+    Logger.log(`Error checking for future meetings: ${e.message}`);
+    return null; // Don't block on errors
+  }
+}
+
+/**
  * Main function to handle email response generation
  */
 function generateEmailResponse_(responseType) {
@@ -8549,6 +8595,19 @@ function generateEmailResponse_(responseType) {
   const ui = SpreadsheetApp.getUi();
 
   try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return; // User cancelled
+      }
+    }
+
     ss.toast('Getting selected email...', '📧 Email Response', 2);
 
     // Get selected email thread
