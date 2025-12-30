@@ -9148,14 +9148,30 @@ function generateCannedResponse_(templateKey, templateName) {
     // Get contacts for this vendor
     const contacts = getContactsForCurrentVendor_();
 
-    // Get selected email thread
-    ss.toast('Getting selected email...', '📨 Canned Response', 2);
-    const emailData = getSelectedEmailThread_();
+    // Try to get selected email thread (optional - can create fresh draft if none)
+    ss.toast('Checking for selected email...', '📨 Canned Response', 2);
+    let emailData = null;
+    let threadId = null;
+    try {
+      emailData = getSelectedEmailThread_();
+      threadId = emailData.threadId;
+    } catch (e) {
+      // No email selected - will create fresh draft
+      Logger.log('No email selected, will create fresh draft: ' + e.message);
+    }
 
     // Show contact selection dialog
+    // Extract first names only for dropdown
     const contactOptions = contacts.length > 0
-      ? contacts.map(c => `<option value="${escapeHtml_(c)}">${escapeHtml_(c)}</option>`).join('')
+      ? contacts.map(c => {
+          const firstName = c.split(' ')[0]; // Get first name only
+          return `<option value="${escapeHtml_(firstName)}">${escapeHtml_(c)} (${escapeHtml_(firstName)})</option>`;
+        }).join('')
       : '<option value="">No contacts found</option>';
+
+    const replyInfo = threadId
+      ? `<div class="info reply-info">📧 Replying to: <strong>${escapeHtml_(emailData.subject || 'Selected email')}</strong></div>`
+      : '<div class="info new-info">📝 No email selected - will create a NEW draft</div>';
 
     const html = `<!DOCTYPE html>
 <html>
@@ -9172,6 +9188,7 @@ function generateCannedResponse_(templateKey, templateName) {
       border: 1px solid #ddd;
       border-radius: 4px;
       font-size: 14px;
+      box-sizing: border-box;
     }
     .buttons { display: flex; gap: 10px; margin-top: 15px; }
     .btn {
@@ -9183,6 +9200,7 @@ function generateCannedResponse_(templateKey, templateName) {
     }
     .btn-primary { background: #1a73e8; color: white; }
     .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
     .btn-secondary { background: #f1f3f4; color: #5f6368; }
     .btn-secondary:hover { background: #e8eaed; }
     .preview {
@@ -9193,40 +9211,46 @@ function generateCannedResponse_(templateKey, templateName) {
       white-space: pre-wrap;
       font-family: Arial, sans-serif;
       font-size: 13px;
-      max-height: 300px;
+      max-height: 250px;
       overflow-y: auto;
       border: 1px solid #e0e0e0;
     }
     .info { color: #5f6368; font-size: 12px; margin-bottom: 10px; }
+    .reply-info { color: #1a73e8; }
+    .new-info { color: #f9a825; }
+    #status { margin-top: 10px; font-size: 13px; }
   </style>
 </head>
 <body>
   <div class="header">📨 ${escapeHtml_(templateName)}</div>
   <div class="info">Vendor: <strong>${escapeHtml_(vendor)}</strong></div>
+  ${replyInfo}
 
-  <label for="contactSelect">Select Contact:</label>
+  <label for="contactSelect">Select Contact (first name will be used):</label>
   <select id="contactSelect" onchange="updatePreview()">
     ${contactOptions}
   </select>
 
-  <label for="customContact">Or enter custom name:</label>
-  <input type="text" id="customContact" placeholder="Enter contact name..." oninput="updatePreview()">
+  <label for="customContact">Or enter custom first name:</label>
+  <input type="text" id="customContact" placeholder="Enter first name..." oninput="updatePreview()">
 
   <div class="preview" id="previewBox"></div>
 
   <div class="buttons">
-    <button class="btn btn-primary" onclick="createDraft()">✉️ Create Draft</button>
+    <button class="btn btn-primary" id="createBtn" onclick="createDraft()">✉️ Create Draft</button>
     <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
   </div>
+  <div id="status"></div>
 
   <script>
     const template = ${JSON.stringify(template)};
     const vendor = ${JSON.stringify(vendor)};
-    const threadId = ${JSON.stringify(emailData.threadId)};
+    const threadId = ${JSON.stringify(threadId)};
+    const templateKey = ${JSON.stringify(templateKey)};
 
     function getContactName() {
       const custom = document.getElementById('customContact').value.trim();
-      if (custom) return custom;
+      if (custom) return custom.split(' ')[0]; // First name only
       const select = document.getElementById('contactSelect');
       return select.value || 'there';
     }
@@ -9240,19 +9264,37 @@ function generateCannedResponse_(templateKey, templateName) {
     }
 
     function createDraft() {
+      const btn = document.getElementById('createBtn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      btn.textContent = '⏳ Creating...';
+      status.textContent = 'Creating draft...';
+      status.style.color = '#666';
+
       const contactName = getContactName();
+
       google.script.run
         .withSuccessHandler(function(result) {
-          if (result.success) {
-            google.script.host.close();
+          if (result && result.success) {
+            status.textContent = '✅ Draft created!';
+            status.style.color = 'green';
+            setTimeout(function() {
+              google.script.host.close();
+            }, 1000);
           } else {
-            alert('Error: ' + result.error);
+            status.textContent = '❌ Error: ' + (result ? result.error : 'Unknown error');
+            status.style.color = 'red';
+            btn.disabled = false;
+            btn.textContent = '✉️ Create Draft';
           }
         })
         .withFailureHandler(function(error) {
-          alert('Error: ' + error.message);
+          status.textContent = '❌ Error: ' + error.message;
+          status.style.color = 'red';
+          btn.disabled = false;
+          btn.textContent = '✉️ Create Draft';
         })
-        .createCannedResponseDraft_(threadId, ${JSON.stringify(templateKey)}, contactName, vendor);
+        .createCannedResponseDraft_(threadId, templateKey, contactName, vendor);
     }
 
     // Initial preview
@@ -9263,7 +9305,7 @@ function generateCannedResponse_(templateKey, templateName) {
 
     const htmlOutput = HtmlService.createHtmlOutput(html)
       .setWidth(550)
-      .setHeight(550);
+      .setHeight(600);
     ui.showModalDialog(htmlOutput, 'Canned Response');
 
   } catch (e) {
@@ -9274,6 +9316,7 @@ function generateCannedResponse_(templateKey, templateName) {
 /**
  * Create draft from canned response template
  * Called from dialog
+ * If threadId is null, creates a fresh draft instead of a reply
  */
 function createCannedResponseDraft_(threadId, templateKey, contactName, vendor) {
   try {
@@ -9282,19 +9325,50 @@ function createCannedResponseDraft_(threadId, templateKey, contactName, vendor) 
       return { success: false, error: 'Template not found' };
     }
 
-    // Replace placeholders
+    // Replace placeholders (contactName should already be first name only)
     const body = template
       .replace(/<CONTACT_NAME>/g, contactName)
       .replace(/<VENDOR_NAME>/g, vendor);
 
-    // Get the thread
-    const thread = GmailApp.getThreadById(threadId);
-    if (!thread) {
-      return { success: false, error: 'Email thread not found' };
+    // Get attachment if configured for this template
+    let attachments = [];
+    if (templateKey === 'REFERRAL_PROGRAM' && BS_CFG.REFERRAL_CONTRACT_FILE_ID) {
+      try {
+        const file = DriveApp.getFileById(BS_CFG.REFERRAL_CONTRACT_FILE_ID);
+        attachments.push(file.getBlob());
+        Logger.log('Attached referral contract: ' + file.getName());
+      } catch (e) {
+        Logger.log('Could not attach referral contract: ' + e.message);
+      }
     }
 
-    // Create draft reply
-    thread.createDraftReply(body);
+    if (threadId) {
+      // Reply to existing thread
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        return { success: false, error: 'Email thread not found' };
+      }
+
+      // Create draft reply with optional attachments
+      if (attachments.length > 0) {
+        thread.createDraftReply(body, { attachments: attachments });
+      } else {
+        thread.createDraftReply(body);
+      }
+    } else {
+      // Create fresh draft (no reply)
+      // Need recipient - try to get from contacts
+      const contacts = getContactsForCurrentVendor_();
+
+      // For now, create draft without recipient - user can add in Gmail
+      const subject = `Referral Partnership - ${vendor}`;
+
+      if (attachments.length > 0) {
+        GmailApp.createDraft('', subject, body, { attachments: attachments });
+      } else {
+        GmailApp.createDraft('', subject, body);
+      }
+    }
 
     SpreadsheetApp.getActive().toast('Draft created! Check Gmail.', '✅ Draft Ready', 3);
 
