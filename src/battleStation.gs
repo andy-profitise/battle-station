@@ -280,6 +280,7 @@ function onOpen() {
     .addItem('📅 Schedule a Call', 'emailResponseScheduleCall')
     .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
     .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
+    .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
     .addItem('✍️ Custom Response...', 'emailResponseCustom')
     .addSeparator()
     .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
@@ -8960,6 +8961,93 @@ function emailResponseCustom() {
     if (customType) {
       generateEmailResponse_(customType);
     }
+  }
+}
+
+/**
+ * Email Response: Missed Meeting
+ * Gets highlighted meeting from UPCOMING MEETINGS and generates follow-up
+ */
+function emailResponseMissedMeeting() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BS_SHEET);
+
+  if (!bsSh) {
+    ui.alert('Error', 'Battle Station sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  try {
+    // Get the selected cell/row to find the highlighted meeting
+    const selection = bsSh.getActiveRange();
+    const selectedRow = selection.getRow();
+
+    // Read data from the selected row to find meeting info
+    const rowData = bsSh.getRange(selectedRow, 1, 1, 4).getValues()[0];
+    const meetingTitle = String(rowData[0] || '').trim();
+    const meetingDate = String(rowData[1] || '').trim();
+    const meetingTime = String(rowData[2] || '').trim();
+
+    // Validate we have meeting data
+    if (!meetingTitle || !meetingDate) {
+      ui.alert('Error', 'Please highlight a meeting row in the UPCOMING MEETINGS section.\n\nThe row should have the meeting title, date, and time.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Check if this looks like a meeting row (not a header)
+    if (meetingTitle.includes('UPCOMING MEETINGS') || meetingTitle === 'Meeting' || meetingTitle === 'Type') {
+      ui.alert('Error', 'Please highlight a specific meeting row, not the header.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Get current vendor
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex || !listSh) {
+      ui.alert('Error', 'Could not determine current vendor.', ui.ButtonSet.OK);
+      return;
+    }
+    const listRow = currentIndex + 1;
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+    // Get selected email thread (to reply to)
+    ss.toast('Getting selected email...', '📧 Missed Meeting', 2);
+    const emailData = getSelectedEmailThread_();
+
+    // Build directions for Claude with meeting context
+    const meetingContext = `The meeting "${meetingTitle}" was scheduled for ${meetingDate} at ${meetingTime}.\n\nWe waited but the contact didn't show up. We understand things come up, so we want to send a friendly follow-up to reschedule.\n\nInclude Andy's scheduling link for them to book a new time: https://calendar.app.google/68Fk8pb9mUokSiaW8`;
+
+    ss.toast('Reading email thread...', '📧 Missed Meeting', 2);
+
+    // Get full thread content
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Missed Meeting Follow Up',
+      meetingContext,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Missed Meeting Follow Up',
+      originalDirections: meetingContext,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
   }
 }
 
