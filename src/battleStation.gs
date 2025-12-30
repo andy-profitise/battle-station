@@ -9089,11 +9089,28 @@ function getContactsForCurrentVendor_() {
 }
 
 /**
+ * TEST: Run this function directly to check canned response config
+ */
+function testCannedResponseConfig() {
+  Logger.log('=== Testing Canned Response Config ===');
+  Logger.log('BS_CFG.CANNED_RESPONSE_DOCS = ' + JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS));
+  Logger.log('REFERRAL_PROGRAM docId = ' + (BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS.REFERRAL_PROGRAM : 'CANNED_RESPONSE_DOCS is undefined'));
+  Logger.log('BS_CFG.REFERRAL_CONTRACT_FILE_ID = ' + BS_CFG.REFERRAL_CONTRACT_FILE_ID);
+
+  SpreadsheetApp.getUi().alert('Check View > Logs for output');
+}
+
+/**
  * Get canned response template from Google Doc
  * Returns { text: plainText, html: htmlContent } or null if not found
  */
 function getCannedResponseTemplate_(templateKey) {
-  const docId = BS_CFG.CANNED_RESPONSE_DOCS[templateKey];
+  Logger.log(`Looking for template: ${templateKey}`);
+  Logger.log(`CANNED_RESPONSE_DOCS: ${JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS)}`);
+
+  const docId = BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS[templateKey] : null;
+
+  Logger.log(`Found docId: ${docId}`);
 
   if (!docId) {
     Logger.log(`No Google Doc configured for template: ${templateKey}`);
