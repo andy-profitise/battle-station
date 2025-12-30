@@ -308,12 +308,17 @@ function getHotVendorsFromGmail_(allVendors) {
 
     // SEARCH 2: All inbox emails (regardless of age)
     console.log('Searching inbox for any vendor emails...');
-    const inboxThreads = GmailApp.search('in:inbox', 0, 200);
+    const inboxThreads = GmailApp.search('label:inbox', 0, 200);
     console.log(`Found ${inboxThreads.length} inbox threads`);
 
-    // Combine both searches (dedupe by thread ID)
+    // SEARCH 3: Sent emails in last 188 hours (approx 7.8 days)
+    console.log('Searching for recently sent emails...');
+    const sentThreads = GmailApp.search('label:sent newer_than:188h', 0, 200);
+    console.log(`Found ${sentThreads.length} sent threads in last 188h`);
+
+    // Combine all searches (dedupe by thread ID)
     const processedThreadIds = new Set();
-    const allThreads = [...recentThreads, ...inboxThreads];
+    const allThreads = [...recentThreads, ...inboxThreads, ...sentThreads];
 
     for (const thread of allThreads) {
       try {
