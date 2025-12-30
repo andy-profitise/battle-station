@@ -166,25 +166,33 @@ function buildListWithGmailAndNotes() {
     r.notes = lookupNotes_(r.name, r.type, notesMaps);
   }
 
-  // HOT ZONE: Detect vendors with emails (label:00.received OR in inbox)
-  console.log('Detecting hot vendors...');
-  const hotVendorSet = getHotVendorsFromGmail_(all);
-  console.log('Hot vendors found:', hotVendorSet.size);
+  // PRIORITY ZONES: Detect vendors with emails
+  // 1. INBOX (highest) - vendors with emails currently in inbox
+  // 2. HOT - vendors with 00.received or recent sent emails
+  // 3. NORMAL - everything else
+  console.log('Detecting priority vendors...');
+  const { inboxSet, hotSet } = getHotVendorsFromGmail_(all);
+  console.log('Inbox vendors found:', inboxSet.size);
+  console.log('Hot vendors found:', hotSet.size);
 
+  const inboxZone = [];
   const hotZone = [];
   const normalZone = [];
 
   for (const r of all) {
-    if (hotVendorSet.has(r.name.toLowerCase())) {
+    const nameLower = r.name.toLowerCase();
+    if (inboxSet.has(nameLower)) {
+      inboxZone.push(r);
+    } else if (hotSet.has(nameLower)) {
       hotZone.push(r);
     } else {
       normalZone.push(r);
     }
   }
 
-  // HOT ZONE keeps same sort order as NORMAL ZONE (already sorted in `all`)
-  // Final list: Hot zone at top, then normal zone
-  const finalList = [...hotZone, ...normalZone];
+  // Final list: Inbox at top, then hot zone, then normal zone
+  // Each zone keeps same sort order as `all` (already sorted)
+  const finalList = [...inboxZone, ...hotZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
 
@@ -284,7 +292,8 @@ function buildListWithGmailAndNotes() {
  * 2. Exact vendor name match in subject/sender/recipient
  */
 function getHotVendorsFromGmail_(allVendors) {
-  const hotSet = new Set();
+  const inboxSet = new Set();  // Highest priority - vendors with emails in inbox
+  const hotSet = new Set();    // Other hot vendors (00.received, recent sent)
 
   try {
     // Build vendor name lookup for fast matching
@@ -301,91 +310,91 @@ function getHotVendorsFromGmail_(allVendors) {
     let labelMatches = 0;
     let exactMatches = 0;
 
-    // SEARCH 1: Emails with label:00.received (no time restriction)
+    // SEARCH 1: Inbox emails (highest priority)
+    console.log('Searching inbox for vendor emails...');
+    const inboxThreads = GmailApp.search('label:inbox', 0, 200);
+    console.log(`Found ${inboxThreads.length} inbox threads`);
+
+    // SEARCH 2: Emails with label:00.received (hot but not inbox priority)
     console.log('Searching for emails with label:00.received...');
     const recentThreads = GmailApp.search('label:00.received', 0, 200);
     console.log(`Found ${recentThreads.length} threads with label:00.received`);
-
-    // SEARCH 2: All inbox emails (regardless of age)
-    console.log('Searching inbox for any vendor emails...');
-    const inboxThreads = GmailApp.search('label:inbox', 0, 200);
-    console.log(`Found ${inboxThreads.length} inbox threads`);
 
     // SEARCH 3: Sent emails in last 188 hours (approx 7.8 days)
     console.log('Searching for recently sent emails...');
     const sentThreads = GmailApp.search('label:sent newer_than:188h', 0, 200);
     console.log(`Found ${sentThreads.length} sent threads in last 188h`);
 
-    // Combine all searches (dedupe by thread ID)
+    // Track inbox thread IDs separately for priority detection
+    const inboxThreadIds = new Set(inboxThreads.map(t => t.getId()));
+
+    // Process inbox threads first (these get highest priority)
     const processedThreadIds = new Set();
-    const allThreads = [...recentThreads, ...inboxThreads, ...sentThreads];
+
+    // Helper function to match vendor from thread
+    const matchVendorFromThread = (thread) => {
+      const labels = thread.getLabels();
+      for (const label of labels) {
+        const labelName = label.getName();
+        if (labelName.startsWith('zzzVendors/')) {
+          const vendorNameFromLabel = labelName.substring('zzzVendors/'.length).toLowerCase();
+          if (vendorMap.has(vendorNameFromLabel)) {
+            return { vendor: vendorNameFromLabel, matchType: 'label' };
+          }
+          for (const vendor of vendorNames) {
+            if (vendorNameFromLabel.includes(vendor.nameLower) ||
+                vendor.nameLower.includes(vendorNameFromLabel)) {
+              return { vendor: vendor.nameLower, matchType: 'label-partial' };
+            }
+          }
+        }
+      }
+
+      // Try exact name match in subject/sender/recipient
+      const subject = thread.getFirstMessageSubject().toLowerCase();
+      const messages = thread.getMessages();
+      let emailText = subject;
+      if (messages.length > 0) {
+        const firstMsg = messages[0];
+        emailText += ' ' + firstMsg.getFrom().toLowerCase();
+        emailText += ' ' + firstMsg.getTo().toLowerCase();
+      }
+
+      for (const vendor of vendorNames) {
+        if (emailText.includes(vendor.nameLower)) {
+          return { vendor: vendor.nameLower, matchType: 'exact' };
+        }
+      }
+
+      return null;
+    };
+
+    // Combine all threads for processing
+    const allThreads = [...inboxThreads, ...recentThreads, ...sentThreads];
 
     for (const thread of allThreads) {
       try {
         const threadId = thread.getId();
-
-        // Skip if we've already processed this thread
         if (processedThreadIds.has(threadId)) continue;
         processedThreadIds.add(threadId);
 
-        let matched = false;
-
-        // METHOD 1 (BEST): Check for zzzVendors/<vendor_name> label
-        const labels = thread.getLabels();
-        for (const label of labels) {
-          const labelName = label.getName();
-
-          // Check if this is a vendor label (zzzVendors/<vendor_name>)
-          if (labelName.startsWith('zzzVendors/')) {
-            const vendorNameFromLabel = labelName.substring('zzzVendors/'.length).toLowerCase();
-
-            // Try exact match first
-            if (vendorMap.has(vendorNameFromLabel)) {
-              hotSet.add(vendorNameFromLabel);
-              labelMatches++;
-              console.log(`HOT: ${vendorMap.get(vendorNameFromLabel)} (label: ${labelName})`);
-              matched = true;
-              break;
+        const match = matchVendorFromThread(thread);
+        if (match) {
+          // If this thread is in inbox, add to inbox set (highest priority)
+          if (inboxThreadIds.has(threadId)) {
+            inboxSet.add(match.vendor);
+            console.log(`INBOX: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
+          } else {
+            // Only add to hotSet if not already in inboxSet
+            if (!inboxSet.has(match.vendor)) {
+              hotSet.add(match.vendor);
+              console.log(`HOT: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
             }
-
-            // Try partial match (label contains vendor name or vice versa)
-            for (const vendor of vendorNames) {
-              if (vendorNameFromLabel.includes(vendor.nameLower) ||
-                  vendor.nameLower.includes(vendorNameFromLabel)) {
-                hotSet.add(vendor.nameLower);
-                labelMatches++;
-                console.log(`HOT: ${vendor.name} (label partial match: ${labelName})`);
-                matched = true;
-                break;
-              }
-            }
-
-            if (matched) break;
           }
-        }
-
-        // If matched by label, skip other methods
-        if (matched) continue;
-
-        // METHOD 2: Exact name match in subject/sender/recipient
-        const subject = thread.getFirstMessageSubject().toLowerCase();
-        const messages = thread.getMessages();
-
-        let emailText = subject;
-        if (messages.length > 0) {
-          const firstMsg = messages[0];
-          emailText += ' ' + firstMsg.getFrom().toLowerCase();
-          emailText += ' ' + firstMsg.getTo().toLowerCase();
-        }
-
-        for (const vendor of vendorNames) {
-          // Try exact match only
-          if (emailText.includes(vendor.nameLower)) {
-            hotSet.add(vendor.nameLower);
+          if (match.matchType === 'label' || match.matchType === 'label-partial') {
+            labelMatches++;
+          } else {
             exactMatches++;
-            console.log(`HOT: ${vendor.name} (exact match in: "${subject.substring(0, 50)}...")`);
-            matched = true;
-            break;
           }
         }
       } catch (e) {
@@ -393,15 +402,15 @@ function getHotVendorsFromGmail_(allVendors) {
       }
     }
 
-    console.log(`Hot vendor detection summary: ${labelMatches} label matches, ${exactMatches} exact matches`);
+    console.log(`Vendor detection summary: ${labelMatches} label matches, ${exactMatches} exact matches`);
+    console.log(`Inbox vendors: ${inboxSet.size}, Hot vendors: ${hotSet.size}`);
     console.log(`Total unique threads processed: ${processedThreadIds.size}`);
 
   } catch (e) {
     console.log(`Error searching Gmail: ${e.message}`);
-    // Non-fatal - continue with empty hot set
   }
 
-  return hotSet;
+  return { inboxSet, hotSet };
 }
 
 
