@@ -9093,7 +9093,12 @@ function getContactsForCurrentVendor_() {
  * Returns { text: plainText, html: htmlContent } or null if not found
  */
 function getCannedResponseTemplate_(templateKey) {
-  const docId = BS_CFG.CANNED_RESPONSE_DOCS[templateKey];
+  Logger.log(`Looking for template: ${templateKey}`);
+  Logger.log(`CANNED_RESPONSE_DOCS: ${JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS)}`);
+
+  const docId = BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS[templateKey] : null;
+
+  Logger.log(`Found docId: ${docId}`);
 
   if (!docId) {
     Logger.log(`No Google Doc configured for template: ${templateKey}`);
