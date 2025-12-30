@@ -2825,6 +2825,8 @@ function searchGmailFromLink_(gmailLink, querySetName) {
         lastFrom = 'ME';
       } else if (lastSender.includes('aden')) {
         lastFrom = 'ADEN';
+      } else if (lastSender.includes('tina@zeroparallel.com')) {
+        lastFrom = 'LEGAL';
       } else if (lastSender.includes('accounting')) {
         lastFrom = 'ACCOUNTING';
       } else if (lastSender.includes('@zeroparallel.com') || lastSender.includes('@profitise.com') || lastSender.includes('@phonexa.com')) {
