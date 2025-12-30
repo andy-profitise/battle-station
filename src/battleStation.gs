@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-29 11:06 PST
+ * Last Updated: 2025-12-29 12:57 PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -8971,7 +8971,7 @@ function emailResponseCustom() {
 function emailResponseMissedMeeting() {
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
-  const bsSh = ss.getSheetByName(BS_CFG.BS_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
 
   if (!bsSh) {
     ui.alert('Error', 'Battle Station sheet not found.', ui.ButtonSet.OK);
@@ -9069,7 +9069,7 @@ function cannedResponseReferralProgram() {
  */
 function getContactsForCurrentVendor_() {
   const ss = SpreadsheetApp.getActive();
-  const bsSh = ss.getSheetByName(BS_CFG.BS_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   if (!bsSh) return [];
 
   const contacts = [];
