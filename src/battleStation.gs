@@ -3914,6 +3914,7 @@ function getGDriveFilesForVendor_(vendorName) {
 /**
  * Get Crystal Ball analysis for a vendor
  * Analyzes emails in 00.received and snoozed emails to determine what's outstanding
+ * Uses caching - only re-runs Claude analysis if email threads have changed
  *
  * @param {string} vendor - The vendor name
  * @param {number} listRow - The row number in the list sheet
@@ -3954,6 +3955,28 @@ function getCrystalBallData_(vendor, listRow) {
     const snoozedQuery = `is:snoozed label:${vendorLabel}`;
     const snoozedThreads = GmailApp.search(snoozedQuery, 0, 20);
     Logger.log(`[Crystal Ball] Found ${snoozedThreads.length} snoozed threads`);
+
+    // Use existing email checksum (already computed by loadVendorData) + snoozed count
+    // This avoids redundant fingerprint computation
+    const storedData = getStoredChecksum_(vendor);
+    const emailChecksum = storedData?.emailChecksum || 'none';
+    const snoozedIds = snoozedThreads.map(t => t.getId()).sort().join(',');
+    const currentChecksum = `${emailChecksum}|snoozed:${snoozedThreads.length}:${hashString_(snoozedIds)}`;
+
+    // Check cache - if checksum matches, return cached result
+    const cacheKey = `crystal_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const cached = getCachedData_('crystalball', cacheKey);
+    if (cached && cached.checksum === currentChecksum) {
+      Logger.log(`[Crystal Ball] Cache HIT - emails unchanged, using cached analysis`);
+      return {
+        items: cached.items || [],
+        snoozed: cached.snoozed || [],
+        summary: cached.summary || '',
+        error: null
+      };
+    }
+
+    Logger.log(`[Crystal Ball] Cache MISS or emails changed - running full analysis`);
 
     // Process received threads
     const receivedItems = [];
@@ -4013,14 +4036,16 @@ function getCrystalBallData_(vendor, listRow) {
       });
     }
 
-    // If no emails, return early
+    // If no emails, return early (and cache this state)
     if (receivedItems.length === 0 && snoozedItems.length === 0) {
-      return {
+      const result = {
         items: [],
         snoozed: [],
         summary: 'No outstanding emails found.',
         error: null
       };
+      setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
+      return result;
     }
 
     // Build context for Claude analysis - clearly indicate who sent the last message
@@ -4067,32 +4092,39 @@ Example format:
     const apiKey = BS_CFG.CLAUDE_API_KEY;
     if (!apiKey) {
       // No API key - return raw data without analysis
-      return {
+      const result = {
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
         error: null
       };
+      setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
+      return result;
     }
 
-    const result = callClaudeAPI_(prompt, apiKey);
+    const claudeResult = callClaudeAPI_(prompt, apiKey);
 
-    if (result.error) {
-      Logger.log(`[Crystal Ball] Claude API error: ${result.error}`);
+    if (claudeResult.error) {
+      Logger.log(`[Crystal Ball] Claude API error: ${claudeResult.error}`);
       return {
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active, ${snoozedItems.length} snoozed (analysis failed)`,
-        error: result.error
+        error: claudeResult.error
       };
     }
 
-    return {
+    // Cache the successful result with fingerprint
+    const result = {
       items: receivedItems,
       snoozed: snoozedItems,
-      summary: result.content,
+      summary: claudeResult.content,
       error: null
     };
+    setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
+    Logger.log(`[Crystal Ball] Analysis complete and cached`);
+
+    return result;
 
   } catch (e) {
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
