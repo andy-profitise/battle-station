@@ -9821,15 +9821,44 @@ function discoverContactsFromGmail() {
   const extractEmailsFromField = (field) => {
     if (!field) return [];
     const results = [];
-    // Match email addresses in angle brackets or standalone
-    const emailRegex = /(?:"?([^"<]*)"?\s*)?<?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/g;
-    let match;
-    while ((match = emailRegex.exec(field)) !== null) {
-      const name = match[1] ? match[1].trim() : '';
-      const email = match[2].toLowerCase();
-      results.push({ name, email });
+
+    // Split by comma (but be careful of commas in quoted names)
+    const parts = field.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+
+      // Try to match "Name" <email> or Name <email> format
+      const angleMatch = trimmed.match(/^(?:"?([^"<]+)"?\s*)?<([^>]+)>$/);
+      if (angleMatch) {
+        const name = angleMatch[1] ? angleMatch[1].trim() : '';
+        const email = angleMatch[2].toLowerCase().trim();
+        if (email.includes('@')) {
+          results.push({ name, email });
+        }
+        continue;
+      }
+
+      // Try standalone email
+      const emailOnlyMatch = trimmed.match(/^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/);
+      if (emailOnlyMatch) {
+        results.push({ name: '', email: emailOnlyMatch[1].toLowerCase() });
+      }
     }
     return results;
+  };
+
+  // Helper to clean contact name - only allow letters, spaces, hyphens, apostrophes
+  const cleanContactName = (name) => {
+    if (!name) return '';
+    // Remove any non-name characters (keep letters, spaces, hyphens, apostrophes)
+    let cleaned = name.replace(/[^a-zA-Z\s\-']/g, '').trim();
+    // Collapse multiple spaces
+    cleaned = cleaned.replace(/\s+/g, ' ');
+    // Capitalize first letter of each word
+    cleaned = cleaned.replace(/\b\w/g, c => c.toUpperCase());
+    return cleaned;
   };
 
   for (const domain of domains) {
@@ -9870,8 +9899,9 @@ function discoverContactsFromGmail() {
             const emailDomain = email.split('@')[1];
             if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
 
-            // Use extracted name or derive from email
-            const name = addr.name || email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            // Use extracted name or derive from email, then clean it
+            const rawName = addr.name || email.split('@')[0].replace(/[._]/g, ' ');
+            const name = cleanContactName(rawName);
 
             // Check if this is a new contact
             if (!existingEmails.has(email)) {
