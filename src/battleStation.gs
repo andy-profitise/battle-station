@@ -10805,7 +10805,11 @@ function isGenericDomain_(domain) {
 function extractDomainFromSource_(source) {
   if (!source) return null;
 
-  let domain = source.trim().toLowerCase();
+  // Ensure source is a string (could be Date, Number, etc. from spreadsheet)
+  const sourceStr = String(source);
+  if (!sourceStr || sourceStr === 'undefined' || sourceStr === 'null') return null;
+
+  let domain = sourceStr.trim().toLowerCase();
 
   // Remove protocol (http://, https://)
   domain = domain.replace(/^https?:\/\//, '');
