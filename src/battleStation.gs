@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 07:13PM PST
+ * Last Updated: 2025-12-30 08:48PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9238,6 +9238,8 @@ function buildTextRunHtml_(textElement) {
     const isItalic = textElement.isItalic(i);
     const isUnderline = textElement.isUnderline(i);
     const link = textElement.getLinkUrl(i);
+    const fontSize = textElement.getFontSize(i);
+    const bgColor = textElement.getBackgroundColor(i);
 
     // Find end of this formatting run
     let j = i + 1;
@@ -9245,7 +9247,9 @@ function buildTextRunHtml_(textElement) {
       if (textElement.isBold(j) !== isBold ||
           textElement.isItalic(j) !== isItalic ||
           textElement.isUnderline(j) !== isUnderline ||
-          textElement.getLinkUrl(j) !== link) {
+          textElement.getLinkUrl(j) !== link ||
+          textElement.getFontSize(j) !== fontSize ||
+          textElement.getBackgroundColor(j) !== bgColor) {
         break;
       }
       j++;
@@ -9255,11 +9259,20 @@ function buildTextRunHtml_(textElement) {
     let runText = escapeHtml_(text.substring(i, j));
 
     // Apply formatting with inline styles
-    if (isBold || isItalic || isUnderline) {
-      let styles = [];
-      if (isBold) styles.push('font-weight:bold');
-      if (isItalic) styles.push('font-style:italic');
-      if (isUnderline) styles.push('text-decoration:underline');
+    let styles = [];
+    if (isBold) styles.push('font-weight:bold');
+    if (isItalic) styles.push('font-style:italic');
+    if (isUnderline) styles.push('text-decoration:underline');
+    // Add font size if different from default (11pt)
+    if (fontSize && fontSize !== 11) {
+      styles.push(`font-size:${fontSize}pt`);
+    }
+    // Add background color if set
+    if (bgColor) {
+      styles.push(`background-color:${bgColor}`);
+    }
+
+    if (styles.length > 0) {
       runText = `<span style="${styles.join(';')}">${runText}</span>`;
     }
 
