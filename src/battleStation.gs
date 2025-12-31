@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-29 12:57 PST
+ * Last Updated: 2025-12-30 04:01PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9345,7 +9345,7 @@ function generateCannedResponse_(templateKey, templateName) {
           btn.disabled = false;
           btn.textContent = '✉️ Create Draft';
         })
-        .createCannedResponseDraft_(threadId, templateKey, contactName, vendor);
+        .createCannedResponseDraft(threadId, templateKey, contactName, vendor);
     }
 
     // Initial preview
@@ -9369,7 +9369,7 @@ function generateCannedResponse_(templateKey, templateName) {
  * Called from dialog
  * If threadId is null, creates a fresh draft instead of a reply
  */
-function createCannedResponseDraft_(threadId, templateKey, contactName, vendor) {
+function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
   try {
     // Get template from Google Doc (with HTML formatting)
     const templateData = getCannedResponseTemplate_(templateKey);
