@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 08:48PM PST
+ * Last Updated: 2025-12-31 09:19AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -19,6 +19,9 @@
  ************************************************************/
 
 const BS_CFG = {
+  // Code version - displayed in UI to confirm deployment
+  CODE_VERSION: '2025-12-31 09:19AM PST',
+
   // Sheet names
   LIST_SHEET: 'List',
   BATTLE_SHEET: 'A(I)DEN',
@@ -492,7 +495,7 @@ function loadVendorData(vendorIndex, options) {
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
   const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
   const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
-  const allBoxDocs = options.allBoxDocs || null;  // Pre-fetched Box docs for batch filtering (turbo mode)
+  // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
   
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
@@ -562,8 +565,8 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 32);
   currentRow++;
 
-  // Navigation bar - cleaner, more modern
-  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶`;
+  // Navigation bar - cleaner, more modern - includes code version for deployment verification
+  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶                    v${BS_CFG.CODE_VERSION}`;
   bsSh.getRange(currentRow, 1, 1, 9).merge()
     .setValue(navText)
     .setFontSize(10)
@@ -1154,13 +1157,18 @@ function loadVendorData(vendorIndex, options) {
   contractsRow++; // Add spacing
   
   // BOX DOCUMENTS SECTION (right side - aligned with Upcoming Meetings)
-  ss.toast('Searching Box...', '📦 Loading', 2);
   let boxDocs = [];
   let boxRow = upcomingMeetingsStartRow;
-  
+
+  // Skip Box entirely in turbo mode for speed - it will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Box search in turbo mode');
+  } else {
+  ss.toast('Searching Box...', '📦 Loading', 2);
+
   // Get blacklist from Settings sheet
   const boxBlacklist = getBoxBlacklist_();
-  
+
   // Check cache for Box docs if useCache is true
   let boxDocsFromCache = null;
   if (useCache) {
@@ -1170,19 +1178,13 @@ function loadVendorData(vendorIndex, options) {
       Logger.log(`Box docs loaded from cache: ${boxDocs.length} documents`);
     }
   }
-  
+
   // Only search Box if not loaded from cache
   if (!boxDocsFromCache) {
     try {
       // Check if Box is authorized before searching
       const boxService = getBoxService_();
       if (boxService.hasAccess()) {
-
-        // TURBO MODE: Use pre-fetched Box docs for batch filtering (much faster)
-        if (turboMode && allBoxDocs && allBoxDocs.length > 0) {
-          boxDocs = filterBoxDocumentsForVendor_(allBoxDocs, vendor, contactData.otherName);
-          Logger.log(`Box batch filter for "${vendor}" found ${boxDocs.length} results`);
-        } else {
         // NORMAL MODE: Search Box API for each vendor
         // Search with primary vendor name
         const primaryDocs = searchBoxForVendor(vendor);
@@ -1371,10 +1373,8 @@ function loadVendorData(vendorIndex, options) {
         Logger.log(`Sorted Box results by modified DESC, then matched ASC, then document ASC`);
       }
 
-          // Cache the Box results (only in normal mode, not turbo batch mode)
+          // Cache the Box results
           setCachedData_('box', vendor, boxDocs);
-
-        } // End of else (NORMAL MODE)
 
     } else {
       Logger.log('Box not authorized - skipping Box search');
@@ -1383,7 +1383,8 @@ function loadVendorData(vendorIndex, options) {
     Logger.log(`Box search error: ${e.message}`);
   }
   } // End of !boxDocsFromCache block
-  
+  } // End of else (not turbo mode)
+
   bsSh.getRange(boxRow, 6, 1, 4).merge()
     .setValue(`📦 BOX DOCUMENTS (${boxDocs.length})`)
     .setBackground('#f8f9fa')
@@ -7338,15 +7339,8 @@ function turboTraverseAll() {
 
   ss.toast(`Starting turbo traverse from vendor ${startIdx}...`, '🚀 Turbo Mode', 3);
 
-  // Pre-fetch all Box documents once for batch filtering
-  ss.toast('Pre-fetching Box documents...', '📦 Batch Load', 3);
-  let allBoxDocs = [];
-  try {
-    allBoxDocs = getAllBoxDocuments_();
-    Logger.log(`Turbo: pre-fetched ${allBoxDocs.length} Box documents for batch filtering`);
-  } catch (e) {
-    Logger.log(`Turbo: Box batch fetch failed: ${e.message}`);
-  }
+  // Box is skipped in turbo mode - will load in real-time when viewing individual vendors
+  Logger.log('Turbo: skipping Box pre-fetch (Box loads in real-time when viewing vendors)');
 
   // Calendar is skipped in turbo mode (not essential for checksum updates)
   Logger.log('Turbo: skipping Calendar pre-fetch (Calendar is skipped in turbo mode)');
@@ -7366,12 +7360,11 @@ function turboTraverseAll() {
     try {
       // Load vendor - this updates checksums
       // turboMode: skip expensive vendor label checksum (redundant with other checksums)
-      // Pass pre-fetched Box docs for batch filtering (Calendar is skipped in turbo mode)
+      // Box and Calendar are skipped in turbo mode for speed
       loadVendorData(currentIdx, {
         forceChanged: false,
         changeType: 'Turbo rebuild',
-        turboMode: true,
-        allBoxDocs: allBoxDocs
+        turboMode: true
       });
       processedThisRun++;
       processedTotal++;
