@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 05:06PM PST
+ * Last Updated: 2025-12-30 06:46PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9145,11 +9145,19 @@ function getCannedResponseTemplate_(templateKey) {
 
     let html = response.getContentText();
 
-    // Extract the style block from head (Google Docs uses class-based styling)
-    let styleBlock = '';
+    // Extract the style block to parse CSS rules
     const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+    let cssRules = {};
     if (styleMatch) {
-      styleBlock = styleMatch[0];
+      // Parse CSS rules into a map: className -> styles
+      const cssText = styleMatch[1];
+      const ruleRegex = /\.([a-zA-Z0-9_-]+)\s*\{([^}]+)\}/g;
+      let match;
+      while ((match = ruleRegex.exec(cssText)) !== null) {
+        const className = match[1];
+        const styles = match[2].trim().replace(/\s+/g, ' ');
+        cssRules[className] = styles;
+      }
     }
 
     // Extract just the body content
@@ -9158,9 +9166,31 @@ function getCannedResponseTemplate_(templateKey) {
       html = bodyMatch[1];
     }
 
-    // Combine style block with body content for proper formatting
-    // Remove id attributes but keep classes (needed for styling)
-    html = styleBlock + html.replace(/ id="[^"]*"/g, '');
+    // Convert class-based styles to inline styles (Gmail strips <style> blocks)
+    // Find all elements with class attributes and inline their styles
+    html = html.replace(/<([a-zA-Z0-9]+)([^>]*)\sclass="([^"]*)"([^>]*)>/g, function(match, tag, before, classes, after) {
+      const classNames = classes.split(/\s+/);
+      let inlineStyles = '';
+      classNames.forEach(function(cls) {
+        if (cssRules[cls]) {
+          inlineStyles += cssRules[cls] + ' ';
+        }
+      });
+      if (inlineStyles) {
+        // Check if element already has a style attribute
+        const existingStyle = (before + after).match(/style="([^"]*)"/);
+        if (existingStyle) {
+          // Merge styles
+          return `<${tag}${before.replace(/style="[^"]*"/, '')}${after.replace(/style="[^"]*"/, '')} style="${existingStyle[1]} ${inlineStyles.trim()}">`;
+        } else {
+          return `<${tag}${before}${after} style="${inlineStyles.trim()}">`;
+        }
+      }
+      return `<${tag}${before}${after}>`;
+    });
+
+    // Remove id attributes
+    html = html.replace(/ id="[^"]*"/g, '');
 
     return { text, html };
   } catch (e) {
