@@ -491,6 +491,7 @@ function loadVendorData(vendorIndex, options) {
   const useCache = options.useCache !== undefined ? options.useCache : false;
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
   const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
+  const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
   
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
@@ -2209,12 +2210,18 @@ function loadVendorData(vendorIndex, options) {
     }
 
     // Generate vendor-label-only checksum (secondary checksum for catching unlabeled emails)
-    const gmailLinkForChecksum = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
-    const vendorLabelChecksum = generateVendorLabelChecksum_(gmailLinkForChecksum);
+    // Skip during Turbo mode - it's redundant with other checksums and expensive (~6-8s for 100 threads)
+    let vendorLabelChecksum = null;
+    if (!turboMode) {
+      const gmailLinkForChecksum = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+      vendorLabelChecksum = generateVendorLabelChecksum_(gmailLinkForChecksum);
+    } else {
+      Logger.log(`Skipping vendor label checksum in turbo mode`);
+    }
 
     // Store the new checksums including module checksums, email data, and vendor label checksum
     storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums, emailData, vendorLabelChecksum);
-    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}, vendorLabel=${vendorLabelChecksum || 'null'}`);
+    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}, vendorLabel=${vendorLabelChecksum || 'skipped'}`);
   } catch (e) {
     Logger.log(`Error with checksum: ${e.message}`);
   }
@@ -3776,10 +3783,53 @@ function testAirtableConnection() {
  ************************************************************/
 
 /**
+ * Get all vendor folders from Google Drive parent folder (batched)
+ * Fetches once and caches for session - much faster than searching per vendor
+ * @returns {array} Array of { id, name, nameLower, url }
+ */
+function getAllGDriveVendorFolders_() {
+  // Check session cache first
+  const cached = getCachedData_('gdrive_folders', 'all');
+  if (cached && cached.length > 0) {
+    Logger.log(`Google Drive folders loaded from cache: ${cached.length} folders`);
+    return cached;
+  }
+
+  Logger.log('Fetching all Google Drive vendor folders (batch operation)...');
+  const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
+  const folders = [];
+
+  try {
+    const parentFolder = DriveApp.getFolderById(parentFolderId);
+    const folderIterator = parentFolder.getFolders();
+
+    while (folderIterator.hasNext()) {
+      const folder = folderIterator.next();
+      folders.push({
+        id: folder.getId(),
+        name: folder.getName(),
+        nameLower: folder.getName().toLowerCase(),
+        url: folder.getUrl()
+      });
+    }
+
+    Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
+
+    // Cache for future lookups (within same session)
+    setCachedData_('gdrive_folders', 'all', folders);
+
+    return folders;
+  } catch (e) {
+    Logger.log(`Error fetching Google Drive folders: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Get files from vendor's Google Drive folder
- * Searches for a folder matching the vendor name (ignoring YYMMDD prefix)
+ * Uses batched folder list for fast local matching, then fetches files
  * Only returns files at the first level (not in subfolders)
- * 
+ *
  * @param {string} vendorName - The vendor name to search for
  * @returns {array} Array of file objects with name, type, modified, url
  */
@@ -3788,100 +3838,52 @@ function getGDriveFilesForVendor_(vendorName) {
     Logger.log('No vendor name provided for Google Drive search');
     return [];
   }
-  
+
   Logger.log(`=== GOOGLE DRIVE SEARCH ===`);
   Logger.log(`Vendor: ${vendorName}`);
-  
+
   try {
-    const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
     const cleanVendorName = vendorName.trim().toLowerCase();
-    
-    Logger.log(`Searching for: "${cleanVendorName}"`);
-    
+
     // Remove common suffixes for alternate search
     const nameWithoutSuffix = cleanVendorName
       .replace(/,?\s*(llc|inc\.?|corp\.?|corporation|company|co\.|l\.?l\.?c\.?)$/i, '')
       .trim();
-    
+
+    // Get all vendor folders from cache (batch operation)
+    const allFolders = getAllGDriveVendorFolders_();
+
+    // Match locally - no API calls needed!
     let vendorFolder = null;
-    
-    // Strategy 1: Search for exact vendor name phrase
-    let searchQuery = `title contains '${vendorName.replace(/'/g, "\\'")}' and '${parentFolderId}' in parents`;
-    Logger.log(`Search query: ${searchQuery}`);
-    
-    let folderIterator = DriveApp.searchFolders(searchQuery);
-    
-    while (folderIterator.hasNext()) {
-      const folder = folderIterator.next();
-      const folderName = folder.getName();
-      const folderNameLower = folderName.toLowerCase();
-      Logger.log(`  Found: "${folderName}"`);
-      
+    let vendorFolderUrl = null;
+
+    for (const folder of allFolders) {
       // Check if folder contains the exact vendor name (case-insensitive)
-      if (folderNameLower.includes(cleanVendorName)) {
-        vendorFolder = folder;
-        Logger.log(`Exact match! Using vendor folder: ${folderName}`);
+      if (folder.nameLower.includes(cleanVendorName)) {
+        vendorFolder = DriveApp.getFolderById(folder.id);
+        vendorFolderUrl = folder.url;
+        Logger.log(`Match found: "${folder.name}"`);
         break;
       }
-      
+
       // Also accept if it contains the name without suffix
-      if (nameWithoutSuffix !== cleanVendorName && folderNameLower.includes(nameWithoutSuffix)) {
-        vendorFolder = folder;
-        Logger.log(`Match without suffix! Using vendor folder: ${folderName}`);
+      if (nameWithoutSuffix !== cleanVendorName && folder.nameLower.includes(nameWithoutSuffix)) {
+        vendorFolder = DriveApp.getFolderById(folder.id);
+        vendorFolderUrl = folder.url;
+        Logger.log(`Match found (without suffix): "${folder.name}"`);
         break;
       }
     }
-    
-    // Strategy 2: If not found, try searching without suffix
-    if (!vendorFolder && nameWithoutSuffix !== cleanVendorName) {
-      searchQuery = `title contains '${nameWithoutSuffix.replace(/'/g, "\\'")}' and '${parentFolderId}' in parents`;
-      Logger.log(`Trying without suffix: ${searchQuery}`);
-      
-      folderIterator = DriveApp.searchFolders(searchQuery);
-      
-      while (folderIterator.hasNext()) {
-        const folder = folderIterator.next();
-        const folderName = folder.getName();
-        const folderNameLower = folderName.toLowerCase();
-        Logger.log(`  Found: "${folderName}"`);
-        
-        if (folderNameLower.includes(nameWithoutSuffix)) {
-          vendorFolder = folder;
-          Logger.log(`Match! Using vendor folder: ${folderName}`);
-          break;
-        }
-      }
-    }
-    
-    // Strategy 3: Fallback - iterate through parent folder directly (for newly created folders)
-    if (!vendorFolder) {
-      Logger.log('Search API found nothing, trying direct folder iteration...');
-      const parentFolder = DriveApp.getFolderById(parentFolderId);
-      folderIterator = parentFolder.getFolders();
-      
-      while (folderIterator.hasNext()) {
-        const folder = folderIterator.next();
-        const folderName = folder.getName();
-        const folderNameLower = folderName.toLowerCase();
-        
-        // Check for exact phrase match
-        if (folderNameLower.includes(cleanVendorName) || 
-            (nameWithoutSuffix !== cleanVendorName && folderNameLower.includes(nameWithoutSuffix))) {
-          vendorFolder = folder;
-          Logger.log(`Found via direct iteration: ${folderName}`);
-          break;
-        }
-      }
-    }
-    
+
     if (!vendorFolder) {
       Logger.log('No matching vendor folder found in Google Drive');
       return { files: [], folderFound: false, folderUrl: null };
     }
-    
+
     // Get files at the first level only (no subfolders)
+    // Use cached URL instead of calling getUrl() again
     const files = [];
-    const folderUrl = vendorFolder.getUrl();
+    const folderUrl = vendorFolderUrl;
     const fileIterator = vendorFolder.getFiles();
     
     while (fileIterator.hasNext()) {
@@ -3948,7 +3950,7 @@ function getGDriveFilesForVendor_(vendorName) {
 /**
  * Get Crystal Ball analysis for a vendor
  * Analyzes emails in 00.received and snoozed emails to determine what's outstanding
- * Uses caching - only re-runs Claude analysis if email threads have changed
+ * Runs realtime (no caching) - data changes frequently and we want latest insight
  *
  * @param {string} vendor - The vendor name
  * @param {number} listRow - The row number in the list sheet
@@ -3990,27 +3992,9 @@ function getCrystalBallData_(vendor, listRow) {
     const snoozedThreads = GmailApp.search(snoozedQuery, 0, 20);
     Logger.log(`[Crystal Ball] Found ${snoozedThreads.length} snoozed threads`);
 
-    // Use existing email checksum (already computed by loadVendorData) + snoozed count
-    // This avoids redundant fingerprint computation
-    const storedData = getStoredChecksum_(vendor);
-    const emailChecksum = storedData?.emailChecksum || 'none';
-    const snoozedIds = snoozedThreads.map(t => t.getId()).sort().join(',');
-    const currentChecksum = `${emailChecksum}|snoozed:${snoozedThreads.length}:${hashString_(snoozedIds)}`;
-
-    // Check cache - if checksum matches, return cached result
-    const cacheKey = `crystal_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const cached = getCachedData_('crystalball', cacheKey);
-    if (cached && cached.checksum === currentChecksum) {
-      Logger.log(`[Crystal Ball] Cache HIT - emails unchanged, using cached analysis`);
-      return {
-        items: cached.items || [],
-        snoozed: cached.snoozed || [],
-        summary: cached.summary || '',
-        error: null
-      };
-    }
-
-    Logger.log(`[Crystal Ball] Cache MISS or emails changed - running full analysis`);
+    // Crystal Ball always runs fresh (realtime) - no checksum caching
+    // Data changes frequently and we want the latest insight when viewing a vendor
+    Logger.log(`[Crystal Ball] Running realtime analysis (no caching)`);
 
     // Process received threads
     const receivedItems = [];
@@ -4070,16 +4054,14 @@ function getCrystalBallData_(vendor, listRow) {
       });
     }
 
-    // If no emails, return early (and cache this state)
+    // If no emails, return early
     if (receivedItems.length === 0 && snoozedItems.length === 0) {
-      const result = {
+      return {
         items: [],
         snoozed: [],
         summary: 'No outstanding emails found.',
         error: null
       };
-      setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
-      return result;
     }
 
     // Build context for Claude analysis - clearly indicate who sent the last message
@@ -4126,14 +4108,12 @@ Example format:
     const apiKey = BS_CFG.CLAUDE_API_KEY;
     if (!apiKey) {
       // No API key - return raw data without analysis
-      const result = {
+      return {
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
         error: null
       };
-      setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
-      return result;
     }
 
     const claudeResult = callClaudeAPI_(prompt, apiKey);
@@ -4148,17 +4128,13 @@ Example format:
       };
     }
 
-    // Cache the successful result with fingerprint
-    const result = {
+    Logger.log(`[Crystal Ball] Analysis complete`);
+    return {
       items: receivedItems,
       snoozed: snoozedItems,
       summary: claudeResult.content,
       error: null
     };
-    setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
-    Logger.log(`[Crystal Ball] Analysis complete and cached`);
-
-    return result;
 
   } catch (e) {
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
@@ -4471,45 +4447,25 @@ function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
 }
 
 /**
- * Find a monday.com item ID by searching for a vendor name
+ * Get all items from a Monday.com board (batched)
+ * Fetches once and caches for session - much faster than searching per vendor
+ * @param {string} boardId - The board ID to fetch from
+ * @param {string} apiToken - The API token
+ * @returns {array} Array of { id, name, nameLower }
  */
-function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
-  Logger.log(`=== SEARCHING FOR VENDOR ===`);
-  Logger.log(`Search term: "${vendor}"`);
-  Logger.log(`Board ID: ${boardId}`);
-  
-  let query = `
-    query {
-      boards (ids: [${boardId}]) {
-        items_page (limit: 100, query_params: {rules: [{column_id: "name", compare_value: ["${vendor.replace(/"/g, '\\"')}"]}]}) {
-          items { id name }
-        }
-      }
-    }
-  `;
-  
-  let itemId = tryFindItem_(query, apiToken, 'Exact match');
-  if (itemId) return itemId;
-  
-  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim();
-  if (withoutParens !== vendor) {
-    Logger.log(`Trying without parentheses: "${withoutParens}"`);
-    query = `
-      query {
-        boards (ids: [${boardId}]) {
-          items_page (limit: 100, query_params: {rules: [{column_id: "name", compare_value: ["${withoutParens.replace(/"/g, '\\"')}"]}]}) {
-            items { id name }
-          }
-        }
-      }
-    `;
-    
-    itemId = tryFindItem_(query, apiToken, 'Without parentheses');
-    if (itemId) return itemId;
+function getAllMondayBoardItems_(boardId, apiToken) {
+  const cacheKey = `board_${boardId}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_items', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com items loaded from cache for board ${boardId}: ${cached.length} items`);
+    return cached;
   }
-  
-  Logger.log(`Trying contains search...`);
-  query = `
+
+  Logger.log(`Fetching all items from Monday.com board ${boardId} (batch operation)...`);
+
+  const query = `
     query {
       boards (ids: [${boardId}]) {
         items_page (limit: 500) {
@@ -4518,7 +4474,7 @@ function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
       }
     }
   `;
-  
+
   try {
     const options = {
       method: 'post',
@@ -4527,62 +4483,68 @@ function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
       payload: JSON.stringify({ query: query }),
       muteHttpExceptions: true
     };
-    
+
     const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
     const result = JSON.parse(response.getContentText());
-    
+
     if (result.data?.boards?.[0]?.items_page?.items) {
-      const items = result.data.boards[0].items_page.items;
-      
-      for (const item of items) {
-        const itemName = String(item.name || '').toLowerCase();
-        const searchTerm = vendor.toLowerCase();
-        const searchTermNoParens = withoutParens.toLowerCase();
-        
-        if (itemName.includes(searchTerm) || searchTerm.includes(itemName) ||
-            itemName.includes(searchTermNoParens) || searchTermNoParens.includes(itemName)) {
-          Logger.log(`✓ FOUND MATCH: "${item.name}" (ID: ${item.id})`);
-          return item.id;
-        }
-      }
+      const items = result.data.boards[0].items_page.items.map(item => ({
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase()
+      }));
+
+      Logger.log(`Fetched ${items.length} items from Monday.com board ${boardId}`);
+
+      // Cache for future lookups
+      setCachedData_('monday_items', cacheKey, items);
+
+      return items;
     }
-    
-    return null;
+
+    return [];
   } catch (e) {
-    Logger.log(`Error in contains search: ${e}`);
-    return null;
+    Logger.log(`Error fetching Monday.com items: ${e.message}`);
+    return [];
   }
 }
 
 /**
- * Helper to try a specific query
+ * Find a monday.com item ID by searching for a vendor name
+ * Uses batched item list for fast local matching
  */
-function tryFindItem_(query, apiToken, attemptName) {
-  try {
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
-      muteHttpExceptions: true
-    };
-    
-    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
-    const result = JSON.parse(response.getContentText());
-    
-    if (result.data?.boards?.[0]?.items_page?.items?.length > 0) {
-      const item = result.data.boards[0].items_page.items[0];
-      Logger.log(`✓ ${attemptName} SUCCESS: Found "${item.name}" (ID: ${item.id})`);
+function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
+  Logger.log(`=== SEARCHING FOR VENDOR ===`);
+  Logger.log(`Search term: "${vendor}"`);
+  Logger.log(`Board ID: ${boardId}`);
+
+  const searchTerm = vendor.toLowerCase();
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim();
+  const searchTermNoParens = withoutParens.toLowerCase();
+
+  // Get all items from cache (batch operation)
+  const allItems = getAllMondayBoardItems_(boardId, apiToken);
+
+  // Match locally - no API calls needed!
+  // Try exact match first
+  for (const item of allItems) {
+    if (item.nameLower === searchTerm || item.nameLower === searchTermNoParens) {
+      Logger.log(`✓ EXACT MATCH: "${item.name}" (ID: ${item.id})`);
       return item.id;
-    } else {
-      Logger.log(`✗ ${attemptName} failed: No items found`);
     }
-    
-    return null;
-  } catch (e) {
-    Logger.log(`✗ ${attemptName} error: ${e}`);
-    return null;
   }
+
+  // Try contains match
+  for (const item of allItems) {
+    if (item.nameLower.includes(searchTerm) || searchTerm.includes(item.nameLower) ||
+        item.nameLower.includes(searchTermNoParens) || searchTermNoParens.includes(item.nameLower)) {
+      Logger.log(`✓ CONTAINS MATCH: "${item.name}" (ID: ${item.id})`);
+      return item.id;
+    }
+  }
+
+  Logger.log(`No match found for "${vendor}" in board ${boardId}`);
+  return null;
 }
 
 /**
@@ -5733,9 +5695,9 @@ function generateVendorLabelChecksum_(gmailLink) {
     const searchQuery = `label:${vendorLabel} -is:snoozed -label:03.noInbox`;
     Logger.log(`Vendor label search query: ${searchQuery}`);
 
-    // Search Gmail
-    const threads = GmailApp.search(searchQuery, 0, 100);
-    Logger.log(`Vendor label search found ${threads.length} threads`);
+    // Search Gmail - only check last 10 emails (most real-time emails are recent)
+    const threads = GmailApp.search(searchQuery, 0, 10);
+    Logger.log(`Vendor label search found ${threads.length} threads (limit 10)`);
 
     // Generate simple checksum based on thread count and thread IDs
     const threadData = threads.map(t => ({
@@ -7150,7 +7112,8 @@ function turboTraverseAll() {
 
     try {
       // Load vendor - this updates checksums
-      loadVendorData(currentIdx, { forceChanged: false, changeType: 'Turbo rebuild' });
+      // turboMode: skip expensive vendor label checksum (redundant with other checksums)
+      loadVendorData(currentIdx, { forceChanged: false, changeType: 'Turbo rebuild', turboMode: true });
       processedThisRun++;
       processedTotal++;
 
