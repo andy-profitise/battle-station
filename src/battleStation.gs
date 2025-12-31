@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 06:55PM PST
+ * Last Updated: 2025-12-30 07:13PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9651,8 +9651,10 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
         rawHeaders += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
 
         let mimeBody = `--${boundary}\r\n`;
-        mimeBody += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
-        mimeBody += fullBodyHtml + '\r\n';
+        mimeBody += `Content-Type: text/html; charset="UTF-8"\r\n`;
+        mimeBody += `Content-Transfer-Encoding: base64\r\n\r\n`;
+        // Encode HTML content as base64 for proper UTF-8 handling
+        mimeBody += Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes()) + '\r\n';
 
         attachments.forEach(blob => {
           mimeBody += `--${boundary}\r\n`;
@@ -9663,9 +9665,11 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
         });
         mimeBody += `--${boundary}--`;
 
+        // Convert full message to UTF-8 bytes for proper encoding
+        const rawEmail = rawHeaders + mimeBody;
         const updateResource = {
           message: {
-            raw: Utilities.base64EncodeWebSafe(rawHeaders + mimeBody),
+            raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),
             threadId: thread.getId()
           }
         };
@@ -9674,9 +9678,11 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
       } else {
         rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
 
+        // Convert full message to UTF-8 bytes for proper encoding of special characters
+        const rawEmail = rawHeaders + fullBodyHtml;
         const updateResource = {
           message: {
-            raw: Utilities.base64EncodeWebSafe(rawHeaders + fullBodyHtml),
+            raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),
             threadId: thread.getId()
           }
         };
