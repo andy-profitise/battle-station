@@ -6491,7 +6491,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
 
   // FAST PATH: Quick thread count check before fetching full email data
   // If count differs from stored, we know there's a change without expensive processing
-  const storedEmailChecksum = storedData.emailChecksum || '';
+  const storedEmailChecksum = String(storedData.emailChecksum || '');
   const storedCountMatch = storedEmailChecksum.match(/^(\d+):/);
   if (storedCountMatch) {
     const storedCount = parseInt(storedCountMatch[1], 10);
