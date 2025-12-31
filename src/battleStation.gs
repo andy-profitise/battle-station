@@ -244,7 +244,6 @@ function onOpen() {
   // Navigation menu - movement and traversal
   ui.createMenu('🧭 Navigation')
     .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
-    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
     .addItem('🚀 Turbo Traverse (Batch)', 'turboTraverseAll')
     .addSeparator()
     .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
@@ -7091,107 +7090,6 @@ function cancelSkip5Session() {
   
   props.deleteProperty('BS_SKIP5_SESSION');
   SpreadsheetApp.getUi().alert('Skip 5 & Return session cancelled.');
-}
-
-/**
- * Auto-traverse through vendors one at a time, loading each on the page
- * Unlike Skip Unchanged, this loads EVERY vendor (not just changed ones)
- * Colors List rows: yellow=no changes, green=has changes
- * Stops after 30 vendors to avoid timeout (session tracked in properties)
- * Press the button repeatedly to advance through vendors
- */
-function autoTraverseVendors() {
-  const ss = SpreadsheetApp.getActive();
-  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  const props = PropertiesService.getScriptProperties();
-
-  if (!listSh) {
-    ss.toast('List sheet not found.', '❌ Error', 3);
-    return;
-  }
-
-  const listData = listSh.getDataRange().getValues();
-  const totalVendors = listData.length - 1;
-
-  // Check for existing auto-traverse session
-  let traverseSession = null;
-  const sessionData = props.getProperty('BS_AUTOTRAVERSE_SESSION');
-  if (sessionData) {
-    try {
-      traverseSession = JSON.parse(sessionData);
-    } catch (e) {
-      traverseSession = null;
-    }
-  }
-
-  // Get next vendor index (start from current + 1, or continue session)
-  let currentIdx = (getCurrentVendorIndex_() || 0) + 1;
-  let traverseCount = 0;
-
-  if (traverseSession) {
-    traverseCount = traverseSession.count || 0;
-  }
-
-  // Make sure we don't start past the end
-  if (currentIdx > totalVendors) {
-    ss.toast('Already at the last vendor.', '🔁 Auto-Traverse', 3);
-    props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
-    return;
-  }
-
-  // Safeguard: After 30 vendors traversed, show warning and reset
-  const MAX_TRAVERSE = 30;
-  if (traverseCount >= MAX_TRAVERSE) {
-    ss.toast(`Session ended: ${traverseCount} vendors traversed (limit reached)`, '⚠️ Auto-Traverse Limit', 5);
-    props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
-    traverseCount = 0;
-  }
-
-  const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
-  const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
-  const listRow = currentIdx + 1;
-
-  // Use the centralized change detection helper
-  const changeResult = checkVendorForChanges_(vendor, listRow, source);
-
-  // Increment traverse count
-  traverseCount++;
-
-  // Update session
-  props.setProperty('BS_AUTOTRAVERSE_SESSION', JSON.stringify({
-    count: traverseCount,
-    startedAt: traverseSession?.startedAt || new Date().toISOString()
-  }));
-
-  if (changeResult.hasChanges) {
-    // Show what changed
-    const changeLabel = formatChangeType_(changeResult.changeType);
-    ss.toast(`${vendor} (${traverseCount}/${MAX_TRAVERSE})\n${changeLabel}`, '🔁 Auto-Traverse', 3);
-
-    loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-  } else {
-    // No changes - still load the vendor, but mark as no changes
-    ss.toast(`${vendor} (${traverseCount}/${MAX_TRAVERSE})\nNo changes`, '🔁 Auto-Traverse', 3);
-
-    loadVendorData(currentIdx, { forceChanged: false, changeType: 'No changes detected' });
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
-  }
-
-  // Check if we've reached the end of the list
-  if (currentIdx >= totalVendors) {
-    ss.toast(`Reached end of list! ${traverseCount} vendors traversed.`, '✅ Auto-Traverse Complete', 5);
-    props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
-  }
-}
-
-/**
- * Reset the Auto-Traverse session counter
- */
-function resetAutoTraverseSession() {
-  const props = PropertiesService.getScriptProperties();
-  props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
-  SpreadsheetApp.getActive().toast('Auto-Traverse session reset.', '🔁 Reset', 3);
 }
 
 /**
