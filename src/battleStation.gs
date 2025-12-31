@@ -9703,6 +9703,10 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
         draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
       }
 
+      // Track this thread for auto-archive after sending
+      addPendingArchiveThread_(thread.getId());
+      Logger.log(`Added thread ${thread.getId()} to pending archive list (canned response)`);
+
     } else {
       // Create fresh draft (no reply)
       const subject = `Referral Partnership - ${vendor}`;
