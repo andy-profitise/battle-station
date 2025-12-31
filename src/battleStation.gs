@@ -7234,10 +7234,11 @@ function scheduleTurboTraverse() {
   }));
 
   // Schedule 6 runs, 7 minutes apart
+  // Run 1 is immediate, runs 2-6 are scheduled
   const RUNS = 6;
   const INTERVAL_MINUTES = 7;
 
-  for (let i = 0; i < RUNS; i++) {
+  for (let i = 1; i < RUNS; i++) {
     ScriptApp.newTrigger('turboTraverseAll')
       .timeBased()
       .after(i * INTERVAL_MINUTES * 60 * 1000) // milliseconds
