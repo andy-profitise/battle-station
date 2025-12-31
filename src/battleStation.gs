@@ -9817,95 +9817,126 @@ function discoverContactsFromGmail() {
   const emailsSearched = new Set();
 
   // If we have company domains, search by domain
+  // Helper to extract all emails from a header field (handles "Name <email>, Name2 <email2>" format)
+  const extractEmailsFromField = (field) => {
+    if (!field) return [];
+    const results = [];
+    // Match email addresses in angle brackets or standalone
+    const emailRegex = /(?:"?([^"<]*)"?\s*)?<?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/g;
+    let match;
+    while ((match = emailRegex.exec(field)) !== null) {
+      const name = match[1] ? match[1].trim() : '';
+      const email = match[2].toLowerCase();
+      results.push({ name, email });
+    }
+    return results;
+  };
+
   for (const domain of domains) {
-    ss.toast(`Searching emails from @${domain}...`, '🔍 Scanning', 3);
+    ss.toast(`Searching emails with @${domain}...`, '🔍 Scanning', 3);
 
     try {
-      // Search for emails from this domain in the last 6 months
-      const query = `from:@${domain}`;
+      // Search for emails involving this domain (from OR to)
+      const query = `{from:@${domain} to:@${domain} cc:@${domain}}`;
       const threads = GmailApp.search(query, 0, 50); // Get up to 50 threads
 
-      Logger.log(`Found ${threads.length} threads from @${domain}`);
+      Logger.log(`Found ${threads.length} threads involving @${domain}`);
 
       for (const thread of threads) {
         const messages = thread.getMessages();
 
         for (const message of messages) {
           const from = message.getFrom() || '';
+          const to = message.getTo() || '';
+          const cc = message.getCc() || '';
           const body = message.getPlainBody() || '';
           const date = message.getDate();
 
-          // Extract email from "Name <email>" format
-          const emailMatch = from.match(/<([^>]+)>/) || [null, from.trim()];
-          const email = emailMatch[1].toLowerCase();
+          // Extract all email addresses from From, To, and CC fields
+          const allAddresses = [
+            ...extractEmailsFromField(from),
+            ...extractEmailsFromField(to),
+            ...extractEmailsFromField(cc)
+          ];
 
-          // Skip if we've already processed this email address
-          if (emailsSearched.has(email)) continue;
-          emailsSearched.add(email);
+          for (const addr of allAddresses) {
+            const email = addr.email;
 
-          // Only consider contacts from the vendor's domains (not internal or other external)
-          const emailDomain = email.split('@')[1];
-          if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
+            // Skip if we've already processed this email address
+            if (emailsSearched.has(email)) continue;
+            emailsSearched.add(email);
 
-          // Extract name from "Name <email>" format
-          const nameMatch = from.match(/^([^<]+)</);
-          const name = nameMatch ? nameMatch[1].trim().replace(/"/g, '') : email.split('@')[0];
+            // Only consider contacts from the vendor's domains (not internal or other external)
+            const emailDomain = email.split('@')[1];
+            if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
 
-          // Check if this is a new contact
-          if (!existingEmails.has(email)) {
-            // Extract phone numbers and job title from signature (last 500 chars of body)
-            const signature = body.slice(-500);
-            const phones = extractPhoneNumbers_(signature);
-            const jobTitle = extractJobTitle_(signature, name);
+            // Use extracted name or derive from email
+            const name = addr.name || email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 
-            potentialNewContacts.push({
-              name: name,
-              email: email,
-              phone: phones.length > 0 ? phones[0] : '',
-              jobTitle: jobTitle,
-              lastSeen: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
-              domain: domain
-            });
+            // Check if this is a new contact
+            if (!existingEmails.has(email)) {
+              // Try to find signature info for this contact (only reliable for senders)
+              let phones = [];
+              let jobTitle = '';
 
-            Logger.log(`Potential new contact: ${name} <${email}> - ${jobTitle || 'no title'}`);
-          } else {
-            // Existing contact - check for phone updates and job title
-            const signature = body.slice(-500);
-            const phones = extractPhoneNumbers_(signature);
-            const jobTitle = extractJobTitle_(signature, name);
+              // If this person sent a message, try to extract from their signature
+              if (from.toLowerCase().includes(email)) {
+                const signature = body.slice(-500);
+                phones = extractPhoneNumbers_(signature);
+                jobTitle = extractJobTitle_(signature, name);
+              }
 
-            // Check for job title updates
-            const existingContact = existingContacts.find(c =>
-              c.email && c.email.toLowerCase() === email
-            );
-
-            if (existingContact && jobTitle && !existingContact.notes?.includes(jobTitle)) {
-              potentialUpdates.push({
-                name: existingContact.name,
+              potentialNewContacts.push({
+                name: name,
                 email: email,
-                updateType: 'jobTitle',
-                currentValue: existingContact.notes || '(none)',
-                newValue: jobTitle,
-                foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                phone: phones.length > 0 ? phones[0] : '',
+                jobTitle: jobTitle,
+                lastSeen: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+                domain: domain
               });
-              Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
-            }
 
-            for (const phone of phones) {
-              const normalized = phone.replace(/\D/g, '').slice(-10);
-              if (normalized.length === 10 && !existingPhones.has(normalized)) {
-                // Found a new phone number for an existing contact
-                if (existingContact) {
-                  potentialUpdates.push({
-                    name: existingContact.name,
-                    email: email,
-                    updateType: 'phone',
-                    currentValue: existingContact.phone || '(none)',
-                    newValue: phone,
-                    foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
-                  });
+              Logger.log(`Potential new contact: ${name} <${email}> - ${jobTitle || 'no title'}`);
+            } else {
+              // Existing contact - check for phone updates and job title (only from their sent messages)
+              if (!from.toLowerCase().includes(email)) continue;
 
-                  Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+              const signature = body.slice(-500);
+              const phones = extractPhoneNumbers_(signature);
+              const jobTitle = extractJobTitle_(signature, name);
+
+              // Check for job title updates
+              const existingContact = existingContacts.find(c =>
+                c.email && c.email.toLowerCase() === email
+              );
+
+              if (existingContact && jobTitle && !existingContact.notes?.includes(jobTitle)) {
+                potentialUpdates.push({
+                  name: existingContact.name,
+                  email: email,
+                  updateType: 'jobTitle',
+                  currentValue: existingContact.notes || '(none)',
+                  newValue: jobTitle,
+                  foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                });
+                Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+              }
+
+              for (const phone of phones) {
+                const normalized = phone.replace(/\D/g, '').slice(-10);
+                if (normalized.length === 10 && !existingPhones.has(normalized)) {
+                  // Found a new phone number for an existing contact
+                  if (existingContact) {
+                    potentialUpdates.push({
+                      name: existingContact.name,
+                      email: email,
+                      updateType: 'phone',
+                      currentValue: existingContact.phone || '(none)',
+                      newValue: phone,
+                      foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                    });
+
+                    Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                  }
                 }
               }
             }
