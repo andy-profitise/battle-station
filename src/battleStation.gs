@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-31 09:19AM PST
+ * Last Updated: 2025-12-31 09:34AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2025-12-31 09:19AM PST',
+  CODE_VERSION: '2025-12-31 09:34AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -1692,8 +1692,14 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
 
   // CRYSTAL BALL SECTION (right side - below Google Drive)
-  ss.toast('Analyzing emails...', '🔮 Crystal Ball', 2);
-  const crystalBall = getCrystalBallData_(vendor, listRow);
+  // Skip Crystal Ball in turbo mode - redundant with Gmail search
+  let crystalBall = { items: [], snoozed: [], summary: null, error: null };
+  if (turboMode) {
+    Logger.log('Skipping Crystal Ball in turbo mode');
+  } else {
+    ss.toast('Analyzing emails...', '🔮 Crystal Ball', 2);
+    crystalBall = getCrystalBallData_(vendor, listRow);
+  }
 
   let crystalRow = rightColumnRow + 1;
 
