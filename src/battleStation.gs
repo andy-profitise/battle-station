@@ -492,6 +492,7 @@ function loadVendorData(vendorIndex, options) {
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
   const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
   const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
+  const allBoxDocs = options.allBoxDocs || null;  // Pre-fetched Box docs for batch filtering (turbo mode)
   
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
@@ -845,12 +846,21 @@ function loadVendorData(vendorIndex, options) {
   const upcomingMeetingsStartRow = currentRow;
   
   // CALENDAR MEETINGS SECTION
-  ss.toast('Checking calendar...', '📅 Loading', 2);
   // Extract contact emails to search for in calendar events
   const contactEmails = (contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
-  const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
-  const meetings = meetingsResult.meetings || [];
-  const totalMeetingCount = meetingsResult.totalCount || 0;
+
+  let meetings = [];
+  let totalMeetingCount = 0;
+
+  // Skip Calendar in turbo mode (not essential for checksum updates)
+  if (turboMode) {
+    Logger.log('Skipping Calendar search in turbo mode');
+  } else {
+    ss.toast('Checking calendar...', '📅 Loading', 2);
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    meetings = meetingsResult.meetings || [];
+    totalMeetingCount = meetingsResult.totalCount || 0;
+  }
   
   bsSh.getRange(currentRow, 1, 1, 4).merge()
     .setValue(`📅 UPCOMING MEETINGS (${meetings.length})`)
@@ -1167,6 +1177,13 @@ function loadVendorData(vendorIndex, options) {
       // Check if Box is authorized before searching
       const boxService = getBoxService_();
       if (boxService.hasAccess()) {
+
+        // TURBO MODE: Use pre-fetched Box docs for batch filtering (much faster)
+        if (turboMode && allBoxDocs && allBoxDocs.length > 0) {
+          boxDocs = filterBoxDocumentsForVendor_(allBoxDocs, vendor, contactData.otherName);
+          Logger.log(`Box batch filter for "${vendor}" found ${boxDocs.length} results`);
+        } else {
+        // NORMAL MODE: Search Box API for each vendor
         // Search with primary vendor name
         const primaryDocs = searchBoxForVendor(vendor);
         Logger.log(`Box search for "${vendor}" found ${primaryDocs.length} results`);
@@ -1353,10 +1370,12 @@ function loadVendorData(vendorIndex, options) {
         
         Logger.log(`Sorted Box results by modified DESC, then matched ASC, then document ASC`);
       }
-      
-      // Cache the Box results
-      setCachedData_('box', vendor, boxDocs);
-      
+
+          // Cache the Box results (only in normal mode, not turbo batch mode)
+          setCachedData_('box', vendor, boxDocs);
+
+        } // End of else (NORMAL MODE)
+
     } else {
       Logger.log('Box not authorized - skipping Box search');
     }
@@ -3162,6 +3181,227 @@ function getTasksForVendor_(vendor, listRow) {
     Logger.log(`Error fetching monday.com tasks: ${e.message}`);
     return [];
   }
+}
+
+/**
+ * Get ALL calendar events for batch processing (with caching)
+ * Fetches all events from owned calendars once and caches for the session
+ * @returns {array} All calendar events with metadata
+ */
+function getAllCalendarEvents_() {
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'calendar_all_events';
+
+  // Check script-level cache first
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const events = JSON.parse(cached);
+      Logger.log(`Calendar batch: loaded ${events.length} events from cache`);
+      return events;
+    } catch (e) {
+      // Cache corrupted, continue to fetch
+    }
+  }
+
+  Logger.log('Calendar batch: fetching all events from calendars...');
+
+  const now = new Date();
+  const pastDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
+  const futureDate = new Date(now.getTime() + (60 * 24 * 60 * 60 * 1000)); // 60 days ahead
+
+  const calendars = CalendarApp.getAllCalendars();
+  const allEvents = [];
+
+  // Only search calendars owned by the user
+  const ownedCalendars = calendars.filter(cal => {
+    try {
+      return cal.isOwnedByMe();
+    } catch (e) {
+      return false;
+    }
+  });
+
+  Logger.log(`Calendar batch: searching ${ownedCalendars.length} owned calendars`);
+
+  for (const calendar of ownedCalendars) {
+    try {
+      const events = calendar.getEvents(pastDate, futureDate);
+
+      for (const event of events) {
+        const title = event.getTitle() || '';
+        const description = event.getDescription() || '';
+        const location = event.getLocation() || '';
+        const startTime = event.getStartTime();
+        const endTime = event.getEndTime();
+        const isAllDay = event.isAllDayEvent();
+
+        // Get attendee emails
+        let attendeeEmails = [];
+        try {
+          const guests = event.getGuestList();
+          attendeeEmails = guests.map(g => g.getEmail().toLowerCase());
+        } catch (e) {
+          // Some events may not allow guest list access
+        }
+
+        allEvents.push({
+          id: event.getId(),
+          title: title,
+          description: description,
+          location: location,
+          startTime: startTime,
+          endTime: endTime,
+          isAllDay: isAllDay,
+          attendeeEmails: attendeeEmails,
+          searchText: (title + ' ' + description + ' ' + location + ' ' + attendeeEmails.join(' ')).toLowerCase(),
+          calendarName: calendar.getName()
+        });
+      }
+    } catch (e) {
+      Logger.log(`Error fetching events from calendar: ${e.message}`);
+    }
+  }
+
+  Logger.log(`Calendar batch: fetched ${allEvents.length} events total`);
+
+  // Cache for 30 minutes
+  try {
+    const jsonStr = JSON.stringify(allEvents);
+    if (jsonStr.length < 90000) {
+      cache.put(cacheKey, jsonStr, 1800);
+    } else {
+      Logger.log(`Calendar batch: ${allEvents.length} events too large for cache (${Math.round(jsonStr.length/1024)}KB)`);
+    }
+  } catch (e) {
+    Logger.log(`Calendar batch cache error: ${e.message}`);
+  }
+
+  return allEvents;
+}
+
+/**
+ * Filter calendar events for a specific vendor (local matching)
+ * @param {array} allEvents - All calendar events (from getAllCalendarEvents_)
+ * @param {string} vendor - Vendor name to search for
+ * @param {array} contactEmails - Contact emails to search for
+ * @returns {array} Matching events formatted for display
+ */
+function filterCalendarEventsForVendor_(allEvents, vendor, contactEmails) {
+  if (!allEvents || allEvents.length === 0 || !vendor) {
+    return [];
+  }
+
+  const tz = 'America/Los_Angeles';
+  const now = new Date();
+  const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+
+  // Build search terms
+  const searchTerms = [vendor.toLowerCase()];
+
+  // Without parentheses
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
+  if (withoutParens !== vendor.toLowerCase()) {
+    searchTerms.push(withoutParens);
+  }
+
+  // Without common suffixes
+  const withoutSuffix = vendor.replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.?)$/i, '').trim().toLowerCase();
+  if (withoutSuffix !== vendor.toLowerCase() && !searchTerms.includes(withoutSuffix)) {
+    searchTerms.push(withoutSuffix);
+  }
+
+  // Check if multi-word vendor (affects matching strictness)
+  const words = vendor.split(/[\s\-\(\)]+/).filter(w => w.length > 0);
+  const isMultiWord = words.length >= 2;
+  const commonWords = ['solar', 'energy', 'home', 'power', 'green', 'sun', 'electric', 'services', 'solutions', 'group', 'pro', 'usa', 'national'];
+
+  // Email search terms
+  const emailSearchTerms = (contactEmails || [])
+    .filter(e => e && e.includes('@'))
+    .map(e => e.toLowerCase().trim());
+
+  const matches = [];
+  const seenIds = new Set();
+
+  for (const event of allEvents) {
+    if (seenIds.has(event.id)) continue;
+
+    let isMatch = false;
+    let matchedTerm = '';
+    let matchedIn = '';
+
+    // Check vendor name against searchText
+    for (const term of searchTerms) {
+      if (event.searchText.includes(term)) {
+        // For multi-word vendors, skip single common word matches
+        if (isMultiWord) {
+          const termWords = term.split(/\s+/);
+          if (termWords.length < 2 && commonWords.includes(term)) {
+            continue;
+          }
+        }
+        isMatch = true;
+        matchedTerm = term;
+        matchedIn = event.title.toLowerCase().includes(term) ? 'title' :
+                   event.description.toLowerCase().includes(term) ? 'notes' :
+                   event.location.toLowerCase().includes(term) ? 'location' : 'attendees';
+        break;
+      }
+    }
+
+    // Check contact emails against attendees
+    if (!isMatch && emailSearchTerms.length > 0 && event.attendeeEmails.length > 0) {
+      for (const email of emailSearchTerms) {
+        if (event.attendeeEmails.some(ae => ae.includes(email))) {
+          isMatch = true;
+          matchedTerm = email;
+          matchedIn = 'contact email';
+          break;
+        }
+      }
+    }
+
+    if (isMatch) {
+      const startTime = event.startTime;
+      const startDateStr = Utilities.formatDate(startTime, tz, 'yyyy-MM-dd');
+      const isPast = startDateStr < todayStr;
+
+      matches.push({
+        title: event.title,
+        startTime: startTime,
+        endTime: event.endTime,
+        isAllDay: event.isAllDay,
+        location: event.location,
+        isPast: isPast,
+        matchedIn: matchedIn,
+        matchedTerm: matchedTerm,
+        formattedDate: event.isAllDay
+          ? Utilities.formatDate(startTime, tz, 'EEE, MMM d')
+          : Utilities.formatDate(startTime, tz, 'EEE, MMM d @ h:mm a'),
+        calendarName: event.calendarName
+      });
+      seenIds.add(event.id);
+    }
+  }
+
+  // Sort: future meetings first (by date ASC), then past meetings (by date DESC)
+  matches.sort((a, b) => {
+    if (a.isPast !== b.isPast) return a.isPast ? 1 : -1;
+    if (a.isPast) return b.startTime - a.startTime;
+    return a.startTime - b.startTime;
+  });
+
+  return matches;
+}
+
+/**
+ * Clear the Calendar batch cache
+ */
+function clearCalendarBatchCache() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('calendar_all_events');
+  Logger.log('Calendar batch cache cleared');
 }
 
 /**
@@ -7098,6 +7338,19 @@ function turboTraverseAll() {
 
   ss.toast(`Starting turbo traverse from vendor ${startIdx}...`, '🚀 Turbo Mode', 3);
 
+  // Pre-fetch all Box documents once for batch filtering
+  ss.toast('Pre-fetching Box documents...', '📦 Batch Load', 3);
+  let allBoxDocs = [];
+  try {
+    allBoxDocs = getAllBoxDocuments_();
+    Logger.log(`Turbo: pre-fetched ${allBoxDocs.length} Box documents for batch filtering`);
+  } catch (e) {
+    Logger.log(`Turbo: Box batch fetch failed: ${e.message}`);
+  }
+
+  // Calendar is skipped in turbo mode (not essential for checksum updates)
+  Logger.log('Turbo: skipping Calendar pre-fetch (Calendar is skipped in turbo mode)');
+
   let processedThisRun = 0;
   let currentIdx = startIdx;
 
@@ -7113,7 +7366,13 @@ function turboTraverseAll() {
     try {
       // Load vendor - this updates checksums
       // turboMode: skip expensive vendor label checksum (redundant with other checksums)
-      loadVendorData(currentIdx, { forceChanged: false, changeType: 'Turbo rebuild', turboMode: true });
+      // Pass pre-fetched Box docs for batch filtering (Calendar is skipped in turbo mode)
+      loadVendorData(currentIdx, {
+        forceChanged: false,
+        changeType: 'Turbo rebuild',
+        turboMode: true,
+        allBoxDocs: allBoxDocs
+      });
       processedThisRun++;
       processedTotal++;
 
