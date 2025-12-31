@@ -244,7 +244,7 @@ function onOpen() {
   // Navigation menu - movement and traversal
   ui.createMenu('🧭 Navigation')
     .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
-    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
+    .addItem('🚀 Turbo Traverse (Batch)', 'turboTraverseAll')
     .addSeparator()
     .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
     .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
@@ -7093,16 +7093,16 @@ function cancelSkip5Session() {
 }
 
 /**
- * Auto-traverse through vendors one at a time, loading each on the page
- * Unlike Skip Unchanged, this loads EVERY vendor (not just changed ones)
- * Colors List rows: yellow=no changes, green=has changes
- * Stops after 30 vendors to avoid timeout (session tracked in properties)
- * Press the button repeatedly to advance through vendors
+ * TURBO BATCH: Process all vendors continuously without stopping
+ * Rebuilds checksums for all vendors in batches to avoid timeout
+ * Run repeatedly to process all vendors (~50-60 per run)
  */
-function autoTraverseVendors() {
+function turboTraverseAll() {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   const props = PropertiesService.getScriptProperties();
+  const startTime = Date.now();
+  const MAX_RUNTIME_MS = 5 * 60 * 1000; // 5 minutes (leaving 1 min buffer)
 
   if (!listSh) {
     ss.toast('List sheet not found.', '❌ Error', 3);
@@ -7112,85 +7112,91 @@ function autoTraverseVendors() {
   const listData = listSh.getDataRange().getValues();
   const totalVendors = listData.length - 1;
 
-  // Check for existing auto-traverse session
-  let traverseSession = null;
-  const sessionData = props.getProperty('BS_AUTOTRAVERSE_SESSION');
-  if (sessionData) {
+  // Get or initialize session
+  let sessionData = null;
+  const sessionStr = props.getProperty('BS_TURBO_SESSION');
+  if (sessionStr) {
     try {
-      traverseSession = JSON.parse(sessionData);
+      sessionData = JSON.parse(sessionStr);
     } catch (e) {
-      traverseSession = null;
+      sessionData = null;
     }
   }
 
-  // Get next vendor index (start from current + 1, or continue session)
-  let currentIdx = (getCurrentVendorIndex_() || 0) + 1;
-  let traverseCount = 0;
+  let startIdx = sessionData?.nextIndex || 1;
+  let processedTotal = sessionData?.processedTotal || 0;
 
-  if (traverseSession) {
-    traverseCount = traverseSession.count || 0;
-  }
-
-  // Make sure we don't start past the end
-  if (currentIdx > totalVendors) {
-    ss.toast('Already at the last vendor.', '🔁 Auto-Traverse', 3);
-    props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
+  // Check if we're done
+  if (startIdx > totalVendors) {
+    ss.toast(`All ${totalVendors} vendors processed! Session complete.`, '✅ Turbo Complete', 5);
+    props.deleteProperty('BS_TURBO_SESSION');
     return;
   }
 
-  // Safeguard: After 30 vendors traversed, show warning and reset
-  const MAX_TRAVERSE = 30;
-  if (traverseCount >= MAX_TRAVERSE) {
-    ss.toast(`Session ended: ${traverseCount} vendors traversed (limit reached)`, '⚠️ Auto-Traverse Limit', 5);
-    props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
-    traverseCount = 0;
+  ss.toast(`Starting turbo traverse from vendor ${startIdx}...`, '🚀 Turbo Mode', 3);
+
+  let processedThisRun = 0;
+  let currentIdx = startIdx;
+
+  while (currentIdx <= totalVendors) {
+    // Check if we're running out of time
+    if (Date.now() - startTime > MAX_RUNTIME_MS) {
+      break;
+    }
+
+    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+    const listRow = currentIdx + 1;
+
+    try {
+      // Load vendor - this updates checksums
+      loadVendorData(currentIdx, { forceChanged: false, changeType: 'Turbo rebuild' });
+      processedThisRun++;
+      processedTotal++;
+
+      // Brief log every 10 vendors
+      if (processedThisRun % 10 === 0) {
+        Logger.log(`Turbo: processed ${processedThisRun} this run (${currentIdx}/${totalVendors})`);
+      }
+    } catch (e) {
+      Logger.log(`Turbo error on ${vendor}: ${e.message}`);
+      // Continue to next vendor on error
+    }
+
+    currentIdx++;
   }
 
-  const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
-  const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
-  const listRow = currentIdx + 1;
-
-  // Use the centralized change detection helper
-  const changeResult = checkVendorForChanges_(vendor, listRow, source);
-
-  // Increment traverse count
-  traverseCount++;
-
-  // Update session
-  props.setProperty('BS_AUTOTRAVERSE_SESSION', JSON.stringify({
-    count: traverseCount,
-    startedAt: traverseSession?.startedAt || new Date().toISOString()
-  }));
-
-  if (changeResult.hasChanges) {
-    // Show what changed
-    const changeLabel = formatChangeType_(changeResult.changeType);
-    ss.toast(`${vendor} (${traverseCount}/${MAX_TRAVERSE})\n${changeLabel}`, '🔁 Auto-Traverse', 3);
-
-    loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
+  // Save progress
+  if (currentIdx > totalVendors) {
+    // Done!
+    ss.toast(`✅ Complete! Processed all ${totalVendors} vendors.`, '🚀 Turbo Done', 5);
+    props.deleteProperty('BS_TURBO_SESSION');
   } else {
-    // No changes - still load the vendor, but mark as no changes
-    ss.toast(`${vendor} (${traverseCount}/${MAX_TRAVERSE})\nNo changes`, '🔁 Auto-Traverse', 3);
+    // More to go
+    props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+      nextIndex: currentIdx,
+      processedTotal: processedTotal,
+      startedAt: sessionData?.startedAt || new Date().toISOString()
+    }));
 
-    loadVendorData(currentIdx, { forceChanged: false, changeType: 'No changes detected' });
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
-  }
-
-  // Check if we've reached the end of the list
-  if (currentIdx >= totalVendors) {
-    ss.toast(`Reached end of list! ${traverseCount} vendors traversed.`, '✅ Auto-Traverse Complete', 5);
-    props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
+    const remaining = totalVendors - currentIdx + 1;
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    ss.toast(
+      `Processed ${processedThisRun} vendors in ${elapsed}s\n` +
+      `Progress: ${currentIdx - 1}/${totalVendors} (${remaining} remaining)\n` +
+      `Run again to continue!`,
+      '🚀 Turbo Paused',
+      5
+    );
   }
 }
 
 /**
- * Reset the Auto-Traverse session counter
+ * Reset turbo traverse session
  */
-function resetAutoTraverseSession() {
+function resetTurboSession() {
   const props = PropertiesService.getScriptProperties();
-  props.deleteProperty('BS_AUTOTRAVERSE_SESSION');
-  SpreadsheetApp.getActive().toast('Auto-Traverse session reset.', '🔁 Reset', 3);
+  props.deleteProperty('BS_TURBO_SESSION');
+  SpreadsheetApp.getActive().toast('Turbo session reset.', '🚀 Reset', 3);
 }
 
 /**
