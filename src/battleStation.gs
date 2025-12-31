@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 04:07PM PST
+ * Last Updated: 2025-12-30 04:09PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9142,12 +9142,11 @@ function getCannedResponseTemplate_(templateKey) {
       html = bodyMatch[1];
     }
 
-    // Remove Google's style classes but keep basic formatting tags
+    // Remove Google's wrapper elements but keep inline styles for formatting
     html = html
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/ class="[^"]*"/g, '')
-      .replace(/ id="[^"]*"/g, '')
-      .replace(/ style="[^"]*"/g, '');
+      .replace(/ id="[^"]*"/g, '');
 
     return { text, html };
   } catch (e) {
@@ -9428,7 +9427,10 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
     }
 
     // Build options object
-    const options = {};
+    const options = {
+      cc: 'aden@profitise.com',
+      bcc: 'sales@profitise.com'
+    };
     if (htmlBody) {
       options.htmlBody = htmlBody;
     }
