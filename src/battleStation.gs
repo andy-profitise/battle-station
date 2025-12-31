@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2025-12-31 09:34AM PST',
+  CODE_VERSION: '2025-12-31 10:15AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -937,8 +937,14 @@ function loadVendorData(vendorIndex, options) {
   // ========== RIGHT SIDE (Columns 5-8) ==========
   
   // HELPFUL LINKS SECTION (right side - aligned with VENDOR INFO at top)
-  ss.toast('Loading helpful links...', '🔗 Loading', 2);
-  const helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
+  // Skip Helpful Links in turbo mode for speed - will load in real-time when viewing vendors
+  let helpfulLinks = [];
+  if (turboMode) {
+    Logger.log('Skipping Helpful Links in turbo mode');
+  } else {
+    ss.toast('Loading helpful links...', '🔗 Loading', 2);
+    helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
+  }
 
   // Generate L2M Reporting link if we have a Phonexa link
   const l2mLink = getL2MReportingLink_(contactData.phonexaLink, source);
@@ -1497,79 +1503,85 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow = Math.max(rightColumnRow, boxRow);
   
   // Fetch Google Drive files now, but display section later (aligned with EMAILS)
-  ss.toast('Searching Google Drive...', '📁 Loading', 2);
   let gDriveFiles = [];
   let gDriveFolderFound = false;
   let gDriveFolderUrl = null;
   let gDriveMatchedOn = '';
-  
-  // Check cache for GDrive files if useCache is true
-  let gDriveFromCache = null;
-  if (useCache) {
-    gDriveFromCache = getCachedData_('gdrive', vendor);
-    if (gDriveFromCache) {
-      gDriveFiles = gDriveFromCache.files || [];
-      gDriveFolderFound = gDriveFromCache.folderFound || false;
-      gDriveFolderUrl = gDriveFromCache.folderUrl || null;
-      gDriveMatchedOn = gDriveFromCache.matchedOn || '';
-      Logger.log(`GDrive files loaded from cache: ${gDriveFiles.length} files`);
+
+  // Skip Google Drive in turbo mode for speed - will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Google Drive in turbo mode');
+  } else {
+    ss.toast('Searching Google Drive...', '📁 Loading', 2);
+
+    // Check cache for GDrive files if useCache is true
+    let gDriveFromCache = null;
+    if (useCache) {
+      gDriveFromCache = getCachedData_('gdrive', vendor);
+      if (gDriveFromCache) {
+        gDriveFiles = gDriveFromCache.files || [];
+        gDriveFolderFound = gDriveFromCache.folderFound || false;
+        gDriveFolderUrl = gDriveFromCache.folderUrl || null;
+        gDriveMatchedOn = gDriveFromCache.matchedOn || '';
+        Logger.log(`GDrive files loaded from cache: ${gDriveFiles.length} files`);
+      }
     }
-  }
-  
-  // Only search GDrive if not loaded from cache
-  if (!gDriveFromCache) {
-    try {
-      const result = getGDriveFilesForVendor_(vendor);
-      gDriveFiles = result.files || [];
-      gDriveFolderFound = result.folderFound || false;
-      gDriveFolderUrl = result.folderUrl || null;
-      if (gDriveFolderFound) gDriveMatchedOn = vendor;
-      
-      // Only try Other Name(s) if NO FOLDER was found (not just empty folder)
-      if (!gDriveFolderFound && contactData.otherName) {
-        // First try the full Other Name value (in case it's like "Profitise, LLC")
-        Logger.log(`No GDrive folder for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
-        const fullResult = getGDriveFilesForVendor_(contactData.otherName);
-        
-        if (fullResult.folderFound) {
-          gDriveFiles = fullResult.files || [];
-          gDriveFolderFound = true;
-          gDriveFolderUrl = fullResult.folderUrl || null;
-          gDriveMatchedOn = contactData.otherName;
-        } else if (contactData.otherName.includes(',')) {
-          // If full name found nothing, try splitting by comma for multiple values
-          const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
-          Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
-          
-          for (const altName of otherNames) {
-            // Skip generic terms that cause false positives
-            if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
-              Logger.log(`Skipping generic term: "${altName}"`);
-              continue;
-            }
-            Logger.log(`Searching GDrive for: "${altName}"`);
-            const altResult = getGDriveFilesForVendor_(altName);
-            if (altResult.folderFound) {
-              gDriveFiles = altResult.files || [];
-              gDriveFolderFound = true;
-              gDriveFolderUrl = altResult.folderUrl || null;
-              gDriveMatchedOn = altName;
-              break; // Found a folder, stop searching
+
+    // Only search GDrive if not loaded from cache
+    if (!gDriveFromCache) {
+      try {
+        const result = getGDriveFilesForVendor_(vendor);
+        gDriveFiles = result.files || [];
+        gDriveFolderFound = result.folderFound || false;
+        gDriveFolderUrl = result.folderUrl || null;
+        if (gDriveFolderFound) gDriveMatchedOn = vendor;
+
+        // Only try Other Name(s) if NO FOLDER was found (not just empty folder)
+        if (!gDriveFolderFound && contactData.otherName) {
+          // First try the full Other Name value (in case it's like "Profitise, LLC")
+          Logger.log(`No GDrive folder for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
+          const fullResult = getGDriveFilesForVendor_(contactData.otherName);
+
+          if (fullResult.folderFound) {
+            gDriveFiles = fullResult.files || [];
+            gDriveFolderFound = true;
+            gDriveFolderUrl = fullResult.folderUrl || null;
+            gDriveMatchedOn = contactData.otherName;
+          } else if (contactData.otherName.includes(',')) {
+            // If full name found nothing, try splitting by comma for multiple values
+            const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+            Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
+
+            for (const altName of otherNames) {
+              // Skip generic terms that cause false positives
+              if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
+                Logger.log(`Skipping generic term: "${altName}"`);
+                continue;
+              }
+              Logger.log(`Searching GDrive for: "${altName}"`);
+              const altResult = getGDriveFilesForVendor_(altName);
+              if (altResult.folderFound) {
+                gDriveFiles = altResult.files || [];
+                gDriveFolderFound = true;
+                gDriveFolderUrl = altResult.folderUrl || null;
+                gDriveMatchedOn = altName;
+                break; // Found a folder, stop searching
+              }
             }
           }
         }
+
+        // Cache the GDrive results
+        setCachedData_('gdrive', vendor, {
+          files: gDriveFiles,
+          folderFound: gDriveFolderFound,
+          folderUrl: gDriveFolderUrl,
+          matchedOn: gDriveMatchedOn
+        });
+
+      } catch (e) {
+        Logger.log(`Google Drive search error: ${e.message}`);
       }
-      
-      // Cache the GDrive results
-      setCachedData_('gdrive', vendor, {
-        files: gDriveFiles,
-        folderFound: gDriveFolderFound,
-        folderUrl: gDriveFolderUrl,
-        matchedOn: gDriveMatchedOn
-      });
-      
-    } catch (e) {
-      Logger.log(`Google Drive search error: ${e.message}`);
     }
   }
   
