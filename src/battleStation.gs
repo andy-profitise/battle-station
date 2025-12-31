@@ -10296,8 +10296,10 @@ function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
         }
       }
 
-      // Note: Skipping color_mkrkh4bk (Contact Type) as it requires specific label values
-      // Contact type can be set manually in Monday.com after creation
+      // Job Title column - text field
+      if (contact.jobTitle) {
+        columnValues['text_mkz5rj9h'] = contact.jobTitle;
+      }
 
       const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
 
@@ -10508,32 +10510,28 @@ function applyContactUpdates(updates, existingContacts) {
         }
 
       } else if (update.updateType === 'jobTitle') {
-        // For job title, we'll update the item name to include the title
-        // Format: "Name | Job Title"
-        // If newValue already contains a pipe (e.g., "Name | Title"), extract just the title part
+        // Update the dedicated Job Title column (text_mkz5rj9h)
         let titleOnly = update.newValue;
         if (titleOnly.includes('|')) {
           titleOnly = titleOnly.split('|').pop().trim();
         }
-        // Also strip any leading/trailing asterisks or special chars from signatures
+        // Strip any leading/trailing asterisks or special chars from signatures
         titleOnly = titleOnly.replace(/^[\*\s]+|[\*\s]+$/g, '').trim();
 
-        const baseName = contact.name.split('|')[0].trim();
-        const newName = `${baseName} | ${titleOnly}`;
-        const escapedName = newName.replace(/"/g, '\\"');
+        const escapedTitle = titleOnly.replace(/"/g, '\\"');
 
         const mutation = `
           mutation {
             change_column_value (
               board_id: ${contactsBoardId},
               item_id: ${contact.id},
-              column_id: "name",
-              value: "\\"${escapedName}\\""
+              column_id: "text_mkz5rj9h",
+              value: "\\"${escapedTitle}\\""
             ) { id }
           }
         `;
 
-        Logger.log(`Updating name/title for ${update.name} (${contact.id}): ${newName}`);
+        Logger.log(`Updating job title for ${update.name} (${contact.id}): ${titleOnly}`);
         const result = mondayApiRequest_(mutation, apiToken);
 
         if (result.errors && result.errors.length > 0) {
