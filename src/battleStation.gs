@@ -3956,23 +3956,17 @@ function getCrystalBallData_(vendor, listRow) {
     const snoozedThreads = GmailApp.search(snoozedQuery, 0, 20);
     Logger.log(`[Crystal Ball] Found ${snoozedThreads.length} snoozed threads`);
 
-    // Build fingerprint of current email state (thread IDs + last message dates)
-    // This allows us to detect if emails have changed without running full analysis
-    const fingerprintParts = [];
-    for (const thread of receivedThreads) {
-      const lastMsg = thread.getMessages().slice(-1)[0];
-      fingerprintParts.push(`${thread.getId()}:${lastMsg.getDate().getTime()}`);
-    }
-    for (const thread of snoozedThreads) {
-      const lastMsg = thread.getMessages().slice(-1)[0];
-      fingerprintParts.push(`s:${thread.getId()}:${lastMsg.getDate().getTime()}`);
-    }
-    const currentFingerprint = fingerprintParts.sort().join('|');
+    // Use existing email checksum (already computed by loadVendorData) + snoozed count
+    // This avoids redundant fingerprint computation
+    const storedData = getStoredChecksum_(vendor);
+    const emailChecksum = storedData?.emailChecksum || 'none';
+    const snoozedIds = snoozedThreads.map(t => t.getId()).sort().join(',');
+    const currentChecksum = `${emailChecksum}|snoozed:${snoozedThreads.length}:${hashString_(snoozedIds)}`;
 
-    // Check cache - if fingerprint matches, return cached result
+    // Check cache - if checksum matches, return cached result
     const cacheKey = `crystal_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const cached = getCachedData_('crystalball', cacheKey);
-    if (cached && cached.fingerprint === currentFingerprint) {
+    if (cached && cached.checksum === currentChecksum) {
       Logger.log(`[Crystal Ball] Cache HIT - emails unchanged, using cached analysis`);
       return {
         items: cached.items || [],
@@ -4050,7 +4044,7 @@ function getCrystalBallData_(vendor, listRow) {
         summary: 'No outstanding emails found.',
         error: null
       };
-      setCachedData_('crystalball', cacheKey, { ...result, fingerprint: currentFingerprint });
+      setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
       return result;
     }
 
@@ -4104,7 +4098,7 @@ Example format:
         summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
         error: null
       };
-      setCachedData_('crystalball', cacheKey, { ...result, fingerprint: currentFingerprint });
+      setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
       return result;
     }
 
@@ -4127,7 +4121,7 @@ Example format:
       summary: claudeResult.content,
       error: null
     };
-    setCachedData_('crystalball', cacheKey, { ...result, fingerprint: currentFingerprint });
+    setCachedData_('crystalball', cacheKey, { ...result, checksum: currentChecksum });
     Logger.log(`[Crystal Ball] Analysis complete and cached`);
 
     return result;
