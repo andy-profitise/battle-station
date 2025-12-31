@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 04:43PM PST
+ * Last Updated: 2025-12-30 05:06PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9145,18 +9145,22 @@ function getCannedResponseTemplate_(templateKey) {
 
     let html = response.getContentText();
 
-    // Clean up the HTML - remove Google's wrapper styles but keep formatting
+    // Extract the style block from head (Google Docs uses class-based styling)
+    let styleBlock = '';
+    const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+    if (styleMatch) {
+      styleBlock = styleMatch[0];
+    }
+
     // Extract just the body content
     const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     if (bodyMatch) {
       html = bodyMatch[1];
     }
 
-    // Remove Google's wrapper elements but keep inline styles for formatting
-    html = html
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/ class="[^"]*"/g, '')
-      .replace(/ id="[^"]*"/g, '');
+    // Combine style block with body content for proper formatting
+    // Remove id attributes but keep classes (needed for styling)
+    html = styleBlock + html.replace(/ id="[^"]*"/g, '');
 
     return { text, html };
   } catch (e) {
@@ -9500,13 +9504,16 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
       const lastCc = lastMessage.getCc() || '';
       const allRecipients = [lastFrom, lastTo, lastCc].filter(r => r).join(', ');
 
-      // Extract email addresses, exclude ourselves
+      // Extract email addresses, exclude ourselves and profitise emails (they go in CC/BCC)
       const emailRegex = /[\w.-]+@[\w.-]+\.\w+/g;
       const allEmails = allRecipients.match(emailRegex) || [];
       const toEmails = [];
       allEmails.forEach(email => {
         const lowerEmail = email.toLowerCase();
-        if (lowerEmail !== myEmail && !lowerEmail.includes('sales@profitise.com') && !toEmails.includes(lowerEmail)) {
+        if (lowerEmail !== myEmail &&
+            !lowerEmail.includes('sales@profitise.com') &&
+            !lowerEmail.includes('aden@profitise.com') &&
+            !toEmails.includes(lowerEmail)) {
           toEmails.push(email);
         }
       });
