@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 04:01PM PST
+ * Last Updated: 2025-12-30 04:07PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9327,11 +9327,15 @@ function generateCannedResponse_(templateKey, templateName) {
       google.script.run
         .withSuccessHandler(function(result) {
           if (result && result.success) {
-            status.textContent = '✅ Draft created!';
+            status.textContent = '✅ Draft created! Opening...';
             status.style.color = 'green';
+            // Open draft in new tab
+            if (result.draftUrl) {
+              window.open(result.draftUrl, '_blank');
+            }
             setTimeout(function() {
               google.script.host.close();
-            }, 1000);
+            }, 500);
           } else {
             status.textContent = '❌ Error: ' + (result ? result.error : 'Unknown error');
             status.style.color = 'red';
@@ -9432,6 +9436,7 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
       options.attachments = attachments;
     }
 
+    let draft;
     if (threadId) {
       // Reply to existing thread
       const thread = GmailApp.getThreadById(threadId);
@@ -9441,24 +9446,28 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
 
       // Create draft reply with HTML body and optional attachments
       if (Object.keys(options).length > 0) {
-        thread.createDraftReply(plainBody, options);
+        draft = thread.createDraftReply(plainBody, options);
       } else {
-        thread.createDraftReply(plainBody);
+        draft = thread.createDraftReply(plainBody);
       }
     } else {
       // Create fresh draft (no reply)
       const subject = `Referral Partnership - ${vendor}`;
 
       if (Object.keys(options).length > 0) {
-        GmailApp.createDraft('', subject, plainBody, options);
+        draft = GmailApp.createDraft('', subject, plainBody, options);
       } else {
-        GmailApp.createDraft('', subject, plainBody);
+        draft = GmailApp.createDraft('', subject, plainBody);
       }
     }
 
-    SpreadsheetApp.getActive().toast('Draft created! Check Gmail.', '✅ Draft Ready', 3);
+    // Get draft URL to open in Gmail
+    const draftId = draft.getMessage().getId();
+    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
 
-    return { success: true };
+    SpreadsheetApp.getActive().toast('Draft created! Opening in Gmail...', '✅ Draft Ready', 3);
+
+    return { success: true, draftUrl: draftUrl };
   } catch (e) {
     Logger.log(`Error creating canned response draft: ${e.message}`);
     return { success: false, error: e.message };
