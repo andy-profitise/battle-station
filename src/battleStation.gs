@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 04:34PM PST
+ * Last Updated: 2025-12-30 04:43PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9368,8 +9368,8 @@ function generateCannedResponse_(templateKey, templateName) {
 </html>`;
 
     const htmlOutput = HtmlService.createHtmlOutput(html)
-      .setWidth(550)
-      .setHeight(600);
+      .setWidth(650)
+      .setHeight(750);
     ui.showModalDialog(htmlOutput, 'Canned Response');
 
   } catch (e) {
