@@ -7980,20 +7980,19 @@ function getSelectedEmailThread_() {
  * Row: "Cold Outreach - Follow Up" | "Be persistent but polite"
  * Row: "Schedule a Call" | "Always offer specific times"
  * Row: "General" | "Instructions that apply to all response types"
- * Row: "Signature" | "<html signature here>"
+ * Note: Signature is fetched dynamically from Gmail API, not from settings
  */
 function getEmailResponseSettings_() {
   const ss = SpreadsheetApp.getActive();
   const settingsSh = ss.getSheetByName('Settings');
 
   if (!settingsSh) {
-    return { typeInstructions: {}, generalInstructions: '', signature: '' };
+    return { typeInstructions: {}, generalInstructions: '' };
   }
 
   const data = settingsSh.getDataRange().getValues();
   const typeInstructions = {};
   let generalInstructions = '';
-  let signature = '';
   let inSection = false;
   let startCol = -1;
 
@@ -8023,20 +8022,18 @@ function getEmailResponseSettings_() {
       break;
     }
 
-    // Parse settings
-    if (typeCell !== '') {
+    // Parse settings - skip "signature" row (signature comes from Gmail API now)
+    if (typeCell !== '' && instructionsCell !== '') {
       const typeLower = typeCell.toLowerCase();
       if (typeLower === 'general') {
         generalInstructions = instructionsCell;
-      } else if (typeLower === 'signature') {
-        signature = instructionsCell;
-      } else if (instructionsCell !== '') {
+      } else if (typeLower !== 'signature') {
         typeInstructions[typeCell] = instructionsCell;
       }
     }
   }
 
-  return { typeInstructions, generalInstructions, signature };
+  return { typeInstructions, generalInstructions };
 }
 
 /**
@@ -8452,7 +8449,8 @@ function createDraftAndGetUrl_(thread, responseBody) {
 
   const updateResource = {
     message: {
-      raw: Utilities.base64EncodeWebSafe(rawHeaders + fullBodyHtml),
+      // Use proper UTF-8 encoding for special characters in signature
+      raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawHeaders + fullBodyHtml).getBytes()),
       threadId: thread.getId()  // Also explicitly set threadId
     }
   };
