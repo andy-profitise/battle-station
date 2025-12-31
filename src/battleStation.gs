@@ -245,6 +245,7 @@ function onOpen() {
   ui.createMenu('🧭 Navigation')
     .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
     .addItem('🚀 Turbo Traverse (Batch)', 'turboTraverseAll')
+    .addItem('🌙 Schedule Turbo (Overnight)', 'scheduleTurboTraverse')
     .addSeparator()
     .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
     .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
@@ -7197,6 +7198,90 @@ function resetTurboSession() {
   const props = PropertiesService.getScriptProperties();
   props.deleteProperty('BS_TURBO_SESSION');
   SpreadsheetApp.getActive().toast('Turbo session reset.', '🚀 Reset', 3);
+}
+
+/**
+ * Schedule Turbo Traverse to run 6 times automatically
+ * Each run is spaced 7 minutes apart (5 min execution + 2 min buffer)
+ * Starts from current vendor position (not from beginning)
+ * Perfect for overnight batch processing of all vendors
+ */
+function scheduleTurboTraverse() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  // Clear any existing turbo triggers first
+  const existingTriggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (const trigger of existingTriggers) {
+    if (trigger.getHandlerFunction() === 'turboTraverseAll') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  }
+
+  // Get current vendor position to start from there
+  const currentIdx = getCurrentVendorIndex_() || 1;
+  const listSh = SpreadsheetApp.getActive().getSheetByName(BS_CFG.LIST_SHEET);
+  const totalVendors = listSh ? listSh.getLastRow() - 1 : 0;
+  const remaining = totalVendors - currentIdx;
+
+  // Initialize session to start from current position
+  props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+    nextIndex: currentIdx,
+    processedTotal: 0,
+    startedAt: new Date().toISOString()
+  }));
+
+  // Schedule 6 runs, 7 minutes apart
+  const RUNS = 6;
+  const INTERVAL_MINUTES = 7;
+
+  for (let i = 0; i < RUNS; i++) {
+    ScriptApp.newTrigger('turboTraverseAll')
+      .timeBased()
+      .after(i * INTERVAL_MINUTES * 60 * 1000) // milliseconds
+      .create();
+  }
+
+  const totalMinutes = (RUNS - 1) * INTERVAL_MINUTES;
+  ui.alert(
+    '🚀 Turbo Traverse Scheduled',
+    `Starting from vendor #${currentIdx} (${remaining} remaining)\n\n` +
+    `Scheduled ${RUNS} runs over the next ${totalMinutes} minutes.\n\n` +
+    `• Run 1: Now\n` +
+    `• Run 2-${RUNS}: Every ${INTERVAL_MINUTES} minutes\n\n` +
+    `You can close this spreadsheet - it will run in the background.\n` +
+    `Check execution logs tomorrow to verify completion.`,
+    ui.ButtonSet.OK
+  );
+
+  // Start the first run immediately
+  turboTraverseAll();
+}
+
+/**
+ * Cancel all scheduled Turbo Traverse runs
+ */
+function cancelTurboSchedule() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'turboTraverseAll') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('BS_TURBO_SESSION');
+
+  SpreadsheetApp.getActive().toast(
+    `Removed ${removed} scheduled runs and reset session.`,
+    '❌ Schedule Cancelled',
+    5
+  );
 }
 
 /**
