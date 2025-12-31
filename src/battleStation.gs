@@ -9764,11 +9764,6 @@ function discoverContactsFromGmail() {
   const contactData = getVendorContacts_(vendor, listRow);
   const existingContacts = contactData.contacts || [];
 
-  if (existingContacts.length === 0) {
-    ui.alert('No existing contacts found for this vendor.');
-    return;
-  }
-
   // Extract unique domains from existing contacts
   const domains = new Set();
   const existingEmails = new Set();
@@ -9791,8 +9786,24 @@ function discoverContactsFromGmail() {
     }
   }
 
-  if (domains.size === 0 && existingEmails.size === 0) {
-    ui.alert('No contacts found to search for.');
+  // Also extract domain from source/website field
+  if (source) {
+    const sourceDomain = extractDomainFromSource_(source);
+    if (sourceDomain && !isGenericDomain_(sourceDomain)) {
+      domains.add(sourceDomain.toLowerCase());
+      Logger.log(`Added source domain: ${sourceDomain}`);
+    }
+  }
+
+  // Also try to extract domain from vendor name (e.g., "HomeFix" -> "homefix.com")
+  const vendorDomain = guessVendorDomain_(vendor);
+  if (vendorDomain && !isGenericDomain_(vendorDomain)) {
+    domains.add(vendorDomain.toLowerCase());
+    Logger.log(`Added guessed vendor domain: ${vendorDomain}`);
+  }
+
+  if (domains.size === 0) {
+    ui.alert('No domains found to search. Add a contact with a company email or update the source field.');
     return;
   }
 
@@ -10598,6 +10609,57 @@ function isGenericDomain_(domain) {
     'mail.com', 'email.com', 'inbox.com', 'fastmail.com'
   ];
   return genericDomains.includes(domain.toLowerCase());
+}
+
+/**
+ * Extract domain from a source/website field
+ * Handles: URLs, domains with www, plain domains
+ */
+function extractDomainFromSource_(source) {
+  if (!source) return null;
+
+  let domain = source.trim().toLowerCase();
+
+  // Remove protocol (http://, https://)
+  domain = domain.replace(/^https?:\/\//, '');
+
+  // Remove www.
+  domain = domain.replace(/^www\./, '');
+
+  // Remove path and query string (everything after first /)
+  domain = domain.split('/')[0];
+
+  // Remove port if present
+  domain = domain.split(':')[0];
+
+  // Basic validation: should have at least one dot and no spaces
+  if (!domain.includes('.') || domain.includes(' ')) {
+    return null;
+  }
+
+  return domain;
+}
+
+/**
+ * Try to guess a company domain from the vendor name
+ * e.g., "HomeFix" -> "homefix.com", "ABC Supply" -> "abcsupply.com"
+ */
+function guessVendorDomain_(vendor) {
+  if (!vendor) return null;
+
+  // Remove common suffixes like LLC, Inc, Corp, etc.
+  let cleaned = vendor
+    .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Co\.?|Ltd\.?|Limited|Corporation|Company)$/i, '')
+    .trim();
+
+  // Remove special characters and spaces, convert to lowercase
+  cleaned = cleaned
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase();
+
+  if (cleaned.length < 2) return null;
+
+  return cleaned + '.com';
 }
 
 /**
