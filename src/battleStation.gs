@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 04:01PM PST
+ * Last Updated: 2025-12-30 04:14PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9142,12 +9142,11 @@ function getCannedResponseTemplate_(templateKey) {
       html = bodyMatch[1];
     }
 
-    // Remove Google's style classes but keep basic formatting tags
+    // Remove Google's wrapper elements but keep inline styles for formatting
     html = html
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/ class="[^"]*"/g, '')
-      .replace(/ id="[^"]*"/g, '')
-      .replace(/ style="[^"]*"/g, '');
+      .replace(/ id="[^"]*"/g, '');
 
     return { text, html };
   } catch (e) {
@@ -9327,11 +9326,15 @@ function generateCannedResponse_(templateKey, templateName) {
       google.script.run
         .withSuccessHandler(function(result) {
           if (result && result.success) {
-            status.textContent = '✅ Draft created!';
+            status.textContent = '✅ Draft created! Opening...';
             status.style.color = 'green';
+            // Open draft in new tab
+            if (result.draftUrl) {
+              window.open(result.draftUrl, '_blank');
+            }
             setTimeout(function() {
               google.script.host.close();
-            }, 1000);
+            }, 500);
           } else {
             status.textContent = '❌ Error: ' + (result ? result.error : 'Unknown error');
             status.style.color = 'red';
@@ -9423,42 +9426,144 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
       }
     }
 
-    // Build options object
-    const options = {};
-    if (htmlBody) {
-      options.htmlBody = htmlBody;
-    }
-    if (attachments.length > 0) {
-      options.attachments = attachments;
-    }
+    let draftUrl;
 
     if (threadId) {
-      // Reply to existing thread
+      // Reply to existing thread - use Gmail API for proper threading and quoted content
       const thread = GmailApp.getThreadById(threadId);
       if (!thread) {
         return { success: false, error: 'Email thread not found' };
       }
 
-      // Create draft reply with HTML body and optional attachments
-      if (Object.keys(options).length > 0) {
-        thread.createDraftReply(plainBody, options);
-      } else {
-        thread.createDraftReply(plainBody);
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+
+      // Build the quoted original message
+      const lastMsgDate = lastMessage.getDate();
+      const lastMsgFrom = lastMessage.getFrom();
+      const lastMsgBody = lastMessage.getBody() || '';
+
+      // Format date for quote header
+      const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+      // Helper to escape HTML special characters
+      const escapeHtml = (text) => {
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      };
+
+      // Build quoted message using Gmail's standard format
+      const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+      const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+      // Full email body: template + signature + quoted message
+      let fullBodyHtml = `<div dir="ltr">${htmlBody}</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+      // Step 1: Create placeholder draft for threading headers
+      const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+      const draftMsg = draftReply.getMessage();
+      const draftId = draftReply.getId();
+
+      // Get threading headers
+      const inReplyTo = draftMsg.getHeader('In-Reply-To') || '';
+      const references = draftMsg.getHeader('References') || '';
+
+      // Get subject from thread
+      let subject = thread.getFirstMessageSubject();
+      if (!subject.toLowerCase().startsWith('re:')) {
+        subject = 'Re: ' + subject;
       }
+
+      // Build recipients from last message
+      const lastFrom = lastMessage.getFrom();
+      const lastTo = lastMessage.getTo() || '';
+      const lastCc = lastMessage.getCc() || '';
+      const allRecipients = [lastFrom, lastTo, lastCc].filter(r => r).join(', ');
+
+      // Extract email addresses, exclude ourselves
+      const emailRegex = /[\w.-]+@[\w.-]+\.\w+/g;
+      const allEmails = allRecipients.match(emailRegex) || [];
+      const toEmails = [];
+      allEmails.forEach(email => {
+        const lowerEmail = email.toLowerCase();
+        if (lowerEmail !== myEmail && !lowerEmail.includes('sales@profitise.com') && !toEmails.includes(lowerEmail)) {
+          toEmails.push(email);
+        }
+      });
+      const toRecipients = toEmails.join(', ') || lastFrom;
+
+      // Build raw email with headers
+      let rawHeaders = `From: ${myEmail}\r\n`;
+      rawHeaders += `To: ${toRecipients}\r\n`;
+      rawHeaders += `Cc: aden@profitise.com\r\n`;
+      rawHeaders += `Bcc: sales@profitise.com\r\n`;
+      rawHeaders += `Subject: ${subject}\r\n`;
+      if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
+      if (references) rawHeaders += `References: ${references}\r\n`;
+      rawHeaders += `MIME-Version: 1.0\r\n`;
+
+      // Handle attachments with MIME multipart
+      if (attachments.length > 0) {
+        const boundary = 'boundary_' + Utilities.getUuid();
+        rawHeaders += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+
+        let mimeBody = `--${boundary}\r\n`;
+        mimeBody += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+        mimeBody += fullBodyHtml + '\r\n';
+
+        attachments.forEach(blob => {
+          mimeBody += `--${boundary}\r\n`;
+          mimeBody += `Content-Type: ${blob.getContentType()}; name="${blob.getName()}"\r\n`;
+          mimeBody += `Content-Disposition: attachment; filename="${blob.getName()}"\r\n`;
+          mimeBody += `Content-Transfer-Encoding: base64\r\n\r\n`;
+          mimeBody += Utilities.base64Encode(blob.getBytes()) + '\r\n';
+        });
+        mimeBody += `--${boundary}--`;
+
+        const updateResource = {
+          message: {
+            raw: Utilities.base64EncodeWebSafe(rawHeaders + mimeBody),
+            threadId: thread.getId()
+          }
+        };
+        const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+        draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
+      } else {
+        rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+
+        const updateResource = {
+          message: {
+            raw: Utilities.base64EncodeWebSafe(rawHeaders + fullBodyHtml),
+            threadId: thread.getId()
+          }
+        };
+        const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+        draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
+      }
+
     } else {
       // Create fresh draft (no reply)
       const subject = `Referral Partnership - ${vendor}`;
-
-      if (Object.keys(options).length > 0) {
-        GmailApp.createDraft('', subject, plainBody, options);
-      } else {
-        GmailApp.createDraft('', subject, plainBody);
+      const options = {
+        cc: 'aden@profitise.com',
+        bcc: 'sales@profitise.com',
+        htmlBody: htmlBody
+      };
+      if (attachments.length > 0) {
+        options.attachments = attachments;
       }
+
+      const draft = GmailApp.createDraft('', subject, plainBody, options);
+      const draftId = draft.getMessage().getId();
+      draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
     }
 
-    SpreadsheetApp.getActive().toast('Draft created! Check Gmail.', '✅ Draft Ready', 3);
+    SpreadsheetApp.getActive().toast('Draft created! Opening in Gmail...', '✅ Draft Ready', 3);
 
-    return { success: true };
+    return { success: true, draftUrl: draftUrl };
   } catch (e) {
     Logger.log(`Error creating canned response draft: ${e.message}`);
     return { success: false, error: e.message };
