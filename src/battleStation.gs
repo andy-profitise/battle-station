@@ -7203,10 +7203,12 @@ function resetTurboSession() {
 /**
  * Schedule Turbo Traverse to run 6 times automatically
  * Each run is spaced 7 minutes apart (5 min execution + 2 min buffer)
+ * Starts from current vendor position (not from beginning)
  * Perfect for overnight batch processing of all vendors
  */
 function scheduleTurboTraverse() {
   const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
 
   // Clear any existing turbo triggers first
   const existingTriggers = ScriptApp.getProjectTriggers();
@@ -7218,9 +7220,18 @@ function scheduleTurboTraverse() {
     }
   }
 
-  // Reset the session to start fresh
-  const props = PropertiesService.getScriptProperties();
-  props.deleteProperty('BS_TURBO_SESSION');
+  // Get current vendor position to start from there
+  const currentIdx = getCurrentVendorIndex_() || 1;
+  const listSh = SpreadsheetApp.getActive().getSheetByName(BS_CFG.LIST_SHEET);
+  const totalVendors = listSh ? listSh.getLastRow() - 1 : 0;
+  const remaining = totalVendors - currentIdx;
+
+  // Initialize session to start from current position
+  props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+    nextIndex: currentIdx,
+    processedTotal: 0,
+    startedAt: new Date().toISOString()
+  }));
 
   // Schedule 6 runs, 7 minutes apart
   const RUNS = 6;
@@ -7236,6 +7247,7 @@ function scheduleTurboTraverse() {
   const totalMinutes = (RUNS - 1) * INTERVAL_MINUTES;
   ui.alert(
     '🚀 Turbo Traverse Scheduled',
+    `Starting from vendor #${currentIdx} (${remaining} remaining)\n\n` +
     `Scheduled ${RUNS} runs over the next ${totalMinutes} minutes.\n\n` +
     `• Run 1: Now\n` +
     `• Run 2-${RUNS}: Every ${INTERVAL_MINUTES} minutes\n\n` +
