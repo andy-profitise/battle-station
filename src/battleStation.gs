@@ -9822,8 +9822,11 @@ function discoverContactsFromGmail() {
     if (!field) return [];
     const results = [];
 
+    // Preprocess: normalize whitespace (replace newlines, tabs, multiple spaces with single space)
+    const normalized = field.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+
     // Split by comma (but be careful of commas in quoted names)
-    const parts = field.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+    const parts = normalized.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
 
     for (const part of parts) {
       const trimmed = part.trim();
@@ -9832,10 +9835,18 @@ function discoverContactsFromGmail() {
       // Try to match "Name" <email> or Name <email> format
       const angleMatch = trimmed.match(/^(?:"?([^"<]+)"?\s*)?<([^>]+)>$/);
       if (angleMatch) {
-        const name = angleMatch[1] ? angleMatch[1].trim() : '';
+        let name = angleMatch[1] ? angleMatch[1].trim() : '';
         const email = angleMatch[2].toLowerCase().trim();
+
+        // Validate email has proper format (at least 2 chars before @, valid domain)
         if (email.includes('@')) {
-          results.push({ name, email });
+          const [localPart, domain] = email.split('@');
+          // Skip if local part is too short (likely malformed) or domain looks incomplete
+          if (localPart && localPart.length >= 2 && domain && domain.includes('.')) {
+            results.push({ name, email });
+          } else {
+            Logger.log(`Skipping malformed email from header: "${email}" (parsed from: "${trimmed}")`);
+          }
         }
         continue;
       }
@@ -9843,7 +9854,14 @@ function discoverContactsFromGmail() {
       // Try standalone email
       const emailOnlyMatch = trimmed.match(/^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/);
       if (emailOnlyMatch) {
-        results.push({ name: '', email: emailOnlyMatch[1].toLowerCase() });
+        const email = emailOnlyMatch[1].toLowerCase();
+        const [localPart] = email.split('@');
+        // Validate local part is reasonable length
+        if (localPart && localPart.length >= 2) {
+          results.push({ name: '', email });
+        } else {
+          Logger.log(`Skipping malformed standalone email: "${email}"`);
+        }
       }
     }
     return results;
@@ -10218,6 +10236,15 @@ function discoverContactsFromGmail() {
   }
   html += `</table>`;
 
+  // Add Done button for hard refresh
+  html += `
+    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
+      <button id="done-btn" class="btn btn-primary" style="padding: 10px 30px;">
+        ✓ Done - Refresh View
+      </button>
+    </div>
+  `;
+
   // Add JavaScript for interactivity
   html += `
     <script>
@@ -10300,6 +10327,21 @@ function discoverContactsFromGmail() {
           })
           .applyContactUpdates(selected, dialogData.existingContacts);
       }
+
+      // Done button - trigger hard refresh and close dialog
+      document.getElementById('done-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = '⏳ Refreshing...';
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(e) {
+            alert('Refresh failed: ' + e.message);
+            google.script.host.close();
+          })
+          .battleStationHardRefresh();
+      });
     </script>
   `;
 
