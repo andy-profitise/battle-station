@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 06:46PM PST
+ * Last Updated: 2025-12-30 06:55PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -9135,68 +9135,154 @@ function getCannedResponseTemplate_(templateKey) {
     // Get plain text for preview
     const text = body.getText();
 
-    // Get HTML content for email (preserves formatting)
-    // Use export to get HTML
-    const url = `https://docs.google.com/document/d/${docId}/export?format=html`;
-    const response = UrlFetchApp.fetch(url, {
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true
-    });
+    // Build HTML with inline styles directly from document structure
+    // This is more reliable than parsing Google's CSS export (Gmail strips <style> blocks)
+    let html = '';
+    const numChildren = body.getNumChildren();
 
-    let html = response.getContentText();
+    for (let i = 0; i < numChildren; i++) {
+      const child = body.getChild(i);
+      const type = child.getType();
 
-    // Extract the style block to parse CSS rules
-    const styleMatch = html.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
-    let cssRules = {};
-    if (styleMatch) {
-      // Parse CSS rules into a map: className -> styles
-      const cssText = styleMatch[1];
-      const ruleRegex = /\.([a-zA-Z0-9_-]+)\s*\{([^}]+)\}/g;
-      let match;
-      while ((match = ruleRegex.exec(cssText)) !== null) {
-        const className = match[1];
-        const styles = match[2].trim().replace(/\s+/g, ' ');
-        cssRules[className] = styles;
+      if (type === DocumentApp.ElementType.PARAGRAPH) {
+        const para = child.asParagraph();
+        html += buildParagraphHtml_(para);
+      } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+        const listItem = child.asListItem();
+        const itemHtml = buildListItemHtml_(listItem);
+        html += itemHtml;
       }
     }
-
-    // Extract just the body content
-    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-    if (bodyMatch) {
-      html = bodyMatch[1];
-    }
-
-    // Convert class-based styles to inline styles (Gmail strips <style> blocks)
-    // Find all elements with class attributes and inline their styles
-    html = html.replace(/<([a-zA-Z0-9]+)([^>]*)\sclass="([^"]*)"([^>]*)>/g, function(match, tag, before, classes, after) {
-      const classNames = classes.split(/\s+/);
-      let inlineStyles = '';
-      classNames.forEach(function(cls) {
-        if (cssRules[cls]) {
-          inlineStyles += cssRules[cls] + ' ';
-        }
-      });
-      if (inlineStyles) {
-        // Check if element already has a style attribute
-        const existingStyle = (before + after).match(/style="([^"]*)"/);
-        if (existingStyle) {
-          // Merge styles
-          return `<${tag}${before.replace(/style="[^"]*"/, '')}${after.replace(/style="[^"]*"/, '')} style="${existingStyle[1]} ${inlineStyles.trim()}">`;
-        } else {
-          return `<${tag}${before}${after} style="${inlineStyles.trim()}">`;
-        }
-      }
-      return `<${tag}${before}${after}>`;
-    });
-
-    // Remove id attributes
-    html = html.replace(/ id="[^"]*"/g, '');
 
     return { text, html };
   } catch (e) {
     Logger.log(`Error reading template doc ${templateKey}: ${e.message}`);
     return null;
   }
+}
+
+/**
+ * Build HTML from a paragraph with inline styles
+ */
+function buildParagraphHtml_(para) {
+  const textHtml = buildTextElementsHtml_(para);
+
+  // Check for heading styles
+  const heading = para.getHeading();
+  if (heading === DocumentApp.ParagraphHeading.HEADING1) {
+    return `<p style="font-size:20px;font-weight:bold;margin:16px 0 8px 0;">${textHtml}</p>`;
+  } else if (heading === DocumentApp.ParagraphHeading.HEADING2) {
+    return `<p style="font-size:16px;font-weight:bold;margin:14px 0 6px 0;">${textHtml}</p>`;
+  } else if (heading === DocumentApp.ParagraphHeading.HEADING3) {
+    return `<p style="font-size:14px;font-weight:bold;margin:12px 0 4px 0;">${textHtml}</p>`;
+  }
+
+  // Empty paragraph = line break
+  if (!textHtml.trim()) {
+    return '<br>';
+  }
+
+  return `<p style="margin:0 0 8px 0;">${textHtml}</p>`;
+}
+
+/**
+ * Build HTML from a list item with inline styles
+ */
+function buildListItemHtml_(listItem) {
+  const textHtml = buildTextElementsHtml_(listItem);
+  const nestingLevel = listItem.getNestingLevel();
+  const indent = 20 + (nestingLevel * 20);
+  return `<p style="margin:0 0 4px ${indent}px;">• ${textHtml}</p>`;
+}
+
+/**
+ * Build HTML from text elements with inline styles for bold, italic, underline
+ */
+function buildTextElementsHtml_(element) {
+  let html = '';
+  const text = element.getText();
+  if (!text) return '';
+
+  // Get the text element to check formatting
+  const numChildren = element.getNumChildren();
+
+  if (numChildren === 0) {
+    // Simple text without children - check if element itself has formatting
+    return escapeHtml_(text);
+  }
+
+  // Process each child (usually Text elements)
+  for (let i = 0; i < numChildren; i++) {
+    const child = element.getChild(i);
+    if (child.getType() === DocumentApp.ElementType.TEXT) {
+      html += buildTextRunHtml_(child.asText());
+    }
+  }
+
+  return html;
+}
+
+/**
+ * Build HTML from a Text element, handling formatting runs
+ */
+function buildTextRunHtml_(textElement) {
+  const text = textElement.getText();
+  if (!text) return '';
+
+  let html = '';
+  let i = 0;
+
+  while (i < text.length) {
+    // Get formatting at this position
+    const isBold = textElement.isBold(i);
+    const isItalic = textElement.isItalic(i);
+    const isUnderline = textElement.isUnderline(i);
+    const link = textElement.getLinkUrl(i);
+
+    // Find end of this formatting run
+    let j = i + 1;
+    while (j < text.length) {
+      if (textElement.isBold(j) !== isBold ||
+          textElement.isItalic(j) !== isItalic ||
+          textElement.isUnderline(j) !== isUnderline ||
+          textElement.getLinkUrl(j) !== link) {
+        break;
+      }
+      j++;
+    }
+
+    // Get and escape the text for this run
+    let runText = escapeHtml_(text.substring(i, j));
+
+    // Apply formatting with inline styles
+    if (isBold || isItalic || isUnderline) {
+      let styles = [];
+      if (isBold) styles.push('font-weight:bold');
+      if (isItalic) styles.push('font-style:italic');
+      if (isUnderline) styles.push('text-decoration:underline');
+      runText = `<span style="${styles.join(';')}">${runText}</span>`;
+    }
+
+    // Wrap in link if needed
+    if (link) {
+      runText = `<a href="${link}" style="color:#1a73e8">${runText}</a>`;
+    }
+
+    html += runText;
+    i = j;
+  }
+
+  return html;
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml_(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**
