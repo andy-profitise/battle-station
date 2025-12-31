@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 08:48PM PST
+ * Last Updated: 2025-12-31 09:19AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -19,6 +19,9 @@
  ************************************************************/
 
 const BS_CFG = {
+  // Code version - displayed in UI to confirm deployment
+  CODE_VERSION: '2025-12-31 09:19AM PST',
+
   // Sheet names
   LIST_SHEET: 'List',
   BATTLE_SHEET: 'A(I)DEN',
@@ -562,8 +565,8 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 32);
   currentRow++;
 
-  // Navigation bar - cleaner, more modern
-  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶`;
+  // Navigation bar - cleaner, more modern - includes code version for deployment verification
+  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶                    v${BS_CFG.CODE_VERSION}`;
   bsSh.getRange(currentRow, 1, 1, 9).merge()
     .setValue(navText)
     .setFontSize(10)
