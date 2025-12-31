@@ -2708,6 +2708,39 @@ function getEmailsForVendor_(vendor, listRow) {
 }
 
 /**
+ * FAST: Get just email thread count without fetching message content
+ * Used for quick change detection in Skip Unchanged
+ * @param {number} listRow - Row number in List sheet
+ * @returns {number} Thread count, or -1 on error
+ */
+function getEmailThreadCountFast_(listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return -1;
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll || !gmailLinkAll.toString().includes('#search')) return 0;
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const urlParts = gmailLinkStr.split('#search/');
+    if (urlParts.length < 2) return 0;
+
+    let searchQuery = decodeURIComponent(urlParts[1]);
+    if (searchQuery.includes('?')) searchQuery = searchQuery.split('?')[0];
+    searchQuery = searchQuery.replace(/\+/g, ' ').replace(/-is:snoozed/gi, '-label:snoozed');
+
+    // Just get thread count - don't fetch messages (fast!)
+    const threads = GmailApp.search(searchQuery, 0, 50);
+    return threads.length;
+  } catch (e) {
+    Logger.log(`ERROR in getEmailThreadCountFast_: ${e.message}`);
+    return -1;
+  }
+}
+
+/**
  * Get ALL emails from vendor's Gmail sublabel for task analysis context
  * Uses label search (not filtered search) to get complete email history
  * @param {number} listRow - The row number in the list sheet
@@ -5651,8 +5684,11 @@ function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, 
 
 /**
  * Generate a sub-checksum for just emails (most volatile data)
+ * Prefixed with thread count for quick change detection
  */
 function generateEmailChecksum_(emails) {
+  const count = (emails || []).length;
+
   // Base checksum - same as before so existing checksums stay valid
   const data = (emails || []).map(e => ({
     subject: e.subject,
@@ -5660,14 +5696,14 @@ function generateEmailChecksum_(emails) {
     labels: e.labels
   }));
   const baseChecksum = hashString_(JSON.stringify(data));
-  
+
   // Count overdue emails - append to checksum so it changes when overdue status changes
   const overdueCount = (emails || []).filter(e => isEmailOverdue_(e)).length;
-  
-  // Combine: baseChecksum + overdueCount
-  // This way, if no emails are overdue (overdueCount=0), checksum matches old format
-  // But if any become overdue, the checksum changes
-  return overdueCount > 0 ? `${baseChecksum}_OD${overdueCount}` : baseChecksum;
+
+  // Format: count:hash or count:hash_ODn
+  // Prefix with count allows fast count-based change detection
+  const hashPart = overdueCount > 0 ? `${baseChecksum}_OD${overdueCount}` : baseChecksum;
+  return `${count}:${hashPart}`;
 }
 
 /**
@@ -6428,7 +6464,7 @@ function filterTasksBySource_(tasks, source) {
  *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
  */
 function checkVendorForChanges_(vendor, listRow, source) {
-  // Check if vendor is flagged - always stop on flagged vendors
+  // Check if vendor is flagged - always stop on flagged vendors (fast - no API)
   if (isVendorFlagged_(vendor)) {
     Logger.log(`${vendor}: flagged for review`);
     // Clear the flag since we're stopping here
@@ -6440,7 +6476,39 @@ function checkVendorForChanges_(vendor, listRow, source) {
     };
   }
 
-  // Check for overdue emails - always stop if any emails are overdue
+  // Get stored checksum data first (fast - just reads from sheet)
+  const storedData = getStoredChecksum_(vendor);
+
+  // If no stored data, this is a first view - definitely has changes
+  if (!storedData) {
+    Logger.log(`${vendor}: no stored checksums - first view`);
+    return {
+      hasChanges: true,
+      changeType: 'First view',
+      data: null
+    };
+  }
+
+  // FAST PATH: Quick thread count check before fetching full email data
+  // If count differs from stored, we know there's a change without expensive processing
+  const storedEmailChecksum = storedData.emailChecksum || '';
+  const storedCountMatch = storedEmailChecksum.match(/^(\d+):/);
+  if (storedCountMatch) {
+    const storedCount = parseInt(storedCountMatch[1], 10);
+    const currentCount = getEmailThreadCountFast_(listRow);
+
+    if (currentCount >= 0 && currentCount !== storedCount) {
+      Logger.log(`${vendor}: FAST DETECT - email count changed (${storedCount} → ${currentCount})`);
+      return {
+        hasChanges: true,
+        changeType: `Emails: ${currentCount > storedCount ? 'new emails' : 'emails removed'}`,
+        data: null  // Don't fetch full data - loadVendorData will do that
+      };
+    }
+    // Count matches - need to fetch full data for detailed comparison
+  }
+
+  // Full email fetch needed for overdue check and detailed checksum
   const emails = getEmailsForVendor_(vendor, listRow) || [];
   const overdueEmails = emails.filter(e => isEmailOverdue_(e));
   if (overdueEmails.length > 0) {
@@ -6452,18 +6520,6 @@ function checkVendorForChanges_(vendor, listRow, source) {
     };
   }
 
-  const storedData = getStoredChecksum_(vendor);
-
-  // If no stored data, this is a first view
-  if (!storedData) {
-    Logger.log(`${vendor}: no stored checksums - first view`);
-    return {
-      hasChanges: true,
-      changeType: 'First view',
-      data: null 
-    };
-  }
-  
   // Check emails (most volatile) - emails already fetched above for overdue check
   const newEmailChecksum = generateEmailChecksum_(emails);
 
