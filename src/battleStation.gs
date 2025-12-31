@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-30 04:14PM PST
+ * Last Updated: 2025-12-30 04:34PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -196,12 +196,14 @@ const BS_CFG = {
 
   // Canned Response Attachments (Google Drive file IDs)
   REFERRAL_CONTRACT_FILE_ID: '1ON0EZmKvDyvwUDYBFyVkmj8TzkCBl2UX',
+  INITIAL_CALL_FOLLOWUP_FILE_ID: '1T4N0Mia9icYrKH1B4rawu9qRBiqTgfrL',
 
   // Canned Response Templates - Google Doc IDs
   // Use <CONTACT_NAME> and <VENDOR_NAME> as placeholders in the docs
   // To get the ID: https://docs.google.com/document/d/[THIS_IS_THE_ID]/edit
   CANNED_RESPONSE_DOCS: {
-    REFERRAL_PROGRAM: '1tn3uQMvVR6ZItk1p0k-0-BclMJxbNBDzuh4jSt8PT9c'
+    REFERRAL_PROGRAM: '1tn3uQMvVR6ZItk1p0k-0-BclMJxbNBDzuh4jSt8PT9c',
+    INITIAL_CALL_FOLLOWUP: '1z2lUA4aDD1_zSq1gxX13pcrqlHMh80CmUvorfwLw5ws'
   }
 };
 
@@ -266,6 +268,7 @@ function onOpen() {
     .addItem('✍️ Custom Response...', 'emailResponseCustom')
     .addSeparator()
     .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
+    .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
     .addToUi();
 }
 
@@ -9046,6 +9049,13 @@ function cannedResponseReferralProgram() {
 }
 
 /**
+ * Canned Response: Initial Call Follow-up
+ */
+function cannedResponseInitialCallFollowup() {
+  generateCannedResponse_('INITIAL_CALL_FOLLOWUP', 'Initial Call Follow-up');
+}
+
+/**
  * Get contacts for the current vendor from the Battle Station sheet
  * Returns array of contact names
  */
@@ -9416,13 +9426,20 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
 
     // Get attachment if configured for this template
     let attachments = [];
+    let attachmentFileId = null;
     if (templateKey === 'REFERRAL_PROGRAM' && BS_CFG.REFERRAL_CONTRACT_FILE_ID) {
+      attachmentFileId = BS_CFG.REFERRAL_CONTRACT_FILE_ID;
+    } else if (templateKey === 'INITIAL_CALL_FOLLOWUP' && BS_CFG.INITIAL_CALL_FOLLOWUP_FILE_ID) {
+      attachmentFileId = BS_CFG.INITIAL_CALL_FOLLOWUP_FILE_ID;
+    }
+
+    if (attachmentFileId) {
       try {
-        const file = DriveApp.getFileById(BS_CFG.REFERRAL_CONTRACT_FILE_ID);
+        const file = DriveApp.getFileById(attachmentFileId);
         attachments.push(file.getBlob());
-        Logger.log('Attached referral contract: ' + file.getName());
+        Logger.log('Attached file: ' + file.getName());
       } catch (e) {
-        Logger.log('Could not attach referral contract: ' + e.message);
+        Logger.log('Could not attach file: ' + e.message);
       }
     }
 
