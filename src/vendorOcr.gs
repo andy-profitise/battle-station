@@ -604,12 +604,15 @@ function processStructuredText(textData, sourceName) {
 /**
  * Extract names from JSON structure (handles various chat export formats)
  * Only extracts from name/sender fields, NOT from message content
+ * Filters out entries older than OCR_TRACKING_DAYS
  *
  * @param {object} jsonData - Parsed JSON data
  * @returns {array} Array of extracted names
  */
 function extractNamesFromJson_(jsonData) {
   const names = new Set();
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - OCR_CFG.OCR_TRACKING_DAYS);
 
   // Recursive function to find name fields
   const extractNames = (obj) => {
@@ -621,6 +624,26 @@ function extractNamesFromJson_(jsonData) {
     }
 
     if (typeof obj === 'object') {
+      // Check if this entry has a timestamp and if it's too old
+      const timestampFields = ['timestamp', 'time', 'date', 'datetime', 'created_at', 'sent_at'];
+      let entryDate = null;
+
+      for (const field of timestampFields) {
+        if (obj[field]) {
+          const parsed = new Date(obj[field]);
+          if (!isNaN(parsed.getTime())) {
+            entryDate = parsed;
+            break;
+          }
+        }
+      }
+
+      // Skip this entry if it's older than the cutoff
+      if (entryDate && entryDate < cutoffDate) {
+        Logger.log(`Skipping old entry: ${obj.name || 'unknown'} (${entryDate.toISOString()})`);
+        return; // Don't extract names from old entries
+      }
+
       // Look for common name field patterns (NOT message content)
       const nameFields = ['name', 'Name', 'sender', 'from', 'contact', 'participant', 'user', 'author'];
 
