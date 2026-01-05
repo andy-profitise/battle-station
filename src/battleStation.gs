@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2025-12-31 10:15AM PST',
+  CODE_VERSION: '2025-12-31 10:22AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -4827,9 +4827,14 @@ function battleStationNext() {
   }
   
   const totalVendors = listSh.getLastRow() - 1;
-  
+
+  // Wrap around to first vendor if at the end
   if (currentIndex >= totalVendors) {
-    ss.toast('Already at the last vendor!', '⚠️ End of List', 3);
+    const listRow = currentIndex + 1;
+    const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+    listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
+    ss.toast(`Marked "${vendor}" as reviewed. Wrapping to vendor #1...`, '🔄 Wrap Around', 2);
+    loadVendorData(1);
     return;
   }
   
@@ -6932,6 +6937,8 @@ function skipToNextChanged(trackComeback) {
 
   // Get current index using the same function as other navigation
   let currentIdx = getCurrentVendorIndex_() || 1;
+  const startIdx = currentIdx;  // Track where we started for wrap-around detection
+  let hasWrapped = false;       // Track if we've wrapped around
 
   let skippedCount = 0;
 
@@ -6946,12 +6953,11 @@ function skipToNextChanged(trackComeback) {
   while (true) {
     currentIdx++;  // Move to next vendor FIRST
 
-    // Stop at end
+    // Wrap around at end of list
     if (currentIdx > totalVendors) {
-      ss.toast('');
-
-      // If Skip 5 session is active, return to origin
+      // If Skip 5 session is active, don't wrap - return to origin
       if (skip5Session) {
+        ss.toast('');
         ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 End of List', 3);
         Utilities.sleep(500);
         loadVendorData(skip5Session.originIdx);
@@ -6968,7 +6974,16 @@ function skipToNextChanged(trackComeback) {
         return;
       }
 
-      SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
+      // Wrap around to vendor #1
+      currentIdx = 1;
+      hasWrapped = true;
+      ss.toast('Wrapping to vendor #1...', '🔄 Wrap Around', 2);
+    }
+
+    // If we've wrapped and reached our starting point, we've checked everyone
+    if (hasWrapped && currentIdx >= startIdx) {
+      ss.toast('');
+      SpreadsheetApp.getUi().alert(`Checked all vendors (wrapped around).\nSkipped ${skippedCount} unchanged vendor(s).\nNo vendors with changes found.`);
       return;
     }
 
