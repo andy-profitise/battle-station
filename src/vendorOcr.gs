@@ -1,8 +1,6 @@
 /************************************************************
  * VENDOR OCR UPLOAD - Extract vendor names from screenshots
  *
- * Last Updated: 2026-01-05 09:16 PST
- *
  * This module allows users to upload screenshots from platforms
  * that cannot be API'd (Microsoft Teams, Telegram, WhatsApp, etc.)
  * and uses OCR to identify vendor names from conversations.
