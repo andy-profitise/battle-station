@@ -241,6 +241,8 @@ function onOpen() {
     .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
+    .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
+    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
     .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
 
