@@ -241,9 +241,6 @@ function onOpen() {
     .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
-    .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
-    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
-    .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
     .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
 
@@ -276,6 +273,13 @@ function onOpen() {
     .addSeparator()
     .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
     .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
+    .addToUi();
+
+  // Chat OCR menu - find vendors from chat screenshots/text
+  ui.createMenu('💬 Chat OCR')
+    .addItem('📷 Upload Image / Paste Text', 'openVendorOcrUpload')
+    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
+    .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
     .addToUi();
 }
 
