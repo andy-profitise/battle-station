@@ -38,7 +38,10 @@ const OCR_CFG = {
   SETTINGS_OCR_MAPS_TO_COL: 24,    // Column X
 
   // Property key for storing OCR-detected vendors
-  OCR_DETECTED_VENDORS_KEY: 'OCR_DETECTED_VENDORS'
+  OCR_DETECTED_VENDORS_KEY: 'OCR_DETECTED_VENDORS',
+
+  // Number of days to track OCR-detected vendors (older entries are ignored)
+  OCR_TRACKING_DAYS: 7
 };
 
 
@@ -1643,8 +1646,9 @@ function trackOcrDetectedVendors_(vendorNames, sourceFile) {
 }
 
 /**
- * Get all OCR-detected vendors
+ * Get all OCR-detected vendors from the last N days (default: 7 days)
  * Returns a Map of lowercase vendor name -> detection info
+ * Also cleans up stale entries from storage
  *
  * @returns {Map} Map of vendor name (lowercase) -> {name, detectedAt, sourceFile, platform}
  */
@@ -1656,8 +1660,29 @@ function getOcrDetectedVendors() {
     const data = props.getProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY);
     if (data) {
       const tracked = JSON.parse(data);
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - OCR_CFG.OCR_TRACKING_DAYS);
+
+      const validEntries = {};
+      let hasStaleEntries = false;
+
       for (const [key, info] of Object.entries(tracked)) {
-        map.set(key, info);
+        const detectedAt = new Date(info.detectedAt);
+
+        // Only include entries from the last N days
+        if (detectedAt >= cutoffDate) {
+          map.set(key, info);
+          validEntries[key] = info;
+        } else {
+          hasStaleEntries = true;
+          Logger.log(`Filtering out stale OCR entry: ${info.name} (detected ${info.detectedAt})`);
+        }
+      }
+
+      // Clean up stale entries from storage
+      if (hasStaleEntries) {
+        props.setProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY, JSON.stringify(validEntries));
+        Logger.log(`Cleaned up stale OCR entries, ${Object.keys(validEntries).length} remain`);
       }
     }
   } catch (e) {
