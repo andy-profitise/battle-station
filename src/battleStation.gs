@@ -218,6 +218,7 @@ function onOpen() {
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addSeparator()
     .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
+    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
     .addToUi();
 }
