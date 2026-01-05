@@ -30,12 +30,12 @@ const OCR_CFG = {
   UPLOADS_FOLDER_NAME: 'Battle Station OCR Uploads',
 
   // Settings sheet columns for OCR configuration (1-based)
-  // Column G: OCR Blacklist - text patterns to ignore in OCR results
-  // Column H: OCR Alias - alternate names/spellings for vendors
-  // Column I: OCR Maps To - the actual vendor name the alias maps to
-  SETTINGS_OCR_BLACKLIST_COL: 7,   // Column G
-  SETTINGS_OCR_ALIAS_COL: 8,       // Column H
-  SETTINGS_OCR_MAPS_TO_COL: 9      // Column I
+  // Column V: OCR Blacklist - text patterns to ignore in OCR results
+  // Column W: OCR Alias - alternate names/spellings for vendors
+  // Column X: OCR Maps To - the actual vendor name the alias maps to
+  SETTINGS_OCR_BLACKLIST_COL: 22,  // Column V
+  SETTINGS_OCR_ALIAS_COL: 23,      // Column W
+  SETTINGS_OCR_MAPS_TO_COL: 24     // Column X
 };
 
 
@@ -235,7 +235,7 @@ function getOcrBlacklist_() {
   // Check header
   const header = String(sh.getRange(1, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL).getValue() || '').trim().toLowerCase();
   if (!header.includes('ocr') || !header.includes('blacklist')) {
-    Logger.log('OCR Blacklist column not found in Settings (expected header in column G)');
+    Logger.log('OCR Blacklist column not found in Settings (expected header in column V)');
     return blacklist;
   }
 
@@ -273,7 +273,7 @@ function getOcrAliases_() {
   const mapsToHeader = String(sh.getRange(1, OCR_CFG.SETTINGS_OCR_MAPS_TO_COL).getValue() || '').trim().toLowerCase();
 
   if (!aliasHeader.includes('alias') || !mapsToHeader.includes('maps')) {
-    Logger.log('OCR Alias columns not found in Settings (expected headers in columns H & I)');
+    Logger.log('OCR Alias columns not found in Settings (expected headers in columns W & X)');
     return aliases;
   }
 
@@ -1139,9 +1139,9 @@ function setupOcrSettings() {
 
   SpreadsheetApp.getUi().alert(
     'OCR Settings Initialized!\n\n' +
-    'Column G (OCR Blacklist): Add text patterns to ignore in OCR results\n' +
-    'Column H (OCR Alias): Add alternate vendor names/spellings\n' +
-    'Column I (OCR Maps To): The actual vendor name the alias should match\n\n' +
+    'Column V (OCR Blacklist): Add text patterns to ignore in OCR results\n' +
+    'Column W (OCR Alias): Add alternate vendor names/spellings\n' +
+    'Column X (OCR Maps To): The actual vendor name the alias should match\n\n' +
     'Example entries have been added - modify as needed.'
   );
 
