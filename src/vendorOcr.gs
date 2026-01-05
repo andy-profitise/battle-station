@@ -526,6 +526,288 @@ function getOrCreateUploadsFolder_() {
 
 
 /************************************************************
+ * STRUCTURED TEXT PROCESSING
+ * Process pasted JSON/text data from chat platforms
+ ************************************************************/
+
+/**
+ * Process pasted structured text/JSON data to find vendors
+ * Called from the HTML dialog via google.script.run
+ *
+ * @param {string} textData - Pasted text (JSON or plain text)
+ * @param {string} sourceName - Description of the source (e.g., "Teams Chat")
+ * @returns {object} Results object with matched vendors
+ */
+function processStructuredText(textData, sourceName) {
+  try {
+    Logger.log(`Processing structured text from: ${sourceName}`);
+
+    if (!textData || textData.trim() === '') {
+      return {
+        success: false,
+        error: 'No text data provided.',
+        extractedText: '',
+        vendors: []
+      };
+    }
+
+    // Try to parse as JSON first
+    let extractedNames = [];
+    let isJson = false;
+
+    try {
+      const jsonData = JSON.parse(textData);
+      extractedNames = extractNamesFromJson_(jsonData);
+      isJson = true;
+      Logger.log(`Parsed JSON, extracted ${extractedNames.length} names`);
+    } catch (e) {
+      // Not valid JSON, treat as plain text
+      extractedNames = extractNamesFromPlainText_(textData);
+      Logger.log(`Parsed as plain text, extracted ${extractedNames.length} potential names`);
+    }
+
+    // Get vendor list from the spreadsheet
+    const vendors = getVendorList_();
+    Logger.log(`Loaded ${vendors.length} vendors for matching`);
+
+    // Find vendor matches
+    const matches = findVendorMatchesFromNames_(extractedNames, vendors);
+    Logger.log(`Found ${matches.length} vendor matches`);
+
+    // Track OCR-detected vendors for Battle Station alerts
+    if (matches.length > 0) {
+      trackOcrDetectedVendors_(matches.map(m => m.name), sourceName || 'Pasted Text');
+    }
+
+    return {
+      success: true,
+      extractedText: isJson ? `JSON with ${extractedNames.length} names` : textData.substring(0, 500),
+      extractedNames: extractedNames,
+      vendors: matches,
+      savedFile: null
+    };
+
+  } catch (e) {
+    Logger.log(`Structured text processing error: ${e.message}`);
+    return {
+      success: false,
+      error: e.message,
+      extractedText: '',
+      vendors: []
+    };
+  }
+}
+
+/**
+ * Extract names from JSON structure (handles various chat export formats)
+ *
+ * @param {object} jsonData - Parsed JSON data
+ * @returns {array} Array of extracted names
+ */
+function extractNamesFromJson_(jsonData) {
+  const names = new Set();
+
+  // Recursive function to find name fields
+  const extractNames = (obj) => {
+    if (!obj) return;
+
+    if (Array.isArray(obj)) {
+      obj.forEach(item => extractNames(item));
+      return;
+    }
+
+    if (typeof obj === 'object') {
+      // Look for common name field patterns
+      const nameFields = ['name', 'Name', 'sender', 'from', 'contact', 'participant', 'user', 'author'];
+
+      for (const field of nameFields) {
+        if (obj[field] && typeof obj[field] === 'string') {
+          const name = obj[field].trim();
+          // Skip common non-vendor names
+          if (name && !isCommonNonVendorName_(name)) {
+            names.add(name);
+          }
+        }
+      }
+
+      // Also check preview/message text for potential vendor mentions
+      const textFields = ['preview', 'message', 'text', 'body', 'content'];
+      for (const field of textFields) {
+        if (obj[field] && typeof obj[field] === 'string') {
+          // Extract capitalized words that might be vendor names
+          const potentialNames = obj[field].match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*/g) || [];
+          potentialNames.forEach(n => {
+            if (!isCommonNonVendorName_(n)) {
+              names.add(n);
+            }
+          });
+        }
+      }
+
+      // Recurse into nested objects
+      Object.values(obj).forEach(val => extractNames(val));
+    }
+  };
+
+  extractNames(jsonData);
+  return Array.from(names);
+}
+
+/**
+ * Extract potential names from plain text
+ *
+ * @param {string} text - Plain text
+ * @returns {array} Array of potential names
+ */
+function extractNamesFromPlainText_(text) {
+  const names = new Set();
+
+  // Split by common delimiters and newlines
+  const lines = text.split(/[\n\r,;|]+/);
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Skip empty lines and very short strings
+    if (!trimmed || trimmed.length < 3) continue;
+
+    // Skip lines that look like timestamps, URLs, etc.
+    if (/^\d{1,2}[:\-\/]\d{1,2}/.test(trimmed)) continue;
+    if (/^https?:\/\//.test(trimmed)) continue;
+    if (/^[\d\s\-\(\)]+$/.test(trimmed)) continue; // Phone numbers
+
+    // Extract capitalized phrases (likely names/vendors)
+    const matches = trimmed.match(/[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*/g) || [];
+    matches.forEach(m => {
+      if (m.length >= 3 && !isCommonNonVendorName_(m)) {
+        names.add(m.trim());
+      }
+    });
+
+    // Also add the whole line if it looks like a name entry
+    if (/^[A-Za-z][\w\s&\-\.]+$/.test(trimmed) && trimmed.length < 50) {
+      if (!isCommonNonVendorName_(trimmed)) {
+        names.add(trimmed);
+      }
+    }
+  }
+
+  return Array.from(names);
+}
+
+/**
+ * Check if a name is a common non-vendor name to skip
+ *
+ * @param {string} name - Name to check
+ * @returns {boolean} True if should skip
+ */
+function isCommonNonVendorName_(name) {
+  const skipPatterns = [
+    /^you$/i,
+    /^me$/i,
+    /^group\s*chat$/i,
+    /^internal/i,
+    /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i,
+    /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i,
+    /^(am|pm)$/i,
+    /^unread$/i,
+    /^pinned$/i,
+    /^recent$/i,
+    /^(hi|hello|hey|thanks|thank you|bye|goodbye)$/i,
+    /^rip$/i,
+    /^(gm|good morning|good afternoon|good evening)$/i
+  ];
+
+  return skipPatterns.some(pattern => pattern.test(name.trim()));
+}
+
+/**
+ * Find vendor matches from a list of extracted names
+ *
+ * @param {array} extractedNames - Names extracted from text/JSON
+ * @param {array} vendors - Vendor list from spreadsheet
+ * @returns {array} Matched vendors with info
+ */
+function findVendorMatchesFromNames_(extractedNames, vendors) {
+  // Load settings
+  const aliases = getOcrAliases_();
+
+  const matches = [];
+  const matchedNames = new Set();
+
+  // Build vendor lookup
+  const vendorInfoMap = new Map();
+  for (const vendor of vendors) {
+    vendorInfoMap.set(vendor.name.toLowerCase(), vendor);
+  }
+
+  // Check aliases first
+  for (const [alias, mapsTo] of aliases) {
+    for (const extracted of extractedNames) {
+      if (extracted.toLowerCase().includes(alias) && !matchedNames.has(mapsTo.toLowerCase())) {
+        const vendorInfo = vendorInfoMap.get(mapsTo.toLowerCase());
+        matchedNames.add(mapsTo.toLowerCase());
+        matches.push({
+          name: mapsTo,
+          source: vendorInfo?.source || 'alias',
+          status: vendorInfo?.status || '',
+          matchType: `alias ("${alias}")`,
+          confidence: 1.0,
+          context: `Matched from: "${extracted}"`
+        });
+      }
+    }
+  }
+
+  // Check each extracted name against vendors
+  for (const extracted of extractedNames) {
+    const extractedLower = extracted.toLowerCase();
+
+    for (const vendor of vendors) {
+      const vendorLower = vendor.name.toLowerCase();
+
+      if (matchedNames.has(vendorLower)) continue;
+
+      // Exact match
+      if (extractedLower === vendorLower || extractedLower.includes(vendorLower) || vendorLower.includes(extractedLower)) {
+        matchedNames.add(vendorLower);
+        matches.push({
+          name: vendor.name,
+          source: vendor.source,
+          status: vendor.status,
+          matchType: 'exact',
+          confidence: 1.0,
+          context: `Matched from: "${extracted}"`
+        });
+        continue;
+      }
+
+      // Match without suffix
+      const vendorWithoutSuffix = vendor.name
+        .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.|L\.?L\.?C\.?)$/i, '')
+        .trim().toLowerCase();
+
+      if (vendorWithoutSuffix.length >= 3 &&
+          (extractedLower.includes(vendorWithoutSuffix) || vendorWithoutSuffix.includes(extractedLower))) {
+        matchedNames.add(vendorLower);
+        matches.push({
+          name: vendor.name,
+          source: vendor.source,
+          status: vendor.status,
+          matchType: 'partial',
+          confidence: 0.9,
+          context: `Matched from: "${extracted}"`
+        });
+      }
+    }
+  }
+
+  matches.sort((a, b) => b.confidence - a.confidence);
+  return matches;
+}
+
+
+/************************************************************
  * HTML DIALOG
  ************************************************************/
 
@@ -827,30 +1109,148 @@ function getOcrUploadHtml_() {
     .saved-file a {
       color: #137333;
     }
+    .tabs {
+      display: flex;
+      margin-bottom: 16px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+
+    .tab {
+      padding: 12px 24px;
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-size: 14px;
+      font-weight: 500;
+      color: #5f6368;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      transition: all 0.2s;
+    }
+
+    .tab:hover {
+      color: #1a73e8;
+    }
+
+    .tab.active {
+      color: #1a73e8;
+      border-bottom-color: #1a73e8;
+    }
+
+    .tab-content {
+      display: none;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    .text-input-area {
+      width: 100%;
+      min-height: 150px;
+      padding: 12px;
+      border: 2px solid #dadce0;
+      border-radius: 8px;
+      font-family: 'Roboto Mono', monospace;
+      font-size: 12px;
+      resize: vertical;
+      margin-bottom: 12px;
+    }
+
+    .text-input-area:focus {
+      border-color: #1a73e8;
+      outline: none;
+    }
+
+    .source-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+
+    .source-input:focus {
+      border-color: #1a73e8;
+      outline: none;
+    }
+
+    .hint-box {
+      background: #e8f0fe;
+      padding: 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 12px;
+      color: #1a73e8;
+    }
+
+    .hint-box code {
+      background: #fff;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <h2>Vendor OCR Upload</h2>
-    <p>Upload screenshots from Teams, Telegram, WhatsApp, etc. to find vendor names</p>
+    <h2>Vendor Chat Finder</h2>
+    <p>Find vendors from Teams, Telegram, WhatsApp conversations</p>
   </div>
 
-  <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
-    <div class="upload-icon">📷</div>
-    <div class="upload-text">Click to upload or drag & drop</div>
-    <div class="upload-hint">PNG, JPG, or JPEG (max 10MB)</div>
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('text')">📋 Paste Text/JSON</button>
+    <button class="tab" onclick="switchTab('image')">📷 Upload Image (OCR)</button>
   </div>
 
-  <input type="file" id="fileInput" class="file-input" accept="image/*" onchange="handleFileSelect(this)">
+  <!-- TEXT/JSON PASTE TAB -->
+  <div id="textTab" class="tab-content active">
+    <div class="hint-box">
+      Paste structured JSON from chat exports, or plain text with vendor names.<br>
+      Supported: <code>{"name": "..."}</code> fields, comma-separated names, or line-by-line.
+    </div>
 
-  <div class="preview-container" id="previewContainer">
-    <img id="previewImage" class="preview-image">
-    <div id="previewName" class="preview-name"></div>
+    <input type="text" id="sourceName" class="source-input" placeholder="Source (e.g., Teams Chat, Telegram Group)">
+
+    <textarea id="textInput" class="text-input-area" placeholder="Paste your chat data here...
+
+Examples:
+- JSON: {&quot;name&quot;: &quot;Vendor Name&quot;, &quot;preview&quot;: &quot;...&quot;}
+- Plain text: Vendor1, Vendor2, Vendor3
+- Line by line:
+  Acme Corp
+  Solar Solutions
+  EnergyPal"></textarea>
+
+    <button class="btn btn-primary" id="processTextBtn" onclick="processText()">
+      Find Vendors in Text
+    </button>
   </div>
 
-  <button class="btn btn-primary" id="processBtn" onclick="processImage()" disabled>
-    Find Vendors in Image
-  </button>
+  <!-- IMAGE UPLOAD TAB -->
+  <div id="imageTab" class="tab-content">
+    <div class="hint-box">
+      ⚠️ Requires Cloud Vision API enabled in Google Cloud Console.
+    </div>
+
+    <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+      <div class="upload-icon">📷</div>
+      <div class="upload-text">Click to upload or drag & drop</div>
+      <div class="upload-hint">PNG, JPG, or JPEG (max 10MB)</div>
+    </div>
+
+    <input type="file" id="fileInput" class="file-input" accept="image/*" onchange="handleFileSelect(this)">
+
+    <div class="preview-container" id="previewContainer">
+      <img id="previewImage" class="preview-image">
+      <div id="previewName" class="preview-name"></div>
+    </div>
+
+    <button class="btn btn-primary" id="processBtn" onclick="processImage()" disabled>
+      Find Vendors in Image
+    </button>
+  </div>
 
   <div class="loading" id="loading">
     <div class="spinner"></div>
@@ -875,6 +1275,47 @@ function getOcrUploadHtml_() {
   <script>
     let selectedFile = null;
     let imageData = null;
+    let currentTab = 'text';
+
+    // Tab switching
+    function switchTab(tab) {
+      currentTab = tab;
+
+      // Update tab buttons
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+
+      // Update tab content
+      document.getElementById('textTab').classList.toggle('active', tab === 'text');
+      document.getElementById('imageTab').classList.toggle('active', tab === 'image');
+
+      // Hide results when switching
+      document.getElementById('results').classList.remove('show');
+      document.getElementById('error').classList.remove('show');
+    }
+
+    // Process text/JSON
+    function processText() {
+      const textData = document.getElementById('textInput').value;
+      const sourceName = document.getElementById('sourceName').value || 'Pasted Text';
+
+      if (!textData || textData.trim() === '') {
+        showError('Please paste some text or JSON data');
+        return;
+      }
+
+      // Show loading
+      document.getElementById('loading').classList.add('show');
+      document.getElementById('processTextBtn').disabled = true;
+      document.getElementById('results').classList.remove('show');
+      document.getElementById('error').classList.remove('show');
+
+      // Call server-side function
+      google.script.run
+        .withSuccessHandler(handleResults)
+        .withFailureHandler(handleError)
+        .processStructuredText(textData, sourceName);
+    }
 
     // Drag and drop handlers
     const uploadArea = document.getElementById('uploadArea');
@@ -960,9 +1401,10 @@ function getOcrUploadHtml_() {
     function handleResults(result) {
       document.getElementById('loading').classList.remove('show');
       document.getElementById('processBtn').disabled = false;
+      document.getElementById('processTextBtn').disabled = false;
 
       if (!result.success) {
-        showError(result.error || 'Failed to process image');
+        showError(result.error || 'Failed to process');
         return;
       }
 
@@ -1015,6 +1457,7 @@ function getOcrUploadHtml_() {
     function handleError(error) {
       document.getElementById('loading').classList.remove('show');
       document.getElementById('processBtn').disabled = false;
+      document.getElementById('processTextBtn').disabled = false;
       showError(error.message || 'An unexpected error occurred');
     }
 
