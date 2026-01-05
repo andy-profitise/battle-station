@@ -2334,8 +2334,8 @@ function getL2MReportingLink_(phonexaLink, source) {
   twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
 
   const formatDate = (d) => {
-    const month = d.getMonth() + 1;
-    const day = d.getDate();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
     const year = d.getFullYear();
     return `${month}/${day}/${year}`;
   };
