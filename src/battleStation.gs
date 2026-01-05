@@ -2265,7 +2265,32 @@ function loadVendorData(vendorIndex, options) {
   } catch (e) {
     Logger.log(`Error with checksum: ${e.message}`);
   }
-  
+
+  // Check if this vendor was detected via OCR (chat platforms)
+  // Show dialog to alert user this vendor communicates via chat, not email
+  if (!turboMode) {
+    try {
+      const ocrInfo = checkOcrDetectedVendor(vendor);
+      if (ocrInfo) {
+        const detectedDate = ocrInfo.detectedAt ? new Date(ocrInfo.detectedAt).toLocaleDateString() : 'Unknown';
+        SpreadsheetApp.getUi().alert(
+          '💬 Chat Platform Vendor',
+          `"${vendor}" was detected from a chat screenshot.\n\n` +
+          `Source: ${ocrInfo.sourceFile || 'Unknown'}\n` +
+          `Detected: ${detectedDate}\n\n` +
+          `This vendor communicates via chat (Teams, Telegram, etc.), not email.\n\n` +
+          `Click OK to continue, or use the menu to clear this alert.`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+
+        // Clear the vendor from OCR tracking after showing the alert
+        clearOcrDetectedVendor(vendor);
+      }
+    } catch (e) {
+      Logger.log(`Error checking OCR vendor: ${e.message}`);
+    }
+  }
+
   ss.toast(`Loaded vendor ${vendorIndex} of ${totalVendors}`, '✅ Ready', 2);
 }
 
