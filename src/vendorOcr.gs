@@ -35,7 +35,10 @@ const OCR_CFG = {
   // Column X: OCR Maps To - the actual vendor name the alias maps to
   SETTINGS_OCR_BLACKLIST_COL: 22,  // Column V
   SETTINGS_OCR_ALIAS_COL: 23,      // Column W
-  SETTINGS_OCR_MAPS_TO_COL: 24     // Column X
+  SETTINGS_OCR_MAPS_TO_COL: 24,    // Column X
+
+  // Property key for storing OCR-detected vendors
+  OCR_DETECTED_VENDORS_KEY: 'OCR_DETECTED_VENDORS'
 };
 
 
@@ -90,6 +93,11 @@ function processOcrImage(imageData, fileName) {
 
     // Step 4: Optionally save the screenshot to Drive
     const savedFile = saveScreenshotToDrive_(imageData, fileName);
+
+    // Step 5: Track OCR-detected vendors for Battle Station alerts
+    if (matches.length > 0) {
+      trackOcrDetectedVendors_(matches.map(m => m.name), fileName);
+    }
 
     return {
       success: true,
@@ -1146,4 +1154,118 @@ function setupOcrSettings() {
   );
 
   Logger.log('OCR settings columns initialized in Settings sheet');
+}
+
+
+/************************************************************
+ * OCR VENDOR TRACKING
+ * Track vendors detected via OCR for priority in Build List
+ * and alerts in Battle Station
+ ************************************************************/
+
+/**
+ * Track vendors detected via OCR upload
+ * Stores vendor names with timestamp and source file
+ *
+ * @param {array} vendorNames - Array of vendor names detected
+ * @param {string} sourceFile - Name of the uploaded file
+ */
+function trackOcrDetectedVendors_(vendorNames, sourceFile) {
+  const props = PropertiesService.getScriptProperties();
+  let tracked = {};
+
+  try {
+    const existing = props.getProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY);
+    if (existing) {
+      tracked = JSON.parse(existing);
+    }
+  } catch (e) {
+    Logger.log('Error reading OCR tracked vendors: ' + e.message);
+  }
+
+  const now = new Date().toISOString();
+
+  for (const name of vendorNames) {
+    const key = name.toLowerCase();
+    tracked[key] = {
+      name: name,
+      detectedAt: now,
+      sourceFile: sourceFile,
+      platform: 'Chat (OCR)'
+    };
+  }
+
+  props.setProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY, JSON.stringify(tracked));
+  Logger.log(`Tracked ${vendorNames.length} OCR-detected vendors`);
+}
+
+/**
+ * Get all OCR-detected vendors
+ * Returns a Map of lowercase vendor name -> detection info
+ *
+ * @returns {Map} Map of vendor name (lowercase) -> {name, detectedAt, sourceFile, platform}
+ */
+function getOcrDetectedVendors() {
+  const props = PropertiesService.getScriptProperties();
+  const map = new Map();
+
+  try {
+    const data = props.getProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY);
+    if (data) {
+      const tracked = JSON.parse(data);
+      for (const [key, info] of Object.entries(tracked)) {
+        map.set(key, info);
+      }
+    }
+  } catch (e) {
+    Logger.log('Error reading OCR tracked vendors: ' + e.message);
+  }
+
+  return map;
+}
+
+/**
+ * Check if a vendor was detected via OCR
+ *
+ * @param {string} vendorName - Vendor name to check
+ * @returns {object|null} Detection info if found, null otherwise
+ */
+function checkOcrDetectedVendor(vendorName) {
+  if (!vendorName) return null;
+
+  const tracked = getOcrDetectedVendors();
+  return tracked.get(vendorName.toLowerCase()) || null;
+}
+
+/**
+ * Clear a vendor from OCR tracking (after reviewing)
+ *
+ * @param {string} vendorName - Vendor name to clear
+ */
+function clearOcrDetectedVendor(vendorName) {
+  if (!vendorName) return;
+
+  const props = PropertiesService.getScriptProperties();
+
+  try {
+    const data = props.getProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY);
+    if (data) {
+      const tracked = JSON.parse(data);
+      delete tracked[vendorName.toLowerCase()];
+      props.setProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY, JSON.stringify(tracked));
+      Logger.log(`Cleared OCR tracking for: ${vendorName}`);
+    }
+  } catch (e) {
+    Logger.log('Error clearing OCR tracked vendor: ' + e.message);
+  }
+}
+
+/**
+ * Clear all OCR-detected vendors
+ */
+function clearAllOcrDetectedVendors() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(OCR_CFG.OCR_DETECTED_VENDORS_KEY);
+  Logger.log('Cleared all OCR tracked vendors');
+  SpreadsheetApp.getUi().alert('All OCR-detected vendor tracking has been cleared.');
 }

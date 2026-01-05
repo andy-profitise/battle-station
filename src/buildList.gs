@@ -166,16 +166,28 @@ function buildListWithGmailAndNotes() {
     r.notes = lookupNotes_(r.name, r.type, notesMaps);
   }
 
-  // PRIORITY ZONES: Detect vendors with emails
+  // PRIORITY ZONES: Detect vendors with emails or chat activity
   // 1. INBOX (highest) - vendors with emails currently in inbox
-  // 2. HOT - vendors with 00.received or recent sent emails
-  // 3. NORMAL - everything else
+  // 2. CHAT - vendors detected via OCR from Teams/Telegram/WhatsApp
+  // 3. HOT - vendors with 00.received or recent sent emails
+  // 4. NORMAL - everything else
   console.log('Detecting priority vendors...');
   const { inboxSet, hotSet } = getHotVendorsFromGmail_(all);
   console.log('Inbox vendors found:', inboxSet.size);
   console.log('Hot vendors found:', hotSet.size);
 
+  // Get OCR-detected vendors (from chat platforms)
+  let chatSet = new Set();
+  try {
+    const ocrVendors = getOcrDetectedVendors();
+    chatSet = new Set(ocrVendors.keys());
+    console.log('Chat (OCR) vendors found:', chatSet.size);
+  } catch (e) {
+    console.log('Error getting OCR vendors:', e.message);
+  }
+
   const inboxZone = [];
+  const chatZone = [];
   const hotZone = [];
   const normalZone = [];
 
@@ -183,6 +195,8 @@ function buildListWithGmailAndNotes() {
     const nameLower = r.name.toLowerCase();
     if (inboxSet.has(nameLower)) {
       inboxZone.push(r);
+    } else if (chatSet.has(nameLower)) {
+      chatZone.push(r);
     } else if (hotSet.has(nameLower)) {
       hotZone.push(r);
     } else {
@@ -190,9 +204,9 @@ function buildListWithGmailAndNotes() {
     }
   }
 
-  // Final list: Inbox at top, then hot zone, then normal zone
+  // Final list: Inbox at top, then chat zone, then hot zone, then normal zone
   // Each zone keeps same sort order as `all` (already sorted)
-  const finalList = [...inboxZone, ...hotZone, ...normalZone];
+  const finalList = [...inboxZone, ...chatZone, ...hotZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
 
