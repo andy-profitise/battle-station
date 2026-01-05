@@ -27,7 +27,15 @@ const OCR_CFG = {
   MIN_VENDOR_LENGTH: 3,
 
   // Folder for uploaded screenshots (in Google Drive)
-  UPLOADS_FOLDER_NAME: 'Battle Station OCR Uploads'
+  UPLOADS_FOLDER_NAME: 'Battle Station OCR Uploads',
+
+  // Settings sheet columns for OCR configuration (1-based)
+  // Column G: OCR Blacklist - text patterns to ignore in OCR results
+  // Column H: OCR Alias - alternate names/spellings for vendors
+  // Column I: OCR Maps To - the actual vendor name the alias maps to
+  SETTINGS_OCR_BLACKLIST_COL: 7,   // Column G
+  SETTINGS_OCR_ALIAS_COL: 8,       // Column H
+  SETTINGS_OCR_MAPS_TO_COL: 9      // Column I
 };
 
 
@@ -209,17 +217,151 @@ function getVendorList_() {
 }
 
 /**
+ * Read OCR blacklist patterns from Settings sheet (Column G)
+ * These patterns will be removed from OCR text before matching
+ *
+ * @returns {array} Array of blacklist patterns (lowercased)
+ */
+function getOcrBlacklist_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('Settings');
+  const blacklist = [];
+
+  if (!sh) return blacklist;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return blacklist;
+
+  // Check header
+  const header = String(sh.getRange(1, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL).getValue() || '').trim().toLowerCase();
+  if (!header.includes('ocr') || !header.includes('blacklist')) {
+    Logger.log('OCR Blacklist column not found in Settings (expected header in column G)');
+    return blacklist;
+  }
+
+  const values = sh.getRange(2, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL, lastRow - 1, 1).getValues().flat();
+
+  for (const v of values) {
+    const pattern = String(v || '').trim();
+    if (pattern) {
+      blacklist.push(pattern.toLowerCase());
+    }
+  }
+
+  Logger.log(`Loaded ${blacklist.length} OCR blacklist patterns`);
+  return blacklist;
+}
+
+/**
+ * Read OCR alias mappings from Settings sheet (Columns H & I)
+ * Aliases are alternate names that map to actual vendor names
+ *
+ * @returns {Map} Map of alias (lowercased) -> vendor name
+ */
+function getOcrAliases_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sh = ss.getSheetByName('Settings');
+  const aliases = new Map();
+
+  if (!sh) return aliases;
+
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return aliases;
+
+  // Check headers
+  const aliasHeader = String(sh.getRange(1, OCR_CFG.SETTINGS_OCR_ALIAS_COL).getValue() || '').trim().toLowerCase();
+  const mapsToHeader = String(sh.getRange(1, OCR_CFG.SETTINGS_OCR_MAPS_TO_COL).getValue() || '').trim().toLowerCase();
+
+  if (!aliasHeader.includes('alias') || !mapsToHeader.includes('maps')) {
+    Logger.log('OCR Alias columns not found in Settings (expected headers in columns H & I)');
+    return aliases;
+  }
+
+  const values = sh.getRange(2, OCR_CFG.SETTINGS_OCR_ALIAS_COL, lastRow - 1, 2).getValues();
+
+  for (const row of values) {
+    const alias = String(row[0] || '').trim();
+    const mapsTo = String(row[1] || '').trim();
+
+    if (alias && mapsTo) {
+      aliases.set(alias.toLowerCase(), mapsTo);
+    }
+  }
+
+  Logger.log(`Loaded ${aliases.size} OCR alias mappings`);
+  return aliases;
+}
+
+/**
+ * Apply blacklist to OCR text - remove blacklisted phrases
+ *
+ * @param {string} text - Original OCR text
+ * @param {array} blacklist - Array of patterns to remove
+ * @returns {string} Cleaned text
+ */
+function applyOcrBlacklist_(text, blacklist) {
+  if (!blacklist || blacklist.length === 0) return text;
+
+  let cleanedText = text;
+  for (const pattern of blacklist) {
+    // Create case-insensitive regex to remove pattern
+    const regex = new RegExp(escapeRegex_(pattern), 'gi');
+    cleanedText = cleanedText.replace(regex, ' ');
+  }
+
+  return cleanedText;
+}
+
+/**
+ * Escape special regex characters in a string
+ */
+function escapeRegex_(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * Find vendor matches in the extracted text
  * Uses both exact and fuzzy matching
+ * Respects blacklist and alias settings from Settings sheet
  *
  * @param {string} text - Extracted OCR text
  * @param {array} vendors - Array of vendor objects
  * @returns {array} Array of matched vendors with context
  */
 function findVendorMatches_(text, vendors) {
-  const textLower = text.toLowerCase();
+  // Load settings
+  const blacklist = getOcrBlacklist_();
+  const aliases = getOcrAliases_();
+
+  // Apply blacklist to clean the text
+  const cleanedText = applyOcrBlacklist_(text, blacklist);
+  const textLower = cleanedText.toLowerCase();
+
   const matches = [];
   const matchedNames = new Set();
+
+  // Build a lookup map for vendor info (for alias matching)
+  const vendorInfoMap = new Map();
+  for (const vendor of vendors) {
+    vendorInfoMap.set(vendor.name.toLowerCase(), vendor);
+  }
+
+  // Strategy 0: Check aliases first (highest priority - user-defined mappings)
+  for (const [alias, mapsTo] of aliases) {
+    if (textLower.includes(alias) && !matchedNames.has(mapsTo.toLowerCase())) {
+      // Look up the vendor info for the mapped name
+      const vendorInfo = vendorInfoMap.get(mapsTo.toLowerCase());
+      matchedNames.add(mapsTo.toLowerCase());
+      matches.push({
+        name: mapsTo,
+        source: vendorInfo?.source || 'alias',
+        status: vendorInfo?.status || '',
+        matchType: `alias ("${alias}")`,
+        confidence: 1.0,
+        context: extractContext_(cleanedText, alias)
+      });
+    }
+  }
 
   for (const vendor of vendors) {
     const vendorLower = vendor.name.toLowerCase();
@@ -236,7 +378,7 @@ function findVendorMatches_(text, vendors) {
         status: vendor.status,
         matchType: 'exact',
         confidence: 1.0,
-        context: extractContext_(text, vendor.name)
+        context: extractContext_(cleanedText, vendor.name)
       });
       continue;
     }
@@ -256,7 +398,7 @@ function findVendorMatches_(text, vendors) {
           status: vendor.status,
           matchType: 'partial (no suffix)',
           confidence: 0.9,
-          context: extractContext_(text, nameWithoutSuffix)
+          context: extractContext_(cleanedText, nameWithoutSuffix)
         });
         continue;
       }
@@ -281,7 +423,7 @@ function findVendorMatches_(text, vendors) {
           status: vendor.status,
           matchType: `fuzzy (${matchingWords.length} words)`,
           confidence: 0.7,
-          context: extractContext_(text, matchingWords[0])
+          context: extractContext_(cleanedText, matchingWords[0])
         });
       }
     }
@@ -940,4 +1082,68 @@ function testVendorMatching() {
   });
 
   return matches;
+}
+
+
+/************************************************************
+ * OCR SETTINGS SETUP
+ ************************************************************/
+
+/**
+ * Setup OCR columns in the Settings sheet
+ * Adds headers for OCR Blacklist, OCR Alias, and OCR Maps To columns
+ * Run this once to initialize the settings structure
+ */
+function setupOcrSettings() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName('Settings');
+
+  if (!sh) {
+    sh = ss.insertSheet('Settings');
+    Logger.log('Created Settings sheet');
+  }
+
+  // Set up OCR headers in columns G, H, I
+  const headers = [
+    ['OCR Blacklist', 'OCR Alias', 'OCR Maps To']
+  ];
+
+  // Check if headers already exist
+  const existingG = String(sh.getRange(1, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL).getValue() || '').trim();
+
+  if (existingG.toLowerCase().includes('ocr')) {
+    SpreadsheetApp.getUi().alert('OCR settings columns already exist in Settings sheet.');
+    return;
+  }
+
+  // Set headers
+  sh.getRange(1, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL, 1, 3).setValues(headers);
+  sh.getRange(1, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL, 1, 3)
+    .setFontWeight('bold')
+    .setBackground('#e8f0fe');
+
+  // Add example data
+  const exampleData = [
+    ['Meeting scheduled', 'energypal', 'EnergyPal'],
+    ['You:', 'ion solar', 'Ion Solar LLC'],
+    ['Sent from my iPhone', '', ''],
+    ['Typing...', '', '']
+  ];
+
+  sh.getRange(2, OCR_CFG.SETTINGS_OCR_BLACKLIST_COL, exampleData.length, 3).setValues(exampleData);
+
+  // Auto-resize columns
+  sh.autoResizeColumn(OCR_CFG.SETTINGS_OCR_BLACKLIST_COL);
+  sh.autoResizeColumn(OCR_CFG.SETTINGS_OCR_ALIAS_COL);
+  sh.autoResizeColumn(OCR_CFG.SETTINGS_OCR_MAPS_TO_COL);
+
+  SpreadsheetApp.getUi().alert(
+    'OCR Settings Initialized!\n\n' +
+    'Column G (OCR Blacklist): Add text patterns to ignore in OCR results\n' +
+    'Column H (OCR Alias): Add alternate vendor names/spellings\n' +
+    'Column I (OCR Maps To): The actual vendor name the alias should match\n\n' +
+    'Example entries have been added - modify as needed.'
+  );
+
+  Logger.log('OCR settings columns initialized in Settings sheet');
 }
