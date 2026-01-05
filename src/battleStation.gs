@@ -243,6 +243,7 @@ function onOpen() {
     .addSeparator()
     .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
     .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
+    .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
     .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
 
