@@ -217,6 +217,7 @@ function onOpen() {
     .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addSeparator()
+    .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
     .addToUi();
 }
