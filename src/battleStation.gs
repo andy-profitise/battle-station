@@ -4507,6 +4507,53 @@ function parseEmailDate_(dateStr) {
 }
 
 /**
+ * Format a date as MM/dd/yyyy with leading zeros
+ * @param {Date} date - The date to format
+ * @returns {string} Formatted date string (e.g., "01/05/2026")
+ */
+function formatDateWithLeadingZeros_(date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const year = date.getFullYear();
+  return `${month}/${day}/${year}`;
+}
+
+/**
+ * Generate a URL-encoded date range string for L2M reporting
+ * Format: MM/dd/yyyy - MM/dd/yyyy (URL encoded as MM/dd/yyyy%20-%20MM/dd/yyyy)
+ * @param {number} [monthsBack=2] - Number of months back for start date
+ * @returns {string} URL-encoded date range string
+ */
+function generateL2MDateRange_(monthsBack = 2) {
+  const endDate = new Date();
+  const startDate = new Date();
+  startDate.setMonth(startDate.getMonth() - monthsBack);
+
+  const startFormatted = formatDateWithLeadingZeros_(startDate);
+  const endFormatted = formatDateWithLeadingZeros_(endDate);
+
+  // URL encode the space-dash-space separator
+  return `${startFormatted}%20-%20${endFormatted}`;
+}
+
+/**
+ * Generate L2M Reporting link for a vendor
+ * @param {boolean} isBuyer - True if buyer, false if affiliate
+ * @param {string} vendorId - The partner ID (for buyers) or webmaster ID (for affiliates)
+ * @param {number} [monthsBack=2] - Number of months back for date range
+ * @returns {string} The full L2M report URL
+ */
+function generateL2MReportLink_(isBuyer, vendorId, monthsBack = 2) {
+  const dateRange = generateL2MDateRange_(monthsBack);
+
+  if (isBuyer) {
+    return `https://cp.profitise.com/p2/report/summarypartnerbypartner/index?searchForm[pr.productType]=1&searchForm[productId]=&searchForm[date]=${dateRange}&searchForm[partnerId]=${vendorId}`;
+  } else {
+    return `https://cp.profitise.com/p2/report/summarypublisherbywm/index?searchForm[pr.productType]=1&searchForm[r.date]=${dateRange}&searchForm[productId]=&searchForm[webmasterId]=${vendorId}`;
+  }
+}
+
+/**
  * Calculate business hours elapsed since a given date
  * Business hours: Monday-Friday, 9 AM - 5 PM Pacific
  */
