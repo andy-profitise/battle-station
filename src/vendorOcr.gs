@@ -603,6 +603,7 @@ function processStructuredText(textData, sourceName) {
 
 /**
  * Extract names from JSON structure (handles various chat export formats)
+ * Only extracts from name/sender fields, NOT from message content
  *
  * @param {object} jsonData - Parsed JSON data
  * @returns {array} Array of extracted names
@@ -620,35 +621,26 @@ function extractNamesFromJson_(jsonData) {
     }
 
     if (typeof obj === 'object') {
-      // Look for common name field patterns
+      // Look for common name field patterns (NOT message content)
       const nameFields = ['name', 'Name', 'sender', 'from', 'contact', 'participant', 'user', 'author'];
 
       for (const field of nameFields) {
         if (obj[field] && typeof obj[field] === 'string') {
           const name = obj[field].trim();
-          // Skip common non-vendor names
-          if (name && !isCommonNonVendorName_(name)) {
+          // Skip common non-vendor names and require minimum length
+          if (name && name.length >= 3 && !isCommonNonVendorName_(name)) {
             names.add(name);
           }
         }
       }
 
-      // Also check preview/message text for potential vendor mentions
-      const textFields = ['preview', 'message', 'text', 'body', 'content'];
-      for (const field of textFields) {
-        if (obj[field] && typeof obj[field] === 'string') {
-          // Extract capitalized words that might be vendor names
-          const potentialNames = obj[field].match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*/g) || [];
-          potentialNames.forEach(n => {
-            if (!isCommonNonVendorName_(n)) {
-              names.add(n);
-            }
-          });
+      // Recurse into nested objects (but skip preview/message content)
+      const skipFields = ['preview', 'message', 'text', 'body', 'content'];
+      for (const [key, val] of Object.entries(obj)) {
+        if (!skipFields.includes(key)) {
+          extractNames(val);
         }
       }
-
-      // Recurse into nested objects
-      Object.values(obj).forEach(val => extractNames(val));
     }
   };
 
@@ -705,6 +697,11 @@ function extractNamesFromPlainText_(text) {
  * @returns {boolean} True if should skip
  */
 function isCommonNonVendorName_(name) {
+  const trimmed = name.trim();
+
+  // Skip very short names
+  if (trimmed.length < 3) return true;
+
   const skipPatterns = [
     /^you$/i,
     /^me$/i,
@@ -718,14 +715,23 @@ function isCommonNonVendorName_(name) {
     /^recent$/i,
     /^(hi|hello|hey|thanks|thank you|bye|goodbye)$/i,
     /^rip$/i,
-    /^(gm|good morning|good afternoon|good evening)$/i
+    /^(gm|good morning|good afternoon|good evening)$/i,
+    // Skip "Name <> Name" internal chat patterns
+    /^.+\s*<>\s*.+$/i,
+    // Skip "Internal" patterns
+    /^=?internal/i,
+    // Skip "Group Chat" variations
+    /group$/i,
+    // Skip common ZP internal patterns
+    /^(zp|profitise)\s+(events|team)/i
   ];
 
-  return skipPatterns.some(pattern => pattern.test(name.trim()));
+  return skipPatterns.some(pattern => pattern.test(trimmed));
 }
 
 /**
  * Find vendor matches from a list of extracted names
+ * Uses strict matching - extracted name must contain vendor name (not vice versa)
  *
  * @param {array} extractedNames - Names extracted from text/JSON
  * @param {array} vendors - Vendor list from spreadsheet
@@ -734,6 +740,7 @@ function isCommonNonVendorName_(name) {
 function findVendorMatchesFromNames_(extractedNames, vendors) {
   // Load settings
   const aliases = getOcrAliases_();
+  const blacklist = getOcrBlacklist_();
 
   const matches = [];
   const matchedNames = new Set();
@@ -744,9 +751,15 @@ function findVendorMatchesFromNames_(extractedNames, vendors) {
     vendorInfoMap.set(vendor.name.toLowerCase(), vendor);
   }
 
+  // Filter out blacklisted names
+  const filteredNames = extractedNames.filter(name => {
+    const nameLower = name.toLowerCase();
+    return !blacklist.some(bl => nameLower.includes(bl));
+  });
+
   // Check aliases first
   for (const [alias, mapsTo] of aliases) {
-    for (const extracted of extractedNames) {
+    for (const extracted of filteredNames) {
       if (extracted.toLowerCase().includes(alias) && !matchedNames.has(mapsTo.toLowerCase())) {
         const vendorInfo = vendorInfoMap.get(mapsTo.toLowerCase());
         matchedNames.add(mapsTo.toLowerCase());
@@ -763,7 +776,8 @@ function findVendorMatchesFromNames_(extractedNames, vendors) {
   }
 
   // Check each extracted name against vendors
-  for (const extracted of extractedNames) {
+  // IMPORTANT: Only match if extracted name CONTAINS vendor name (not reverse)
+  for (const extracted of filteredNames) {
     const extractedLower = extracted.toLowerCase();
 
     for (const vendor of vendors) {
@@ -771,8 +785,11 @@ function findVendorMatchesFromNames_(extractedNames, vendors) {
 
       if (matchedNames.has(vendorLower)) continue;
 
-      // Exact match
-      if (extractedLower === vendorLower || extractedLower.includes(vendorLower) || vendorLower.includes(extractedLower)) {
+      // Require vendor name to be at least 4 chars for substring matching
+      const minMatchLength = 4;
+
+      // Exact match (case-insensitive)
+      if (extractedLower === vendorLower) {
         matchedNames.add(vendorLower);
         matches.push({
           name: vendor.name,
@@ -785,13 +802,26 @@ function findVendorMatchesFromNames_(extractedNames, vendors) {
         continue;
       }
 
-      // Match without suffix
+      // Extracted name contains vendor name (e.g., "Profitise | Astrafuse" contains "Astrafuse")
+      if (vendorLower.length >= minMatchLength && extractedLower.includes(vendorLower)) {
+        matchedNames.add(vendorLower);
+        matches.push({
+          name: vendor.name,
+          source: vendor.source,
+          status: vendor.status,
+          matchType: 'contains',
+          confidence: 0.95,
+          context: `Matched from: "${extracted}"`
+        });
+        continue;
+      }
+
+      // Match without suffix (e.g., "Ion Solar" matches "Ion Solar LLC")
       const vendorWithoutSuffix = vendor.name
         .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.|L\.?L\.?C\.?)$/i, '')
         .trim().toLowerCase();
 
-      if (vendorWithoutSuffix.length >= 3 &&
-          (extractedLower.includes(vendorWithoutSuffix) || vendorWithoutSuffix.includes(extractedLower))) {
+      if (vendorWithoutSuffix.length >= minMatchLength && extractedLower.includes(vendorWithoutSuffix)) {
         matchedNames.add(vendorLower);
         matches.push({
           name: vendor.name,
