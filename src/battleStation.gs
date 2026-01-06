@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2025-12-31 09:34AM PST
+ * Last Updated: 2026-01-06 10:00AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2025-12-31 10:22AM PST',
+  CODE_VERSION: '2026-01-06 10:00AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -9154,6 +9154,7 @@ function removePendingArchiveThread_(threadId) {
 /**
  * Check and archive threads that were responded to via Email Response
  * Called during email refresh - archives threads where Last=ME
+ * Also swaps waiting/me label to waiting/customer
  * Returns true if any threads were archived (to trigger refresh)
  */
 function checkAndArchivePendingThreads_() {
@@ -9163,6 +9164,10 @@ function checkAndArchivePendingThreads_() {
   Logger.log(`Checking ${pendingIds.length} pending archive threads...`);
   const myEmail = Session.getActiveUser().getEmail().toLowerCase();
   let archivedCount = 0;
+
+  // Get labels for swap (02.waiting/me → 02.waiting/customer)
+  const waitingMeLabel = GmailApp.getUserLabelByName('02.waiting/me');
+  const waitingCustomerLabel = GmailApp.getUserLabelByName('02.waiting/customer');
 
   for (const threadId of pendingIds) {
     try {
@@ -9182,6 +9187,17 @@ function checkAndArchivePendingThreads_() {
       // Check if I sent the last message
       if (lastSender.includes(myEmail)) {
         Logger.log(`Archiving thread ${threadId} - Last sender is ME`);
+
+        // Swap labels: remove waiting/me, add waiting/customer
+        if (waitingMeLabel) {
+          thread.removeLabel(waitingMeLabel);
+          Logger.log(`Removed 02.waiting/me label from thread ${threadId}`);
+        }
+        if (waitingCustomerLabel) {
+          thread.addLabel(waitingCustomerLabel);
+          Logger.log(`Added 02.waiting/customer label to thread ${threadId}`);
+        }
+
         thread.moveToArchive();
         removePendingArchiveThread_(threadId);
         archivedCount++;
@@ -9194,7 +9210,7 @@ function checkAndArchivePendingThreads_() {
   }
 
   if (archivedCount > 0) {
-    Logger.log(`Archived ${archivedCount} threads`);
+    Logger.log(`Archived ${archivedCount} threads (labels swapped to waiting/customer)`);
     SpreadsheetApp.getActive().toast(`Archived ${archivedCount} sent email(s)`, '📬 Auto-Archive', 3);
   }
 
