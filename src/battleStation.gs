@@ -5697,15 +5697,34 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
       .replace(/## (.*?)<br>/g, '<h3>$1</h3>')
       .replace(/### (.*?)<br>/g, '<h4>$1</h4>');
     
+    // Build email options for the dropdown
+    const emailOptions = emailData.map((e, i) => {
+      const shortSubject = e.subject.length > 50 ? e.subject.substring(0, 50) + '...' : e.subject;
+      return `<option value="${i}">${i + 1}. ${shortSubject} (${e.date})</option>`;
+    }).join('');
+
+    // Store analysis context for response generation
+    const analysisContext = {
+      vendor: vendor,
+      emailData: emailData.map(e => ({
+        threadId: e.threadId,
+        subject: e.subject,
+        date: e.date,
+        content: e.content
+      })),
+      analysisContent: response.content
+    };
+    PropertiesService.getUserProperties().setProperty('emailAnalysisContext', JSON.stringify(analysisContext));
+
     const htmlContent = `
       <style>
         body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
         h2 { color: #4a86e8; margin-top: 0; margin-bottom: 10px; }
         h3 { color: #4a86e8; margin-top: 20px; margin-bottom: 10px; border-bottom: 2px solid #4a86e8; padding-bottom: 5px; }
         h4 { color: #666; margin-top: 12px; margin-bottom: 5px; }
-        .email-link { 
-          color: #1a73e8; 
-          text-decoration: none; 
+        .email-link {
+          color: #1a73e8;
+          text-decoration: none;
           font-weight: bold;
           font-size: 14px;
           display: inline-block;
@@ -5716,15 +5735,87 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
         }
         .email-link:hover { background: #d0e1fd; text-decoration: none; }
         .date { color: #888; font-size: 11px; }
-        .content { background: #fafafa; padding: 15px; border-radius: 5px; }
+        .content { background: #fafafa; padding: 15px; border-radius: 5px; max-height: 350px; overflow-y: auto; }
         strong { color: #333; }
+        .write-response-section {
+          margin-top: 20px;
+          padding: 15px;
+          background: #e8f4e8;
+          border-radius: 8px;
+          border: 1px solid #c8e6c9;
+        }
+        .write-response-section h3 {
+          color: #2e7d32;
+          border-bottom-color: #2e7d32;
+          margin-top: 0;
+        }
+        .form-row { margin-bottom: 12px; }
+        .form-label { font-size: 12px; color: #555; margin-bottom: 4px; display: block; }
+        .form-select, .form-input {
+          width: 100%;
+          padding: 8px 10px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          font-size: 13px;
+          box-sizing: border-box;
+        }
+        .form-select:focus, .form-input:focus { border-color: #2e7d32; outline: none; }
+        .btn-write {
+          background: #2e7d32;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 4px;
+          font-size: 14px;
+          cursor: pointer;
+        }
+        .btn-write:hover { background: #1b5e20; }
+        .btn-write:disabled { background: #a5d6a7; cursor: not-allowed; }
+        .loading-msg { color: #666; font-style: italic; margin-top: 10px; display: none; }
       </style>
       <h2>🤖 Claude Analysis: ${vendor}</h2>
       <p><em>Analyzed ${emailData.length} unsnoozed email threads</em></p>
       <div class="content">${formattedContent}</div>
+
+      <div class="write-response-section">
+        <h3>✍️ Write Response</h3>
+        <div class="form-row">
+          <label class="form-label">Select email to respond to:</label>
+          <select id="emailSelect" class="form-select">
+            ${emailOptions}
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Directions (optional):</label>
+          <input type="text" id="directions" class="form-input" placeholder="e.g., schedule a call, follow up on payment, ask about volume...">
+        </div>
+        <button id="writeBtn" class="btn-write" onclick="doWriteResponse()">Generate Response</button>
+        <div id="loadingMsg" class="loading-msg">Generating response...</div>
+      </div>
+
+      <script>
+        function doWriteResponse() {
+          var emailIndex = document.getElementById('emailSelect').value;
+          var directions = document.getElementById('directions').value.trim();
+
+          document.getElementById('writeBtn').disabled = true;
+          document.getElementById('loadingMsg').style.display = 'block';
+
+          google.script.run
+            .withSuccessHandler(function() {
+              google.script.host.close();
+            })
+            .withFailureHandler(function(err) {
+              alert('Error: ' + (err.message || err));
+              document.getElementById('writeBtn').disabled = false;
+              document.getElementById('loadingMsg').style.display = 'none';
+            })
+            .generateResponseFromAnalysis(parseInt(emailIndex), directions);
+        }
+      </script>
     `;
-    
-    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(600);
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(700);
     SpreadsheetApp.getUi().showModalDialog(html, `Claude Analysis: ${vendor}`);
     
     ss.toast('Analysis complete!', '✅ Done', 3);
@@ -5777,6 +5868,78 @@ function callClaudeAPI_(prompt, apiKey) {
   } catch (e) {
     return { error: e.message };
   }
+}
+
+/**
+ * Generate email response from analysis context (no underscore - callable from client)
+ * Called from the analysis dialog when user clicks "Generate Response"
+ * Uses the stored analysis context to inform the response
+ */
+function generateResponseFromAnalysis(emailIndex, directions) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  // Get stored analysis context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailAnalysisContext');
+  if (!contextJson) {
+    throw new Error('No analysis context found. Please run the analysis again.');
+  }
+
+  const analysisContext = JSON.parse(contextJson);
+  const selectedEmail = analysisContext.emailData[emailIndex];
+
+  if (!selectedEmail) {
+    throw new Error('Selected email not found in analysis context.');
+  }
+
+  ss.toast('Generating response with analysis context...', '🤖 AI Working', 5);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(selectedEmail.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Get thread content and detect last sender
+  const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+  // Build enhanced directions that include the analysis context
+  const analysisNote = `CONTEXT FROM EMAIL ANALYSIS:
+The user just analyzed their emails for vendor "${analysisContext.vendor}". Here's what the analysis found:
+---
+${analysisContext.analysisContent}
+---
+
+The user selected email #${emailIndex + 1} (Subject: "${selectedEmail.subject}") to respond to.`;
+
+  const fullDirections = directions
+    ? `${analysisNote}\n\nUser's specific directions: ${directions}`
+    : analysisNote;
+
+  // Generate response using the existing email generator
+  const responseBody = generateEmailWithClaude_(
+    threadContent,
+    selectedEmail.subject,
+    'Analysis-Based Response',
+    fullDirections,
+    lastSenderIsMe
+  );
+
+  // Store context for edit/rerun capability (same pattern as other email responses)
+  const revisionContext = {
+    threadId: selectedEmail.threadId,
+    responseType: 'Analysis-Based Response',
+    originalDirections: fullDirections,
+    previousResponse: responseBody,
+    analysisContext: analysisContext  // Keep analysis context for revisions
+  };
+  PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+  // Clean up the analysis context
+  PropertiesService.getUserProperties().deleteProperty('emailAnalysisContext');
+
+  // Show the draft preview dialog with edit/rerun capability
+  showDraftPreviewDialog_(responseBody, selectedEmail.threadId);
 }
 
 /**
