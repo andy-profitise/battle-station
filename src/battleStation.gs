@@ -8875,14 +8875,35 @@ function createDraftAndGetUrl_(thread, responseBody) {
   const draft = draftReply.getMessage();
   const draftId = draftReply.getId();
 
-  // Step 2: Get threading headers from the draft (these were set by createDraftReplyAll)
-  const inReplyTo = draft.getHeader('In-Reply-To') || '';
-  const references = draft.getHeader('References') || '';
+  // Step 2: Get threading headers from the ACTUAL messages in the thread (not the draft)
+  // Draft messages may not have headers accessible via getHeader(), so we get them from the real messages
+  // This is CRITICAL for proper email threading - without these headers, Gmail creates a new thread
+
+  // Get Message-ID from the last message - this becomes our In-Reply-To
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+
+  // Build References header from all messages in the thread
+  // References should contain all Message-IDs in the conversation chain
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) {
+      allMessageIds.push(msgId);
+    }
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Use the last message's ID for In-Reply-To
+  const inReplyTo = lastMessageId;
+  const references = referencesHeader;
+
   Logger.log(`Thread ID: ${thread.getId()}`);
   Logger.log(`Thread first subject: ${thread.getFirstMessageSubject()}`);
   Logger.log(`Draft subject: ${draft.getSubject()}`);
+  Logger.log(`Last message Message-ID: ${lastMessageId || '(empty)'}`);
   Logger.log(`Threading - In-Reply-To: ${inReplyTo || '(empty)'}`);
   Logger.log(`Threading - References: ${references || '(empty)'}`);
+  Logger.log(`Total messages in thread: ${messages.length}`);
 
   // Step 3: Get the draft via Gmail API
   const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
@@ -10075,9 +10096,31 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
       const draftMsg = draftReply.getMessage();
       const draftId = draftReply.getId();
 
-      // Get threading headers
-      const inReplyTo = draftMsg.getHeader('In-Reply-To') || '';
-      const references = draftMsg.getHeader('References') || '';
+      // Get threading headers from the ACTUAL messages in the thread (not the draft)
+      // Draft messages may not have headers accessible via getHeader(), so we get them from the real messages
+      // This is CRITICAL for proper email threading - without these headers, Gmail creates a new thread
+
+      // Get Message-ID from the last message - this becomes our In-Reply-To
+      const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+
+      // Build References header from all messages in the thread
+      const allMessageIds = [];
+      for (const msg of messages) {
+        const msgId = msg.getHeader('Message-ID');
+        if (msgId) {
+          allMessageIds.push(msgId);
+        }
+      }
+      const referencesHeader = allMessageIds.join(' ');
+
+      // Use the last message's ID for In-Reply-To
+      const inReplyTo = lastMessageId;
+      const references = referencesHeader;
+
+      Logger.log(`Canned Response - Threading headers:`);
+      Logger.log(`  In-Reply-To: ${inReplyTo || '(empty)'}`);
+      Logger.log(`  References: ${references || '(empty)'}`);
+      Logger.log(`  Total messages in thread: ${messages.length}`);
 
       // Get subject from thread
       let subject = thread.getFirstMessageSubject();
