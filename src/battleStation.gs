@@ -60,6 +60,7 @@ const BS_CFG = {
   // Row highlight colors for skip/traverse
   COLOR_ROW_CHANGED: '#c8e6c9',   // Green - vendor has changes
   COLOR_ROW_SKIPPED: '#fff9c4',   // Yellow - vendor unchanged
+  COLOR_ROW_CURRENT: '#b3e5fc',   // Light blue - currently viewing
 
   // Section styling
   COLOR_SECTION_BG: '#fafafa',    // Light gray for section backgrounds
@@ -505,22 +506,39 @@ function loadVendorData(vendorIndex, options) {
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
   const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
   const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
+  const rowColor = options.rowColor || BS_CFG.COLOR_ROW_CURRENT;  // Color for List row highlighting
   // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
-  
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
     throw new Error('Required sheets not found');
   }
-  
+
+  // Get previous vendor index before we update, so we can clear its row highlight
+  const previousIndex = getCurrentVendorIndex_();
+
   const totalVendors = listSh.getLastRow() - 1;
-  
+
   if (vendorIndex < 1) vendorIndex = 1;
   if (vendorIndex > totalVendors) vendorIndex = totalVendors;
-  
+
   const listRow = vendorIndex + 1;
+
+  // Clear previous vendor's row highlight (if different from new one)
+  if (previousIndex && previousIndex !== vendorIndex) {
+    const prevListRow = previousIndex + 1;
+    const numCols = listSh.getLastColumn();
+    if (prevListRow > 1 && prevListRow <= totalVendors + 1) {
+      listSh.getRange(prevListRow, 1, 1, numCols).setBackground(null);
+    }
+  }
+
+  // Highlight current vendor's row in List sheet
+  setListRowColor_(listSh, listRow, rowColor);
+
   const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
   
   const vendor = vendorData[BS_CFG.L_VENDOR] || '';
@@ -8169,8 +8187,7 @@ function skipToNextChanged(trackComeback) {
 
         if (changeResult.hasChanges) {
           ss.toast('');
-          loadVendorData(currentIdx, { forceChanged: true });
-          setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
+          loadVendorData(currentIdx, { forceChanged: true, rowColor: BS_CFG.COLOR_ROW_CHANGED });
           if (skippedCount > 0) {
             SpreadsheetApp.getUi().alert(`Resumed and skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
           }
@@ -8291,8 +8308,7 @@ function skipToNextChanged(trackComeback) {
       const changeLabel = formatChangeType_(changeResult.changeType);
       ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
 
-      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
-      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
+      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType, rowColor: BS_CFG.COLOR_ROW_CHANGED });
       // WHAT CHANGED section now shows the details, no need for dialog
       if (trackComeback) checkComeback_();
       return;
