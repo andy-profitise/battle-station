@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-06 10:45PM PST',
+  CODE_VERSION: '2026-01-07 11:15AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
