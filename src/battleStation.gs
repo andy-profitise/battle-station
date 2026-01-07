@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-06 10:00AM PST
+ * Last Updated: 2026-01-06 10:45PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -14,13 +14,13 @@
  * - Analyze emails with Claude AI (inline links)
  * - Snooze vendors until a specific date (skipped unless checksum changes)
  *
- * UPDATED: Added vendor snooze feature with date display in banner
+ * UPDATED: Added Email Contacts dialog with Claude AI assistance
  * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
  ************************************************************/
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-06 10:00AM PST',
+  CODE_VERSION: '2026-01-06 10:45PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -216,14 +216,6 @@ const BS_CFG = {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  // Create Email Responses submenu
-  const emailResponsesMenu = ui.createMenu('✉️ Email Responses')
-    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
-    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
-    .addSeparator()
-    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog');
-
   // Main A(I)DEN menu - setup, sync, actions
   ui.createMenu('⚡ A(I)DEN')
     .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
@@ -237,7 +229,6 @@ function onOpen() {
     .addItem('💤 Snooze Vendor...', 'battleStationSnoozeVendor')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
-    .addSubMenu(emailResponsesMenu)
     .addToUi();
 
   // Refresh menu - refresh current vendor view
@@ -280,6 +271,11 @@ function onOpen() {
     .addSeparator()
     .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
     .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
+    .addSeparator()
+    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
+    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
     .addToUi();
 
   // Chat OCR menu - find vendors from chat screenshots/text
