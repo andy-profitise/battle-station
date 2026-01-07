@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 12:20PM PST
+ * Last Updated: 2026-01-07 12:35PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 12:20PM PST',
+  CODE_VERSION: '2026-01-07 12:35PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -72,6 +72,8 @@ const BS_CFG = {
   
   // Overdue threshold: emails with "02.waiting/customer" or "02.waiting/me" older than this many business hours
   OVERDUE_BUSINESS_HOURS: 16,
+  // Manual overdue label - emails with this label are always treated as overdue
+  MANUAL_OVERDUE_LABEL: '03.overdue/manual',
 
   
   // API Keys
@@ -281,6 +283,9 @@ function onOpen() {
     .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
+    .addSeparator()
+    .addItem('🔴 Mark Email(s) as Overdue', 'markEmailsAsOverdue')
+    .addItem('✅ Clear Overdue from Email(s)', 'clearOverdueFromEmails')
     .addToUi();
 
   // Chat OCR menu - find vendors from chat screenshots/text
@@ -7146,8 +7151,8 @@ function generateVendorLabelChecksum_(gmailLink) {
 
 /**
  * Check if an email is overdue:
- * - REQUIRES 01.priority/1 label (non-priority emails are never overdue)
- * - Priority + any waiting label (customer, me, phonexa) + >16 business hours
+ * - Manual override: has 03.overdue/manual label (always overdue regardless of other conditions)
+ * - Auto: REQUIRES 01.priority/1 label + any waiting label + >16 business hours
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
@@ -7155,7 +7160,10 @@ function isEmailOverdue_(email) {
   // Snoozed emails are never overdue
   if (email.isSnoozed) return false;
 
-  // MUST have priority label - non-priority emails are never overdue
+  // Manual override - if marked manually as overdue, always return true
+  if (email.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL)) return true;
+
+  // Auto-detection requires priority label - non-priority emails are never auto-overdue
   if (!email.labels.includes('01.priority/1')) return false;
 
   // Parse the email date
@@ -7533,6 +7541,252 @@ function battleStationSnoozeVendor() {
   bsSh.getRange(2, 1).setValue(`${baseDisplay} 💤${displayDate}`);
 
   ss.toast(`Snoozed "${vendor}" until ${displayDate}`, '💤 Snoozed', 3);
+}
+
+/**
+ * Mark selected email threads as manually overdue
+ * Shows a dialog to select which emails to mark
+ */
+function markEmailsAsOverdue() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('A(I)DEN sheet not found.');
+    return;
+  }
+
+  // Get current vendor
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
+  if (!vendor) {
+    ui.alert('No vendor currently displayed.');
+    return;
+  }
+
+  ss.toast('Loading emails...', '🔴 Mark Overdue', 2);
+
+  // Get emails for this vendor
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const currentIdx = getCurrentVendorIndex_();
+  const listRow = currentIdx + 1;
+  const emails = getEmailsForVendor_(vendor, listRow) || [];
+
+  if (emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  // Filter to emails that aren't already manually overdue
+  const eligibleEmails = emails.filter(e => !e.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL));
+
+  if (eligibleEmails.length === 0) {
+    ui.alert('All emails are already marked as overdue.');
+    return;
+  }
+
+  // Build selection dialog
+  const html = buildOverdueSelectionDialog_(eligibleEmails, 'mark');
+  const dialog = HtmlService.createHtmlOutput(html)
+    .setWidth(600)
+    .setHeight(400);
+  ui.showModalDialog(dialog, '🔴 Mark Emails as Overdue');
+}
+
+/**
+ * Clear manual overdue label from selected emails
+ */
+function clearOverdueFromEmails() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('A(I)DEN sheet not found.');
+    return;
+  }
+
+  // Get current vendor
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
+  if (!vendor) {
+    ui.alert('No vendor currently displayed.');
+    return;
+  }
+
+  ss.toast('Loading emails...', '✅ Clear Overdue', 2);
+
+  // Get emails for this vendor
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const currentIdx = getCurrentVendorIndex_();
+  const listRow = currentIdx + 1;
+  const emails = getEmailsForVendor_(vendor, listRow) || [];
+
+  if (emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  // Filter to emails that have the manual overdue label
+  const overdueEmails = emails.filter(e => e.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL));
+
+  if (overdueEmails.length === 0) {
+    ui.alert('No emails are manually marked as overdue.');
+    return;
+  }
+
+  // Build selection dialog
+  const html = buildOverdueSelectionDialog_(overdueEmails, 'clear');
+  const dialog = HtmlService.createHtmlOutput(html)
+    .setWidth(600)
+    .setHeight(400);
+  ui.showModalDialog(dialog, '✅ Clear Overdue from Emails');
+}
+
+/**
+ * Build HTML dialog for selecting emails to mark/clear overdue
+ */
+function buildOverdueSelectionDialog_(emails, action) {
+  const actionLabel = action === 'mark' ? 'Mark as Overdue' : 'Clear Overdue';
+  const buttonColor = action === 'mark' ? '#d32f2f' : '#388e3c';
+
+  let emailRows = '';
+  for (const email of emails) {
+    const subject = escapeHtml_(email.subject || '(No Subject)');
+    const date = escapeHtml_(email.date || '');
+    const threadId = email.threadId;
+    const truncSubject = subject.length > 50 ? subject.substring(0, 47) + '...' : subject;
+
+    emailRows += `
+      <tr>
+        <td><input type="checkbox" name="email" value="${threadId}" checked></td>
+        <td title="${subject}">${truncSubject}</td>
+        <td>${date}</td>
+      </tr>
+    `;
+  }
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 10px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f5f5f5; }
+        .actions { margin-top: 15px; text-align: right; }
+        button { padding: 8px 16px; margin-left: 8px; cursor: pointer; }
+        .primary { background: ${buttonColor}; color: white; border: none; border-radius: 4px; }
+        .cancel { background: #9e9e9e; color: white; border: none; border-radius: 4px; }
+        .select-all { margin-bottom: 10px; }
+      </style>
+    </head>
+    <body>
+      <div class="select-all">
+        <label><input type="checkbox" id="selectAll" checked onchange="toggleAll()"> Select All</label>
+      </div>
+      <table>
+        <tr>
+          <th width="30"></th>
+          <th>Subject</th>
+          <th width="120">Date</th>
+        </tr>
+        ${emailRows}
+      </table>
+      <div class="actions">
+        <button class="cancel" onclick="google.script.host.close()">Cancel</button>
+        <button class="primary" onclick="submit()">${actionLabel}</button>
+      </div>
+      <script>
+        function toggleAll() {
+          const checked = document.getElementById('selectAll').checked;
+          document.querySelectorAll('input[name="email"]').forEach(cb => cb.checked = checked);
+        }
+        function submit() {
+          const selected = [];
+          document.querySelectorAll('input[name="email"]:checked').forEach(cb => selected.push(cb.value));
+          if (selected.length === 0) {
+            alert('Please select at least one email.');
+            return;
+          }
+          google.script.run
+            .withSuccessHandler(() => google.script.host.close())
+            .withFailureHandler(err => alert('Error: ' + err.message))
+            .${action === 'mark' ? 'applyManualOverdueLabel_' : 'removeManualOverdueLabel_'}(selected);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Apply manual overdue label to selected thread IDs
+ */
+function applyManualOverdueLabel_(threadIds) {
+  const ss = SpreadsheetApp.getActive();
+  ss.toast(`Marking ${threadIds.length} email(s) as overdue...`, '🔴 Overdue', -1);
+
+  // Get or create the label
+  let label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+  if (!label) {
+    label = GmailApp.createLabel(BS_CFG.MANUAL_OVERDUE_LABEL);
+    Logger.log(`Created label: ${BS_CFG.MANUAL_OVERDUE_LABEL}`);
+  }
+
+  let count = 0;
+  for (const threadId of threadIds) {
+    try {
+      const thread = GmailApp.getThreadById(threadId);
+      if (thread) {
+        thread.addLabel(label);
+        count++;
+      }
+    } catch (e) {
+      Logger.log(`Error adding label to thread ${threadId}: ${e.message}`);
+    }
+  }
+
+  ss.toast(`Marked ${count} email(s) as overdue`, '🔴 Done', 3);
+
+  // Hard refresh to show the changes
+  Utilities.sleep(500);
+  battleStationHardRefresh();
+}
+
+/**
+ * Remove manual overdue label from selected thread IDs
+ */
+function removeManualOverdueLabel_(threadIds) {
+  const ss = SpreadsheetApp.getActive();
+  ss.toast(`Clearing overdue from ${threadIds.length} email(s)...`, '✅ Clear', -1);
+
+  const label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+  if (!label) {
+    ss.toast('Manual overdue label not found', '⚠️ Warning', 3);
+    return;
+  }
+
+  let count = 0;
+  for (const threadId of threadIds) {
+    try {
+      const thread = GmailApp.getThreadById(threadId);
+      if (thread) {
+        thread.removeLabel(label);
+        count++;
+      }
+    } catch (e) {
+      Logger.log(`Error removing label from thread ${threadId}: ${e.message}`);
+    }
+  }
+
+  ss.toast(`Cleared overdue from ${count} email(s)`, '✅ Done', 3);
+
+  // Hard refresh to show the changes
+  Utilities.sleep(500);
+  battleStationHardRefresh();
 }
 
 /**
