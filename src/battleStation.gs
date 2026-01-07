@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 12:15PM PST
+ * Last Updated: 2026-01-07 12:20PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 12:15PM PST',
+  CODE_VERSION: '2026-01-07 12:20PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -5331,7 +5331,7 @@ function battleStationHardestRefresh() {
     return;
   }
 
-  ss.toast('Clearing ALL caches (sheet + script)...', '💥 Hardest Refresh', 2);
+  ss.toast('Clearing ALL caches...', '💥 Hardest Refresh', 2);
 
   // Clear the BS Cache sheet (box, gdrive, airtable, monday_items, monday_tasks, etc.)
   clearBSCache_();
@@ -5342,7 +5342,16 @@ function battleStationHardestRefresh() {
 
   Logger.log('Hardest Refresh: All caches cleared (BS Cache sheet + Script Cache)');
 
-  ss.toast('All caches cleared, refreshing...', '💥 Hardest Refresh', 2);
+  // Re-fetch batch data to repopulate caches
+  ss.toast('Refetching monday.com tasks...', '💥 Hardest Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Hardest Refresh: Refetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refetching calendar events...', '💥 Hardest Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Hardest Refresh: Refetched ${events.length} calendar events`);
+
+  ss.toast('All caches refreshed, loading vendor...', '💥 Hardest Refresh', 2);
 
   const currentIndex = getCurrentVendorIndex_();
   loadVendorData(currentIndex || 1, { useCache: false });
