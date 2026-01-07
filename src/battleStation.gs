@@ -527,12 +527,17 @@ function loadVendorData(vendorIndex, options) {
 
   const listRow = vendorIndex + 1;
 
-  // Clear previous vendor's row highlight (if different from new one)
+  // Clear previous vendor's row highlight only if it's the "current" color (blue)
+  // Don't clear green/yellow colors from skip operations
   if (previousIndex && previousIndex !== vendorIndex) {
     const prevListRow = previousIndex + 1;
     const numCols = listSh.getLastColumn();
     if (prevListRow > 1 && prevListRow <= totalVendors + 1) {
-      listSh.getRange(prevListRow, 1, 1, numCols).setBackground(null);
+      const prevBg = listSh.getRange(prevListRow, 1).getBackground();
+      // Only clear if it's the "current" blue color, not green/yellow from skip
+      if (prevBg === BS_CFG.COLOR_ROW_CURRENT) {
+        listSh.getRange(prevListRow, 1, 1, numCols).setBackground(null);
+      }
     }
   }
 
