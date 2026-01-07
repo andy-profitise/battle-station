@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 12:45PM PST
+ * Last Updated: 2026-01-07 12:50PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 12:45PM PST',
+  CODE_VERSION: '2026-01-07 12:50PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -298,11 +298,6 @@ function onOpen() {
   // Tasks menu - update monday.com task statuses
   ui.createMenu('📋 Tasks')
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
-    .addSeparator()
-    .addItem('⏳ Set to: Waiting on Phonexa', 'setTaskStatusWaitingPhonexa')
-    .addItem('👤 Set to: Waiting on Client', 'setTaskStatusWaitingClient')
-    .addItem('🏢 Set to: Waiting on Profitise', 'setTaskStatusWaitingProfitise')
-    .addItem('✅ Set to: Done', 'setTaskStatusDone')
     .addToUi();
 }
 
@@ -13876,7 +13871,7 @@ function buildTaskStatusDialogHtml_(vendor, tasks) {
 
     return `
       <tr class="${rowClass}">
-        <td><input type="checkbox" name="task_${idx}" value="${task.id}" ${checkedAttr}></td>
+        <td><input type="checkbox" name="task_${idx}" value="${task.itemId}" ${checkedAttr}></td>
         <td class="task-name">${escapeHtml_(task.subject)}</td>
         <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
       </tr>
