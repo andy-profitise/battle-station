@@ -126,7 +126,10 @@ const BS_CFG = {
 
   // Add to BS_CFG:
   TASKS_PROJECT_COLUMN: 'board_relation_mkqbg3mb',
-  
+
+  // monday.com termColumns parameter for task links (required for search to work)
+  MONDAY_TERM_COLUMNS: '&termColumns=XQAAAAIHAQAAAAAAAABBKoMjDDqyANxrovq8XKyGwNnH_qlGnejuun9f58me3bIkQlIN-udrv_3l68n9913YtoUdByP1TEKuott7juTxyA1A3XyP-yDcTWiDbM6HgAGo7IMFxfsbtqtRlpMFCd04s-NQ9LohwAvGaQ0iWvLb0gXThsebqdG5Jz25EHNjYrlNuZuhw70owWm_wHFdnD9wnJLUCye1QGu-TMKeaokx96GXNU9OAZuVp3CRRre5SU____Xc3YA',
+
     // Large-Scale Projects ID to Name mapping
     PROJECT_MAP: {
       '9520665110': 'Home Services',
@@ -1980,7 +1983,7 @@ function loadVendorData(vendorIndex, options) {
     for (const task of tasks) {
       // Task name - clickable link to Tasks board filtered by task name
       const encodedTask = encodeURIComponent(task.subject);
-      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}`;
+      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
       bsSh.getRange(currentRow, 1)
         .setFormula(`=HYPERLINK("${taskFilterLink}", "${task.subject.replace(/"/g, '""')}")`)
         .setWrap(true)
@@ -12935,7 +12938,7 @@ SUMMARY:
   if (suggestedUpdates.length > 0) {
     updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
     for (const update of suggestedUpdates) {
-      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}`;
+      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}${BS_CFG.MONDAY_TERM_COLUMNS}`;
       const statusBg = getStatusColor_(update.newStatus);
 
       // Build alternative status buttons (exclude current and suggested)
