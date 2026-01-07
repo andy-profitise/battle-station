@@ -5532,13 +5532,37 @@ function battleStationEmailContacts() {
   
   try {
     const subject = `Re: ${vendor}`;
-    const body = `Hi,\n\n\n\nBest regards,\nAndy Worford\nProfitise`;
-    
-    GmailApp.createDraft(recipients, subject, body);
-    
+    const body = `Hi,\n\n`;
+
+    // Get Gmail signature from settings
+    let signature = '';
+    try {
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Create draft with HTML body including signature
+    const bodyHtml = body.replace(/\n/g, '<br>');
+    let fullBodyHtml = bodyHtml;
+    if (signature) {
+      fullBodyHtml += '<br><br>' + signature;
+    }
+
+    GmailApp.createDraft(recipients, subject, '', { htmlBody: fullBodyHtml });
+
     ss.toast('Draft created!', '✅ Success', 3);
     SpreadsheetApp.getUi().alert(`✓ Draft created!\n\nTo: ${recipients}\nSubject: ${subject}\n\nCheck your Gmail drafts.`);
-    
+
   } catch (e) {
     SpreadsheetApp.getUi().alert(`Error creating draft: ${e.message}`);
   }
@@ -5635,7 +5659,7 @@ Guidelines:
 - Use clear, actionable language
 - Don't use excessive pleasantries or filler words
 - End with a clear call to action if appropriate
-- Sign off as "Andy Worford" from "Profitise"
+- No signature block (it will be added automatically from Gmail)
 
 Return ONLY the email body (no subject line). Start with an appropriate greeting.`;
 
@@ -5655,6 +5679,7 @@ Return ONLY the email body (no subject line). Start with an appropriate greeting
 
 /**
  * Create Gmail draft and return draft URL for direct navigation
+ * Automatically appends Gmail signature from user's settings
  * @param {string} recipients - Comma-separated email addresses
  * @param {string} subject - Email subject
  * @param {string} body - Email body
@@ -5662,7 +5687,36 @@ Return ONLY the email body (no subject line). Start with an appropriate greeting
  */
 function createEmailDraftAndGetUrl(recipients, subject, body) {
   try {
-    const draft = GmailApp.createDraft(recipients, subject, body);
+    // Get Gmail signature from settings
+    let signature = '';
+    try {
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Convert body to HTML (preserve line breaks)
+    const bodyHtml = body.replace(/\n/g, '<br>');
+
+    // Build full HTML body with signature
+    let fullBodyHtml = bodyHtml;
+    if (signature) {
+      fullBodyHtml += '<br><br>' + signature;
+    }
+
+    // Create draft with HTML body
+    const draft = GmailApp.createDraft(recipients, subject, '', {
+      htmlBody: fullBodyHtml
+    });
     const draftId = draft.getId();
 
     // Gmail draft URL format
