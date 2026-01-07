@@ -8068,15 +8068,24 @@ function skipToNextChanged(trackComeback) {
     return;
   }
 
+  // ===== LOGGING: Initial State =====
+  const currentVendorIdx = getCurrentVendorIndex_();
+  const currentVendorName = currentVendorIdx ? listSh.getRange(currentVendorIdx + 1, 1).getValue() : 'none';
+  Logger.log(`\n========== SKIP TO NEXT CHANGED ==========`);
+  Logger.log(`Starting from: Vendor #${currentVendorIdx} (${currentVendorName})`);
+  Logger.log(`trackComeback param: ${trackComeback}`);
+
   // Check if there's an active Skip 5 & Return session
   let skip5Session = null;
   const skip5Str = props.getProperty('BS_SKIP5_SESSION');
   if (skip5Str) {
     try {
       skip5Session = JSON.parse(skip5Str);
+      Logger.log(`Skip5 Session: ACTIVE - origin=${skip5Session.originVendor} (idx ${skip5Session.originIdx}), found=${skip5Session.changedFound}/${skip5Session.changedTarget}, complete=${skip5Session.complete}`);
 
       // Check if session is marked complete (ready to return)
       if (skip5Session.complete) {
+        Logger.log(`DECISION: Skip5 complete - returning to origin vendor ${skip5Session.originVendor}`);
         ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 Skip 5 Complete', 3);
         Utilities.sleep(500);
         loadVendorData(skip5Session.originIdx);
@@ -8092,21 +8101,37 @@ function skipToNextChanged(trackComeback) {
         return;
       }
     } catch (e) {
+      Logger.log(`Skip5 Session: ERROR parsing - ${e.message}`);
       props.deleteProperty('BS_SKIP5_SESSION');
       skip5Session = null;
     }
+  } else {
+    Logger.log(`Skip5 Session: none`);
   }
 
   // If trackComeback wasn't explicitly passed, check if there's an existing comeback pending
+  const comebackStr = props.getProperty('BS_COMEBACK');
+  if (comebackStr) {
+    try {
+      const comebackData = JSON.parse(comebackStr);
+      Logger.log(`Comeback: PENDING - return to ${comebackData.vendorName} (idx ${comebackData.vendorIndex}) after ${comebackData.comebackAfter - comebackData.vendorsSeen} more vendors`);
+    } catch (e) {
+      Logger.log(`Comeback: ERROR parsing - ${e.message}`);
+    }
+  } else {
+    Logger.log(`Comeback: none`);
+  }
+
   if (trackComeback === undefined) {
-    const comebackStr = props.getProperty('BS_COMEBACK');
     if (comebackStr) {
       trackComeback = true;  // Auto-enable if comeback is pending
+      Logger.log(`trackComeback auto-enabled due to pending comeback`);
     }
   }
 
   const listData = listSh.getDataRange().getValues();
   const totalVendors = listData.length - 1;
+  Logger.log(`Total vendors: ${totalVendors}`);
 
   // ===== INBOX REDIRECT LOGIC =====
   // Check if we had a previous Inbox Redirect
@@ -8116,6 +8141,10 @@ function skipToNextChanged(trackComeback) {
   let lastInboxRedirectTime = lastInboxRedirectStr ? new Date(lastInboxRedirectStr) : null;
   let lastInboxCheckTime = lastInboxCheckStr ? new Date(lastInboxCheckStr) : null;
 
+  const storedResumeIdxStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  const storedResumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+  Logger.log(`InboxRedirect: lastRedirect=${lastInboxRedirectStr || 'none'}, lastCheck=${lastInboxCheckStr || 'none'}, resumeIdx=${storedResumeIdxStr || 'none'}, resumeVendor=${storedResumeVendorStr || 'none'}`);
+
   // Record current time as the check time
   const checkTime = new Date();
   props.setProperty('BS_INBOX_CHECK_TIME', checkTime.toISOString());
@@ -8124,19 +8153,29 @@ function skipToNextChanged(trackComeback) {
   // If we had an Inbox Redirect, check for emails newer than that
   // Otherwise, check for emails newer than the last check
   const checkSinceTime = lastInboxRedirectTime || lastInboxCheckTime || new Date(0);
+  Logger.log(`Checking inbox for emails since: ${checkSinceTime.toISOString()}`);
 
   ss.toast('Checking inbox for new vendor emails...', '📬 Inbox Check', 2);
 
   // Check inbox for new vendor emails
   const inboxResult = checkInboxForNewVendorEmails_(checkSinceTime);
+  Logger.log(`Inbox check result: ${inboxResult ? `found email for ${inboxResult.vendorName}` : 'no new emails'}`);
 
   if (inboxResult) {
     // Found a new email with zzzVendors label - do Inbox Redirect
     const vendorIdx = findVendorIndexByName_(listSh, inboxResult.vendorName);
+    Logger.log(`DECISION PATH: Inbox Redirect - new email for ${inboxResult.vendorName}, vendorIdx=${vendorIdx}`);
 
     if (vendorIdx) {
-      // Record this as an Inbox Redirect
+      // Record this as an Inbox Redirect, including where we were so we can resume later
+      const originalIdx = currentVendorIdx || 1;
+      const originalVendor = currentVendorName || 'Vendor #1';
       props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
+      // Store where to resume from: the NEXT vendor after where we currently are
+      props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', String(originalIdx + 1));
+      props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', originalVendor);
+      Logger.log(`NAVIGATING TO: Vendor #${vendorIdx} (${inboxResult.vendorName}) via Inbox Redirect`);
+      Logger.log(`Stored resume position: will resume from idx ${originalIdx + 1} (after ${originalVendor})`);
 
       ss.toast('');
       loadVendorData(vendorIdx, { forceChanged: true });
@@ -8145,7 +8184,8 @@ function skipToNextChanged(trackComeback) {
         '📬 Inbox Redirect',
         `New email found for: ${inboxResult.vendorName}\n\n` +
         `Subject: ${inboxResult.subject}\n\n` +
-        `Redirecting to this vendor.`,
+        `Redirecting to this vendor.\n\n` +
+        `(Will resume from ${originalVendor} on next skip if no new emails)`,
         SpreadsheetApp.getUi().ButtonSet.OK
       );
 
@@ -8153,20 +8193,36 @@ function skipToNextChanged(trackComeback) {
       return;
     } else {
       // Vendor not found in list - log and continue with normal flow
-      console.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list`);
+      Logger.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list - continuing to normal flow`);
       ss.toast(`Vendor "${inboxResult.vendorName}" not in list, continuing...`, '⚠️', 2);
     }
   } else if (lastInboxRedirectTime) {
-    // No new inbox emails since last Inbox Redirect - find resume position
-    ss.toast('No new inbox emails, finding resume position...', '🔄 Resume', 2);
+    // No new inbox emails since last Inbox Redirect - resume from stored position
+    Logger.log(`DECISION PATH: Resume from Inbox Redirect (no new inbox emails since ${lastInboxRedirectTime.toISOString()})`);
 
-    const resumeIdx = findResumePosition_(listSh);
+    // Get the stored resume position (preferred) or fall back to heuristic
+    const storedResumeIdx = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+    const storedResumeVendor = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+    let resumeIdx = storedResumeIdx ? parseInt(storedResumeIdx, 10) : null;
 
     if (resumeIdx) {
-      // Clear the Inbox Redirect time since we're resuming normal flow
+      Logger.log(`Using stored resume position: idx ${resumeIdx} (after ${storedResumeVendor})`);
+      ss.toast(`Resuming from where you left off (after ${storedResumeVendor})...`, '🔄 Resume', 2);
+    } else {
+      // Fall back to heuristic if no stored position
+      ss.toast('No new inbox emails, finding resume position...', '🔄 Resume', 2);
+      resumeIdx = findResumePosition_(listSh);
+      Logger.log(`Resume position (heuristic): ${resumeIdx ? `Vendor #${resumeIdx}` : 'not found'}`);
+    }
+
+    if (resumeIdx) {
+      // Clear the Inbox Redirect state since we're resuming normal flow
       props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+      props.deleteProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+      props.deleteProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
 
       const resumeVendor = listData[resumeIdx][BS_CFG.L_VENDOR];
+      Logger.log(`Resuming from: ${resumeVendor} (idx ${resumeIdx})`);
 
       // Start searching from the resume position
       ss.toast(`Resuming from: ${resumeVendor}`, '🔄 Resume', 2);
@@ -8183,6 +8239,7 @@ function skipToNextChanged(trackComeback) {
 
         // Stop at end
         if (currentIdx > totalVendors) {
+          Logger.log(`RESULT: Reached end of list from resume position. Skipped ${skippedCount} vendors.`);
           ss.toast('');
           SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
           return;
@@ -8198,6 +8255,7 @@ function skipToNextChanged(trackComeback) {
         const changeResult = checkVendorForChanges_(vendor, listRow, source);
 
         if (changeResult.hasChanges) {
+          Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via resume path]`);
           ss.toast('');
           loadVendorData(currentIdx, { forceChanged: true, rowColor: BS_CFG.COLOR_ROW_CHANGED });
           if (skippedCount > 0) {
@@ -8215,10 +8273,14 @@ function skipToNextChanged(trackComeback) {
   }
 
   // ===== NORMAL SKIP UNCHANGED LOGIC =====
+  Logger.log(`DECISION PATH: Normal skip unchanged flow (no inbox redirect active)`);
+
   // Get current index using the same function as other navigation
   let currentIdx = getCurrentVendorIndex_() || 1;
   const startIdx = currentIdx;  // Track where we started for wrap-around detection
   let hasWrapped = false;       // Track if we've wrapped around
+
+  Logger.log(`Starting normal skip from idx ${startIdx}, will search forward`);
 
   let skippedCount = 0;
 
@@ -8237,6 +8299,7 @@ function skipToNextChanged(trackComeback) {
     if (currentIdx > totalVendors) {
       // If Skip 5 session is active, don't wrap - return to origin
       if (skip5Session) {
+        Logger.log(`RESULT: End of list during Skip5 - returning to origin ${skip5Session.originVendor}`);
         ss.toast('');
         ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 End of List', 3);
         Utilities.sleep(500);
@@ -8255,6 +8318,7 @@ function skipToNextChanged(trackComeback) {
       }
 
       // Wrap around to vendor #1
+      Logger.log(`Wrapping around to vendor #1 (was at end of list)`);
       currentIdx = 1;
       hasWrapped = true;
       ss.toast('Wrapping to vendor #1...', '🔄 Wrap Around', 2);
@@ -8262,6 +8326,7 @@ function skipToNextChanged(trackComeback) {
 
     // If we've wrapped and reached our starting point, we've checked everyone
     if (hasWrapped && currentIdx >= startIdx) {
+      Logger.log(`RESULT: Checked all vendors (wrapped around). Skipped ${skippedCount} vendors.`);
       ss.toast('');
       SpreadsheetApp.getUi().alert(`Checked all vendors (wrapped around).\nSkipped ${skippedCount} unchanged vendor(s).\nNo vendors with changes found.`);
       return;
@@ -8280,6 +8345,7 @@ function skipToNextChanged(trackComeback) {
     // Safeguard: After 30 skips, stop on this vendor to avoid 6-minute timeout
     const MAX_SKIPS = 30;
     if (skippedCount >= MAX_SKIPS) {
+      Logger.log(`RESULT: Safeguard triggered after ${skippedCount} skips - stopping at ${vendor}`);
       ss.toast(`Stopped after ${skippedCount} skips to avoid timeout`, '⚠️ Safeguard', 5);
 
       // Update Skip 5 session if active
@@ -8308,13 +8374,17 @@ function skipToNextChanged(trackComeback) {
         // Check if we've found all 5
         if (skip5Session.changedFound >= skip5Session.changedTarget) {
           skip5Session.complete = true;
+          Logger.log(`Skip5: Found ${skip5Session.changedFound}/${skip5Session.changedTarget} - session complete, next skip returns to ${skip5Session.originVendor}`);
           ss.toast(`Found ${skip5Session.changedFound}/${skip5Session.changedTarget}! Next skip will return to ${skip5Session.originVendor}`, '🔄 5/5 Found', 5);
         } else {
+          Logger.log(`Skip5: Found ${skip5Session.changedFound}/${skip5Session.changedTarget} at ${vendor}`);
           ss.toast(`Skip 5: ${skip5Session.changedFound}/${skip5Session.changedTarget} - ${vendor}`, '🔄 Skip 5', 3);
         }
 
         props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
       }
+
+      Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via normal skip, skipped ${skippedCount}]`);
 
       // Show what changed in a toast BEFORE loading modules
       const changeLabel = formatChangeType_(changeResult.changeType);
@@ -8348,6 +8418,8 @@ function clearInboxRedirectState() {
 
   props.deleteProperty('BS_INBOX_REDIRECT_TIME');
   props.deleteProperty('BS_INBOX_CHECK_TIME');
+  props.deleteProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  props.deleteProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
 
   ui.alert('Inbox Redirect Cleared', 'Inbox Redirect state has been cleared.\nNext skip will continue from current position.', ui.ButtonSet.OK);
 }
@@ -8361,6 +8433,8 @@ function viewInboxRedirectStatus() {
 
   const lastRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
   const lastCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+  const resumeIdxStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  const resumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
 
   if (!lastRedirectStr && !lastCheckStr) {
     ui.alert('📬 Inbox Redirect Status', 'No Inbox Redirect tracking active.\n\nThe next Skip Unchanged will start fresh.', ui.ButtonSet.OK);
@@ -8373,7 +8447,11 @@ function viewInboxRedirectStatus() {
     const lastRedirect = new Date(lastRedirectStr);
     message += `Last Inbox Redirect: ${lastRedirect.toLocaleString()}\n`;
     message += `Status: ACTIVE - Next skip will check for new inbox emails since this time.\n`;
-    message += `If no new emails, will resume from first white vendor after colored vendors.\n\n`;
+    if (resumeIdxStr && resumeVendorStr) {
+      message += `If no new emails, will resume from vendor #${resumeIdxStr} (after ${resumeVendorStr}).\n\n`;
+    } else {
+      message += `If no new emails, will resume from first white vendor after colored vendors.\n\n`;
+    }
   }
 
   if (lastCheckStr) {
