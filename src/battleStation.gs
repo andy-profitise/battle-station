@@ -5715,12 +5715,12 @@ function createEmailDraftAndGetUrl(recipients, subject, body) {
   try {
     // Get Gmail signature from settings
     let signature = '';
+    const myEmail = Session.getActiveUser().getEmail();
     try {
-      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
       const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
       if (sendAsSettings && sendAsSettings.sendAs) {
         const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
-                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail.toLowerCase()) ||
                               sendAsSettings.sendAs[0];
         if (primarySendAs && primarySendAs.signature) {
           signature = primarySendAs.signature;
@@ -5739,14 +5739,19 @@ function createEmailDraftAndGetUrl(recipients, subject, body) {
       fullBodyHtml += '<br><br>' + signature;
     }
 
-    // Create draft with HTML body
+    // Create draft with HTML body and BCC to sales@profitise.com
     const draft = GmailApp.createDraft(recipients, subject, '', {
-      htmlBody: fullBodyHtml
+      htmlBody: fullBodyHtml,
+      bcc: 'sales@profitise.com'
     });
     const draftId = draft.getId();
 
-    // Gmail draft URL format
-    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+    // Get the message ID via Gmail API for proper direct link
+    const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+    const messageId = gmailDraft.message.id;
+
+    // Gmail draft URL format - use message ID for direct compose link
+    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${messageId}`;
 
     return {
       success: true,
@@ -6338,12 +6343,10 @@ function getEmailContactsDialogHtml_(vendor, contactData) {
           document.getElementById('draftLoading').classList.remove('show');
 
           if (result.success) {
-            document.getElementById('success').innerHTML =
-              '✓ Draft created! <a href="' + result.draftUrl + '" target="_blank">Open in Gmail</a>';
-            document.getElementById('success').classList.add('show');
-
             // Open Gmail draft in new window
             window.open(result.draftUrl, '_blank');
+            // Close the dialog
+            google.script.host.close();
           } else {
             showError(result.error || 'Failed to create draft');
           }
