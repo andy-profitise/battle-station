@@ -5195,16 +5195,17 @@ function battleStationQuickRefreshUntilChanged() {
 function updateEmailChecksum_(vendor, newEmailChecksum) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
-  
+
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === vendor) {
+    // Use case-insensitive comparison to match storeChecksum_ and getStoredChecksum_
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
       sh.getRange(i + 1, 3).setValue(newEmailChecksum); // Column C = EmailChecksum
       sh.getRange(i + 1, 5).setValue(new Date()); // Column E = Last Viewed
       Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
       return;
     }
   }
-  
+
   // Vendor not found - this shouldn't happen but handle it
   Logger.log(`Warning: Could not find ${vendor} in checksums sheet to update email checksum`);
 }
