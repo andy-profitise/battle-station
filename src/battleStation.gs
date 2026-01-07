@@ -223,6 +223,20 @@ function onOpen() {
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
     .addSeparator()
+    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
+    .addItem('📬 Inbox Redirect Status', 'viewInboxRedirectStatus')
+    .addItem('❌ Clear Inbox Redirect', 'clearInboxRedirectState')
+    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
+    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
+    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
+    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
+    .addItem('▶ Next Vendor', 'battleStationNext')
+    .addItem('◀ Previous Vendor', 'battleStationPrevious')
+    .addSeparator()
+    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
+    .addItem('🔄 Refresh', 'battleStationRefresh')
+    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
     .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
@@ -7077,7 +7091,142 @@ function setListRowColor_(listSh, listRow, color) {
 }
 
 /**
+ * Find vendor index by name (case-insensitive)
+ * @param {Sheet} listSh - List sheet
+ * @param {string} vendorName - Vendor name to search for
+ * @returns {number|null} - Vendor index (1-based) or null if not found
+ */
+function findVendorIndexByName_(listSh, vendorName) {
+  const data = listSh.getDataRange().getValues();
+  const searchName = vendorName.toLowerCase().trim();
+
+  for (let i = 1; i < data.length; i++) {
+    const name = String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase().trim();
+    if (name === searchName) {
+      return i;  // Return the index (1-based matches row - 1)
+    }
+  }
+  return null;
+}
+
+/**
+ * Check inbox for new emails with zzzVendors labels since a given timestamp
+ * @param {Date} sinceTime - Only return emails newer than this time
+ * @returns {Object|null} - {vendorName, threadId, subject} or null if none found
+ */
+function checkInboxForNewVendorEmails_(sinceTime) {
+  try {
+    // Search inbox for emails since the given time
+    const threads = GmailApp.search('in:inbox', 0, 100);
+
+    for (const thread of threads) {
+      const lastMessageDate = thread.getLastMessageDate();
+
+      // Skip if older than sinceTime
+      if (lastMessageDate <= sinceTime) {
+        continue;
+      }
+
+      // Check for zzzVendors label
+      const labels = thread.getLabels();
+      for (const label of labels) {
+        const labelName = label.getName();
+
+        if (labelName.startsWith('zzzVendors/')) {
+          const vendorName = labelName.substring('zzzVendors/'.length);
+          console.log(`Found inbox email for vendor: ${vendorName} (${thread.getFirstMessageSubject()})`);
+          return {
+            vendorName: vendorName,
+            threadId: thread.getId(),
+            subject: thread.getFirstMessageSubject(),
+            date: lastMessageDate
+          };
+        }
+      }
+    }
+
+    return null;
+  } catch (e) {
+    console.error('Error checking inbox for vendor emails:', e);
+    return null;
+  }
+}
+
+/**
+ * Find resume position - the first white (no color) vendor that:
+ * - Has green or yellow colored vendors before it
+ * - Has a white vendor after it
+ * This is used to resume normal skip-unchanged flow after inbox redirects
+ * @param {Sheet} listSh - List sheet
+ * @returns {number|null} - Vendor index (1-based) or null if not found
+ */
+function findResumePosition_(listSh) {
+  const lastRow = listSh.getLastRow();
+  const numCols = listSh.getLastColumn();
+
+  // Get all row backgrounds at once for performance
+  const backgrounds = listSh.getRange(2, 1, lastRow - 1, numCols).getBackgrounds();
+
+  // Find the first white row that has colored rows before it and a white row after it
+  let hasSeenColored = false;
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    const rowBg = backgrounds[i][0];  // Check first column's background
+    const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
+    const isColored = rowBg === BS_CFG.COLOR_ROW_CHANGED || rowBg === BS_CFG.COLOR_ROW_SKIPPED;
+
+    if (isColored) {
+      hasSeenColored = true;
+    } else if (isWhite && hasSeenColored) {
+      // This is a white row after colored rows
+      // Check if there's a white row after this one
+      if (i + 1 < backgrounds.length) {
+        const nextRowBg = backgrounds[i + 1][0];
+        const nextIsWhite = !nextRowBg || nextRowBg === '#ffffff' || nextRowBg === 'white' || nextRowBg === '';
+
+        if (nextIsWhite) {
+          // Found it! Return the index (1-based, accounting for header row)
+          console.log(`Found resume position at row ${i + 2} (index ${i + 1})`);
+          return i + 1;  // Convert to 1-based vendor index
+        }
+      }
+    }
+  }
+
+  // If no ideal position found, return the first white row after any colored rows
+  if (hasSeenColored) {
+    for (let i = 0; i < backgrounds.length; i++) {
+      const rowBg = backgrounds[i][0];
+      const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
+
+      if (isWhite) {
+        // Check if there were colored rows before this
+        let coloredBefore = false;
+        for (let j = 0; j < i; j++) {
+          const prevBg = backgrounds[j][0];
+          if (prevBg === BS_CFG.COLOR_ROW_CHANGED || prevBg === BS_CFG.COLOR_ROW_SKIPPED) {
+            coloredBefore = true;
+            break;
+          }
+        }
+        if (coloredBefore) {
+          console.log(`Found resume position (fallback) at row ${i + 2} (index ${i + 1})`);
+          return i + 1;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Skip to next vendor with changes (different checksum)
+ * Now with Inbox Redirect support:
+ * - Records timestamp when skip happens
+ * - Checks inbox for new emails with zzzVendors labels
+ * - If found, redirects to that vendor
+ * - On next skip, resumes normal flow if no new inbox emails
  */
 function skipToNextChanged(trackComeback) {
   const ss = SpreadsheetApp.getActive();
@@ -7130,6 +7279,114 @@ function skipToNextChanged(trackComeback) {
   const listData = listSh.getDataRange().getValues();
   const totalVendors = listData.length - 1;
 
+  // ===== INBOX REDIRECT LOGIC =====
+  // Check if we had a previous Inbox Redirect
+  const lastInboxRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
+  const lastInboxCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+
+  let lastInboxRedirectTime = lastInboxRedirectStr ? new Date(lastInboxRedirectStr) : null;
+  let lastInboxCheckTime = lastInboxCheckStr ? new Date(lastInboxCheckStr) : null;
+
+  // Record current time as the check time
+  const checkTime = new Date();
+  props.setProperty('BS_INBOX_CHECK_TIME', checkTime.toISOString());
+
+  // Determine what time to use for checking new emails
+  // If we had an Inbox Redirect, check for emails newer than that
+  // Otherwise, check for emails newer than the last check
+  const checkSinceTime = lastInboxRedirectTime || lastInboxCheckTime || new Date(0);
+
+  ss.toast('Checking inbox for new vendor emails...', '📬 Inbox Check', 2);
+
+  // Check inbox for new vendor emails
+  const inboxResult = checkInboxForNewVendorEmails_(checkSinceTime);
+
+  if (inboxResult) {
+    // Found a new email with zzzVendors label - do Inbox Redirect
+    const vendorIdx = findVendorIndexByName_(listSh, inboxResult.vendorName);
+
+    if (vendorIdx) {
+      // Record this as an Inbox Redirect
+      props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
+
+      ss.toast('');
+      loadVendorData(vendorIdx, { forceChanged: true });
+
+      SpreadsheetApp.getUi().alert(
+        '📬 Inbox Redirect',
+        `New email found for: ${inboxResult.vendorName}\n\n` +
+        `Subject: ${inboxResult.subject}\n\n` +
+        `Redirecting to this vendor.`,
+        SpreadsheetApp.getUi().ButtonSet.OK
+      );
+
+      if (trackComeback) checkComeback_();
+      return;
+    } else {
+      // Vendor not found in list - log and continue with normal flow
+      console.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list`);
+      ss.toast(`Vendor "${inboxResult.vendorName}" not in list, continuing...`, '⚠️', 2);
+    }
+  } else if (lastInboxRedirectTime) {
+    // No new inbox emails since last Inbox Redirect - find resume position
+    ss.toast('No new inbox emails, finding resume position...', '🔄 Resume', 2);
+
+    const resumeIdx = findResumePosition_(listSh);
+
+    if (resumeIdx) {
+      // Clear the Inbox Redirect time since we're resuming normal flow
+      props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+
+      const resumeVendor = listData[resumeIdx][BS_CFG.L_VENDOR];
+
+      // Start searching from the resume position
+      ss.toast(`Resuming from: ${resumeVendor}`, '🔄 Resume', 2);
+
+      // Set current index to resume position - 1 so the loop starts at resume position
+      let currentIdx = resumeIdx - 1;
+      let skippedCount = 0;
+
+      ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
+
+      // Loop through vendors looking for one with changes - start from resume position
+      while (true) {
+        currentIdx++;  // Move to next vendor FIRST
+
+        // Stop at end
+        if (currentIdx > totalVendors) {
+          ss.toast('');
+          SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
+          return;
+        }
+
+        const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+        const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
+        const listRow = currentIdx + 1;
+
+        ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
+
+        // Use the centralized change detection helper
+        const changeResult = checkVendorForChanges_(vendor, listRow, source);
+
+        if (changeResult.hasChanges) {
+          ss.toast('');
+          loadVendorData(currentIdx, { forceChanged: true });
+          setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
+          if (skippedCount > 0) {
+            SpreadsheetApp.getUi().alert(`Resumed and skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
+          }
+          if (trackComeback) checkComeback_();
+          return;
+        }
+
+        // No changes - mark as skipped (yellow)
+        setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+        skippedCount++;
+      }
+    }
+  }
+
+  // ===== NORMAL SKIP UNCHANGED LOGIC =====
   // Get current index using the same function as other navigation
   let currentIdx = getCurrentVendorIndex_() || 1;
   const startIdx = currentIdx;  // Track where we started for wrap-around detection
@@ -7246,6 +7503,58 @@ function skipToNextChanged(trackComeback) {
     setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
     skippedCount++;
   }
+}
+
+/**
+ * Clear Inbox Redirect state - allows resuming normal skip flow without inbox check
+ */
+function clearInboxRedirectState() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const lastRedirect = props.getProperty('BS_INBOX_REDIRECT_TIME');
+
+  if (!lastRedirect) {
+    ui.alert('No Inbox Redirect', 'There is no active Inbox Redirect state to clear.', ui.ButtonSet.OK);
+    return;
+  }
+
+  props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+  props.deleteProperty('BS_INBOX_CHECK_TIME');
+
+  ui.alert('Inbox Redirect Cleared', 'Inbox Redirect state has been cleared.\nNext skip will continue from current position.', ui.ButtonSet.OK);
+}
+
+/**
+ * View Inbox Redirect status
+ */
+function viewInboxRedirectStatus() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const lastRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
+  const lastCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+
+  if (!lastRedirectStr && !lastCheckStr) {
+    ui.alert('📬 Inbox Redirect Status', 'No Inbox Redirect tracking active.\n\nThe next Skip Unchanged will start fresh.', ui.ButtonSet.OK);
+    return;
+  }
+
+  let message = '';
+
+  if (lastRedirectStr) {
+    const lastRedirect = new Date(lastRedirectStr);
+    message += `Last Inbox Redirect: ${lastRedirect.toLocaleString()}\n`;
+    message += `Status: ACTIVE - Next skip will check for new inbox emails since this time.\n`;
+    message += `If no new emails, will resume from first white vendor after colored vendors.\n\n`;
+  }
+
+  if (lastCheckStr) {
+    const lastCheck = new Date(lastCheckStr);
+    message += `Last Inbox Check: ${lastCheck.toLocaleString()}`;
+  }
+
+  ui.alert('📬 Inbox Redirect Status', message, ui.ButtonSet.OK);
 }
 
 /**
