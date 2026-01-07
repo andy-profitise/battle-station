@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-06 10:45PM PST
+ * Last Updated: 2026-01-07 11:15AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -287,6 +287,16 @@ function onOpen() {
     .addItem('📷 Upload Image / Paste Text', 'openVendorOcrUpload')
     .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
     .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
+    .addToUi();
+
+  // Tasks menu - update monday.com task statuses
+  ui.createMenu('📋 Tasks')
+    .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addSeparator()
+    .addItem('⏳ Set to: Waiting on Phonexa', 'setTaskStatusWaitingPhonexa')
+    .addItem('👤 Set to: Waiting on Client', 'setTaskStatusWaitingClient')
+    .addItem('🏢 Set to: Waiting on Profitise', 'setTaskStatusWaitingProfitise')
+    .addItem('✅ Set to: Done', 'setTaskStatusDone')
     .addToUi();
 }
 
@@ -3033,234 +3043,180 @@ function searchGmailFromLink_(gmailLink, querySetName) {
 
 /**
  * Get tasks for a specific vendor from monday.com Tasks board
+ * Uses cached batch data from getAllMondayTasks_() for fast lookups
  */
 function getTasksForVendor_(vendor, listRow) {
-  const apiToken = BS_CFG.MONDAY_API_TOKEN;
-  const tasksBoardId = BS_CFG.TASKS_BOARD_ID;
-  
-  Logger.log(`=== MONDAY.COM TASKS SEARCH ===`);
+  Logger.log(`=== MONDAY.COM TASKS SEARCH (cached) ===`);
   Logger.log(`Vendor: ${vendor}`);
-  
-  const escapedVendor = vendor.replace(/"/g, '\\"');
-  
-  const query = `
-    query {
-      boards (ids: [${tasksBoardId}]) {
-        items_page (
-          limit: 100
-          query_params: {
-            rules: [
-              {
-                column_id: "name"
-                compare_value: ["${escapedVendor}"]
-                operator: contains_text
-              }
-            ]
-          }
-        ) {
-          items {
-            id
-            name
-            group {
-              id
-              title
-            }
-            column_values {
-              id
-              text
-              type
-              ... on BoardRelationValue {
-                linked_items {
-                  id
-                  name
-                }
-              }
-            }
-            created_at
-            updated_at
-          }
-        }
-      }
-    }
-  `;
-  
-  try {
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
-      muteHttpExceptions: true
-    };
-    
-    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
-    const result = JSON.parse(response.getContentText());
-    
-    if (result.errors && result.errors.length > 0) {
-      Logger.log(`API Error: ${result.errors[0].message}`);
-      return [];
-    }
-    
-    if (!result.data?.boards?.[0]?.items_page?.items) {
-      Logger.log('No items found in Tasks board');
-      return [];
-    }
-    
-    const items = result.data.boards[0].items_page.items;
-    Logger.log(`Found ${items.length} tasks matching vendor`);
-    
-    const tasks = [];
-    
-    // Group priority for sorting (DESC = higher number first)
-    const groupPriority = {
-      'topics': 3,                    // Ongoing Projects
-      'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
-      'group_title': 1,              // Completed Projects
-      'group_mkqf4yzy': 0            // Task Templates
-    };
-    
-    // Explicit project order (from Large-Scale Projects board structure)
-    const projectPriority = {
-      'Home Services': 1,
-      'ACA': 2,
-      'Vertical Activation': 3,
-      'Monthly Returns': 4,
-      'CPL/Zip Optimizations': 5,
-      'Accounting/Invoices': 6,
-      'System Admin': 7,
-      'URL Whitelist': 8,
-      'Outbound Communication': 9,
-      'Pre-Onboarding': 10,
-      'Appointments': 11,
-      'Onboarding - Buyer': 12,
-      'Onboarding - Affiliate': 13,
-      'Onboarding - Vertical': 14,
-      'Templates': 15,
-      'Morning Meeting': 16,
-      'Week of 07/28/25': 17
-    };
-    
-    for (const item of items) {
-      const itemName = String(item.name || '');
-      const groupId = item.group?.id || '';
-      const groupTitle = item.group?.title || '';
-      
-      let status = '';
-      let projectName = '';
-      let tempInd = null;
-      let taskDate = '';  // Date from timeline column
-      let statusColumnId = 'status';  // Default, will be updated if found
-      let lastUpdated = '';  // Last Updated column
 
-      for (const col of item.column_values) {
-        // Status column
-        if (col.id === 'status' || col.id === 'status4' || col.id === 'status_1') {
-          status = col.text || '';
-          statusColumnId = col.id;  // Remember which column has the status
-        }
-        // Project column (board relation)
-        else if (col.id === BS_CFG.TASKS_PROJECT_COLUMN) {
-          if (col.linked_items && col.linked_items.length > 0) {
-            projectName = col.linked_items.map(li => li.name).join(', ');
-          } else if (col.text) {
-            projectName = col.text;
-          }
-        }
-        // temp_ind column
-        else if (col.id === 'numeric_mkt9pbj0') {
-          if (col.text && col.text.trim()) {
-            tempInd = parseFloat(col.text);
-          }
-        }
-        // Date column (timeline type - shows as "YYYY-MM-DD - YYYY-MM-DD" or just end date)
-        else if (col.id === 'timerange_mkqfmzyf') {
-          if (col.text && col.text.trim()) {
-            // Timeline format is "Start - End", we want the end date
-            const dateParts = col.text.split(' - ');
-            taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
-          }
-        }
-        // Last Updated column
-        else if (col.id === 'pulse_updated_mkyyesw') {
-          if (col.text && col.text.trim()) {
-            // Format is typically "YYYY-MM-DD HH:MM:SS" or similar, extract just the date
-            const datePart = col.text.split(' ')[0];
-            lastUpdated = datePart;
-          }
-        }
-      }
-      
-      const createdDate = new Date(item.created_at);
-      const tz = 'America/Los_Angeles';
-      const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
-      
-      tasks.push({
-        itemId: item.id,  // Monday.com item ID for updates
-        statusColumnId: statusColumnId,  // Status column ID for updates
-        subject: itemName,
-        status: status || 'No Status',
-        taskDate: taskDate,  // Date from timeline column
-        lastUpdated: lastUpdated,  // Last Updated column
-        created: createdFormatted,
-        project: projectName || `Group: ${groupTitle}`,
-        isDone: (status.toLowerCase() === 'done'),
+  // Get all tasks from cache (or fetch if not cached)
+  const allTasks = getAllMondayTasks_();
 
-        // Sorting fields
-        groupId: groupId,
-        groupPriority: groupPriority[groupId] || -1,
-        projectName: projectName,
-        projectPriority: projectPriority[projectName] || 999,
-        tempInd: tempInd,
-        tempIndSort: (tempInd === null) ? 999999 : tempInd  // Blanks at end
-      });
-      
-      Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+  if (!allTasks || allTasks.length === 0) {
+    Logger.log('No tasks found in cache');
+    return [];
+  }
+
+  // Filter tasks by vendor name (case-insensitive contains)
+  const searchTerm = vendor.toLowerCase();
+  const matchingItems = allTasks.filter(task => task.nameLower.includes(searchTerm));
+
+  Logger.log(`Found ${matchingItems.length} tasks matching vendor (from ${allTasks.length} cached tasks)`);
+
+  if (matchingItems.length === 0) {
+    return [];
+  }
+
+  const tasks = [];
+
+  // Group priority for sorting (DESC = higher number first)
+  const groupPriority = {
+    'topics': 3,                    // Ongoing Projects
+    'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
+    'group_title': 1,              // Completed Projects
+    'group_mkqf4yzy': 0            // Task Templates
+  };
+
+  // Explicit project order (from Large-Scale Projects board structure)
+  const projectPriority = {
+    'Home Services': 1,
+    'ACA': 2,
+    'Vertical Activation': 3,
+    'Monthly Returns': 4,
+    'CPL/Zip Optimizations': 5,
+    'Accounting/Invoices': 6,
+    'System Admin': 7,
+    'URL Whitelist': 8,
+    'Outbound Communication': 9,
+    'Pre-Onboarding': 10,
+    'Appointments': 11,
+    'Onboarding - Buyer': 12,
+    'Onboarding - Affiliate': 13,
+    'Onboarding - Vertical': 14,
+    'Templates': 15,
+    'Morning Meeting': 16,
+    'Week of 07/28/25': 17
+  };
+
+  const tz = 'America/Los_Angeles';
+
+  for (const item of matchingItems) {
+    const itemName = item.name;
+    const groupId = item.groupId;
+    const groupTitle = item.groupTitle;
+    const colVals = item.columnValues || {};
+
+    // Extract values from cached column data
+    let status = '';
+    let statusColumnId = 'status';
+    let projectName = '';
+    let tempInd = null;
+    let taskDate = '';
+    let lastUpdated = '';
+
+    // Status column - check common status column IDs
+    for (const colId of ['status', 'status4', 'status_1']) {
+      if (colVals[colId]?.text) {
+        status = colVals[colId].text;
+        statusColumnId = colId;
+        break;
+      }
     }
-    
-    // Sort by: Done status (not done first)
-    // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
-    // For DONE: Created Date (DESC) only
-    tasks.sort((a, b) => {
-      // 0. Done status (not done before done)
-      if (a.isDone !== b.isDone) {
-        return a.isDone ? 1 : -1;
+
+    // Project column (board relation)
+    const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+    if (projectCol) {
+      if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+        projectName = projectCol.linked_items.map(li => li.name).join(', ');
+      } else if (projectCol.text) {
+        projectName = projectCol.text;
       }
-      
-      // If BOTH are done, sort only by Created Date DESC
-      if (a.isDone && b.isDone) {
-        const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
-        const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
-        return dateB - dateA;
-      }
-      
-      // For not-done tasks, use full sorting logic:
-      // 1. Group priority (DESC - higher numbers first)
-      if (a.groupPriority !== b.groupPriority) {
-        return b.groupPriority - a.groupPriority;
-      }
-      
-      // 2. Project (explicit order from Large-Scale Projects)
-      if (a.projectPriority !== b.projectPriority) {
-        return a.projectPriority - b.projectPriority;
-      }
-      
-      // 3. temp_ind (ASC - low to high, blanks at end)
-      if (a.tempIndSort !== b.tempIndSort) {
-        return a.tempIndSort - b.tempIndSort;
-      }
-      
-      // 4. Created Date (DESC - newest first)
+    }
+
+    // temp_ind column
+    const tempIndCol = colVals['numeric_mkt9pbj0'];
+    if (tempIndCol?.text && tempIndCol.text.trim()) {
+      tempInd = parseFloat(tempIndCol.text);
+    }
+
+    // Date column (timeline)
+    const dateCol = colVals['timerange_mkqfmzyf'];
+    if (dateCol?.text && dateCol.text.trim()) {
+      const dateParts = dateCol.text.split(' - ');
+      taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
+    }
+
+    // Last Updated column
+    const lastUpdatedCol = colVals['pulse_updated_mkyyesw'];
+    if (lastUpdatedCol?.text && lastUpdatedCol.text.trim()) {
+      lastUpdated = lastUpdatedCol.text.split(' ')[0];
+    }
+
+    const createdDate = new Date(item.createdAt);
+    const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
+
+    tasks.push({
+      itemId: item.id,
+      statusColumnId: statusColumnId,
+      subject: itemName,
+      status: status || 'No Status',
+      taskDate: taskDate,
+      lastUpdated: lastUpdated,
+      created: createdFormatted,
+      project: projectName || `Group: ${groupTitle}`,
+      isDone: (status.toLowerCase() === 'done'),
+
+      // Sorting fields
+      groupId: groupId,
+      groupPriority: groupPriority[groupId] || -1,
+      projectName: projectName,
+      projectPriority: projectPriority[projectName] || 999,
+      tempInd: tempInd,
+      tempIndSort: (tempInd === null) ? 999999 : tempInd
+    });
+
+    Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+  }
+
+  // Sort by: Done status (not done first)
+  // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
+  // For DONE: Created Date (DESC) only
+  tasks.sort((a, b) => {
+    // 0. Done status (not done before done)
+    if (a.isDone !== b.isDone) {
+      return a.isDone ? 1 : -1;
+    }
+
+    // If BOTH are done, sort only by Created Date DESC
+    if (a.isDone && b.isDone) {
       const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
       const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
       return dateB - dateA;
-    });
-    
-    return tasks.slice(0, 30);
-    
-  } catch (e) {
-    Logger.log(`Error fetching monday.com tasks: ${e.message}`);
-    return [];
-  }
+    }
+
+    // For not-done tasks, use full sorting logic:
+    // 1. Group priority (DESC - higher numbers first)
+    if (a.groupPriority !== b.groupPriority) {
+      return b.groupPriority - a.groupPriority;
+    }
+
+    // 2. Project (explicit order from Large-Scale Projects)
+    if (a.projectPriority !== b.projectPriority) {
+      return a.projectPriority - b.projectPriority;
+    }
+
+    // 3. temp_ind (ASC - low to high, blanks at end)
+    if (a.tempIndSort !== b.tempIndSort) {
+      return a.tempIndSort - b.tempIndSort;
+    }
+
+    // 4. Created Date (DESC - newest first)
+    const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
+    const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
+    return dateB - dateA;
+  });
+
+  return tasks.slice(0, 30);
 }
 
 /**
@@ -4830,6 +4786,122 @@ function getAllMondayBoardItems_(boardId, apiToken) {
 }
 
 /**
+ * Get all tasks from the Tasks board with full details (cached)
+ * This is much faster than querying per-vendor since it's one API call per session
+ * @returns {array} Array of task objects with full details
+ */
+function getAllMondayTasks_() {
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_tasks', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com tasks loaded from cache: ${cached.length} tasks`);
+    return cached;
+  }
+
+  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation)...`);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Fetch all tasks with full details needed for display and checksum
+  const query = `
+    query {
+      boards (ids: [${boardId}]) {
+        items_page (limit: 500) {
+          cursor
+          items {
+            id
+            name
+            group {
+              id
+              title
+            }
+            column_values {
+              id
+              text
+              type
+              ... on BoardRelationValue {
+                linked_items {
+                  id
+                  name
+                }
+              }
+            }
+            created_at
+            updated_at
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: query }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`API Error fetching tasks: ${result.errors[0].message}`);
+      return [];
+    }
+
+    if (!result.data?.boards?.[0]?.items_page?.items) {
+      Logger.log('No tasks found in Tasks board');
+      return [];
+    }
+
+    const items = result.data.boards[0].items_page.items;
+    Logger.log(`Fetched ${items.length} tasks from Monday.com Tasks board`);
+
+    // Process items into a more usable format
+    const tasks = items.map(item => {
+      const colVals = {};
+      for (const col of (item.column_values || [])) {
+        colVals[col.id] = col;
+      }
+
+      // Get project from board_relation column
+      let project = '';
+      const projectCol = colVals['board_relation'] || colVals['connect_boards'];
+      if (projectCol && projectCol.linked_items && projectCol.linked_items.length > 0) {
+        project = projectCol.linked_items[0].name || '';
+      }
+
+      return {
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase(),
+        groupId: item.group?.id || '',
+        groupTitle: item.group?.title || '',
+        status: colVals['status']?.text || '',
+        project: project,
+        tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+        columnValues: colVals
+      };
+    });
+
+    // Cache for future lookups (1 hour cache)
+    setCachedData_('monday_tasks', cacheKey, tasks);
+
+    return tasks;
+  } catch (e) {
+    Logger.log(`Error fetching Monday.com tasks: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Find a monday.com item ID by searching for a vendor name
  * Uses batched item list for fast local matching
  */
@@ -5129,7 +5201,12 @@ function battleStationQuickRefresh() {
   
   // Update checksum for emails
   const newEmailChecksum = generateEmailChecksum_(emails);
-  updateEmailChecksum_(vendor, newEmailChecksum);
+
+  // Also update vendor label checksum to prevent false "new vendor emails" detection after snooze
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+  const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+  updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum);
 
   ss.toast('Emails refreshed!', '⚡ Done', 2);
 }
@@ -5190,9 +5267,12 @@ function battleStationQuickRefreshUntilChanged() {
 }
 
 /**
- * Update just the email checksum for a vendor
+ * Update the email checksum (and optionally vendor label checksum) for a vendor
+ * @param {string} vendor - Vendor name
+ * @param {string} newEmailChecksum - New email checksum
+ * @param {string} [newVendorLabelChecksum] - Optional new vendor label checksum
  */
-function updateEmailChecksum_(vendor, newEmailChecksum) {
+function updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
 
@@ -5201,7 +5281,14 @@ function updateEmailChecksum_(vendor, newEmailChecksum) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
       sh.getRange(i + 1, 3).setValue(newEmailChecksum); // Column C = EmailChecksum
       sh.getRange(i + 1, 5).setValue(new Date()); // Column E = Last Viewed
-      Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+
+      // Also update vendor label checksum if provided (Column I = 9)
+      if (newVendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(newVendorLabelChecksum);
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}, vendorLabel: ${newVendorLabelChecksum}`);
+      } else {
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+      }
       return;
     }
   }
@@ -6791,60 +6878,63 @@ The user selected email #${emailIndex + 1} (Subject: "${selectedEmail.subject}")
 function battleStationGoTo() {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!listSh) return;
-  
+
   const totalVendors = listSh.getLastRow() - 1;
+  const minRow = 2;  // Row 2 is first vendor (row 1 is header)
+  const maxRow = totalVendors + 1;
   const ui = SpreadsheetApp.getUi();
   const response = ui.prompt(
     'Go to Vendor',
-    `Enter vendor index (1-${totalVendors}) or vendor name:`,
+    `Enter row number (${minRow}-${maxRow}) or vendor name:`,
     ui.ButtonSet.OK_CANCEL
   );
-  
+
   if (response.getSelectedButton() === ui.Button.OK) {
     const input = response.getResponseText().trim();
-    const index = parseInt(input);
-    
-    // If it's a number, go directly to that index
-    if (!isNaN(index) && index >= 1 && index <= totalVendors) {
-      loadVendorData(index);
+    const rowNum = parseInt(input);
+
+    // If it's a number, treat it as a row number (row 2 = first vendor)
+    if (!isNaN(rowNum) && rowNum >= minRow && rowNum <= maxRow) {
+      const vendorIndex = rowNum - 1;  // Convert row to index (row 2 = index 1)
+      loadVendorData(vendorIndex);
       return;
     }
-    
+
     // Otherwise, search by name
     const searchTerm = input.toLowerCase();
     const data = listSh.getDataRange().getValues();
     const matches = [];
-    
+
     for (let i = 1; i < data.length; i++) {
       const vendorName = String(data[i][0] || '').toLowerCase();
       if (vendorName.includes(searchTerm)) {
-        matches.push({ index: i, name: data[i][0] });
+        matches.push({ index: i, row: i + 1, name: data[i][0] });
       }
     }
-    
+
     if (matches.length === 0) {
       ui.alert(`No vendors found matching "${input}"`);
     } else if (matches.length === 1) {
       loadVendorData(matches[0].index);
     } else {
-      // Multiple matches - show list
-      let matchList = matches.slice(0, 15).map(m => `${m.index}: ${m.name}`).join('\n');
+      // Multiple matches - show list with row numbers
+      let matchList = matches.slice(0, 15).map(m => `Row ${m.row}: ${m.name}`).join('\n');
       if (matches.length > 15) {
         matchList += `\n... and ${matches.length - 15} more`;
       }
-      
+
       const pickResponse = ui.prompt(
         `Found ${matches.length} matches`,
-        `${matchList}\n\nEnter the index number to go to:`,
+        `${matchList}\n\nEnter the row number to go to:`,
         ui.ButtonSet.OK_CANCEL
       );
-      
+
       if (pickResponse.getSelectedButton() === ui.Button.OK) {
-        const pickIndex = parseInt(pickResponse.getResponseText());
-        if (!isNaN(pickIndex) && pickIndex >= 1 && pickIndex <= totalVendors) {
-          loadVendorData(pickIndex);
+        const pickRow = parseInt(pickResponse.getResponseText());
+        if (!isNaN(pickRow) && pickRow >= minRow && pickRow <= maxRow) {
+          loadVendorData(pickRow - 1);  // Convert row to index
         }
       }
     }
@@ -7719,16 +7809,19 @@ function filterTasksBySource_(tasks, source) {
 /**
  * Check if a vendor has changes compared to stored checksums
  * Returns detailed change info for use in skip functions
- * 
+ *
  * @param {string} vendor - Vendor name
  * @param {number} listRow - Row number in List sheet
  * @param {string} source - Vendor source for task filtering
+ * @param {object} [options] - Optional settings
+ * @param {boolean} [options.skipVendorLabelCheck] - Skip the vendor label checksum check (faster, but may miss unlabeled emails)
  * @returns {object} { hasChanges, changeType, data }
  *   - hasChanges: boolean
  *   - changeType: string describing what changed (or 'first_view' or 'unchanged')
  *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
  */
-function checkVendorForChanges_(vendor, listRow, source) {
+function checkVendorForChanges_(vendor, listRow, source, options) {
+  options = options || {};
   // Check if vendor is flagged - always stop on flagged vendors (fast - no API)
   if (isVendorFlagged_(vendor)) {
     Logger.log(`${vendor}: flagged for review`);
@@ -7800,8 +7893,8 @@ function checkVendorForChanges_(vendor, listRow, source) {
   }
 
   // Check vendor-label-only checksum (catches emails without 00.received label)
-  // Only check if vendor has a stored vendorLabelChecksum - if not, skip this check
-  if (storedData.vendorLabelChecksum) {
+  // Skip if: no stored checksum, or skipVendorLabelCheck option is true (for faster skip unchanged)
+  if (storedData.vendorLabelChecksum && !options.skipVendorLabelCheck) {
     const ss = SpreadsheetApp.getActive();
     const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
     const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
@@ -8252,7 +8345,7 @@ function skipToNextChanged(trackComeback) {
         ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
 
         // Use the centralized change detection helper
-        const changeResult = checkVendorForChanges_(vendor, listRow, source);
+        const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
 
         if (changeResult.hasChanges) {
           Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via resume path]`);
@@ -8362,7 +8455,7 @@ function skipToNextChanged(trackComeback) {
     }
 
     // Use the centralized change detection helper
-    const changeResult = checkVendorForChanges_(vendor, listRow, source);
+    const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
 
     if (changeResult.hasChanges) {
       // If Skip 5 session is active, update it
@@ -13388,4 +13481,416 @@ function saveStatusOverride(taskName, chosenStatus, comment) {
   settingsSh.getRange(matchedRow, colT).setValue(newValue);
 
   Logger.log(`Appended override feedback to row ${matchedRow}: "${feedback}"`);
+}
+
+/************************************************************
+ * TASK STATUS UPDATE FUNCTIONS
+ * Update monday.com task statuses directly from the interface
+ ************************************************************/
+
+/**
+ * Task status options for monday.com
+ */
+const TASK_STATUS_OPTIONS = [
+  { label: 'Waiting on Phonexa', value: 'Waiting on Phonexa' },
+  { label: 'Waiting on Client', value: 'Waiting on Client' },
+  { label: 'Waiting on Profitise', value: 'Waiting on Profitise' },
+  { label: 'Done', value: 'Done' }
+];
+
+/**
+ * Open dialog to select tasks and update their status
+ */
+function openTaskStatusDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 3);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done tasks by default (but show all in dialog)
+  const activeTasks = tasks.filter(t => t.status !== 'Done');
+
+  // Build HTML dialog
+  const htmlContent = buildTaskStatusDialogHtml_(vendor, tasks);
+
+  const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
+    .setWidth(600)
+    .setHeight(500);
+
+  ui.showModalDialog(htmlOutput, `📋 Update Task Status - ${vendor}`);
+}
+
+/**
+ * Build HTML for task status dialog
+ */
+function buildTaskStatusDialogHtml_(vendor, tasks) {
+  const taskRows = tasks.map((task, idx) => {
+    const isDone = task.status === 'Done';
+    const rowClass = isDone ? 'task-done' : '';
+    const checkedAttr = isDone ? '' : 'checked';
+
+    return `
+      <tr class="${rowClass}">
+        <td><input type="checkbox" name="task_${idx}" value="${task.id}" ${checkedAttr}></td>
+        <td class="task-name">${escapeHtml_(task.subject)}</td>
+        <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const statusOptions = TASK_STATUS_OPTIONS.map(opt =>
+    `<option value="${opt.value}">${opt.label}</option>`
+  ).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <base target="_top">
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; }
+        h3 { margin-top: 0; color: #1a73e8; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f3f3f3; font-weight: bold; }
+        .task-done { color: #999; }
+        .task-done td { text-decoration: line-through; }
+        .task-name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .task-status { font-size: 12px; color: #666; }
+        .controls { margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; }
+        select { padding: 8px; font-size: 14px; width: 200px; }
+        button { padding: 10px 20px; font-size: 14px; cursor: pointer; margin-right: 10px; }
+        .btn-primary { background: #1a73e8; color: white; border: none; border-radius: 4px; }
+        .btn-primary:hover { background: #1557b0; }
+        .btn-secondary { background: #f1f3f4; color: #333; border: 1px solid #ddd; border-radius: 4px; }
+        .btn-select { font-size: 12px; padding: 4px 8px; margin-right: 5px; }
+        .selection-controls { margin-bottom: 10px; }
+        .status-label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .info { color: #666; font-size: 12px; margin-bottom: 15px; }
+      </style>
+    </head>
+    <body>
+      <h3>Select Tasks to Update</h3>
+      <p class="info">Select the tasks you want to update, then choose a new status.</p>
+
+      <div class="selection-controls">
+        <button type="button" class="btn-select btn-secondary" onclick="selectAll()">Select All</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectNone()">Select None</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectActive()">Select Active Only</button>
+      </div>
+
+      <form id="taskForm">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 30px;"></th>
+              <th>Task</th>
+              <th style="width: 150px;">Current Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${taskRows}
+          </tbody>
+        </table>
+
+        <div class="controls">
+          <label class="status-label">New Status:</label>
+          <select id="newStatus" name="newStatus">
+            ${statusOptions}
+          </select>
+        </div>
+
+        <div class="controls">
+          <button type="button" class="btn-primary" onclick="submitForm()">Update Selected Tasks</button>
+          <button type="button" class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
+        </div>
+      </form>
+
+      <script>
+        function selectAll() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        }
+
+        function selectNone() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        }
+
+        function selectActive() {
+          document.querySelectorAll('tr').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (cb) {
+              cb.checked = !row.classList.contains('task-done');
+            }
+          });
+        }
+
+        function submitForm() {
+          const selectedTaskIds = [];
+          document.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+            selectedTaskIds.push(cb.value);
+          });
+
+          if (selectedTaskIds.length === 0) {
+            alert('Please select at least one task to update.');
+            return;
+          }
+
+          const newStatus = document.getElementById('newStatus').value;
+
+          // Disable the button to prevent double-clicks
+          const btn = document.querySelector('.btn-primary');
+          btn.disabled = true;
+          btn.textContent = 'Updating...';
+
+          google.script.run
+            .withSuccessHandler(function(result) {
+              if (result.success) {
+                google.script.host.close();
+              } else {
+                alert('Error: ' + result.error);
+                btn.disabled = false;
+                btn.textContent = 'Update Selected Tasks';
+              }
+            })
+            .withFailureHandler(function(error) {
+              alert('Error: ' + error.message);
+              btn.disabled = false;
+              btn.textContent = 'Update Selected Tasks';
+            })
+            .updateTaskStatusesFromDialog(selectedTaskIds, newStatus);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Helper to escape HTML
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Called from dialog to update multiple task statuses
+ */
+function updateTaskStatusesFromDialog(taskIds, newStatus) {
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast(`Updating ${taskIds.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+  const errors = [];
+
+  for (const taskId of taskIds) {
+    const result = updateMondayTaskStatus_(taskId, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+      errors.push(result.error);
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s)`, '✅ Done', 3);
+
+    // Hard refresh to capture the changes
+    Utilities.sleep(1000);
+    battleStationHardRefresh();
+
+    return { success: true };
+  } else {
+    const errorMsg = `Updated ${successCount} task(s), ${errorCount} failed: ${errors.slice(0, 3).join(', ')}`;
+    return { success: false, error: errorMsg };
+  }
+}
+
+/**
+ * Update a single monday.com task's status
+ * @param {string} taskId - The monday.com item ID
+ * @param {string} newStatus - The new status label
+ * @returns {object} { success: boolean, error?: string }
+ */
+function updateMondayTaskStatus_(taskId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Status column value must be JSON with "label" key
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value(
+        board_id: ${boardId},
+        item_id: ${taskId},
+        column_id: "status",
+        value: "${escapedValue}"
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    const result = mondayApiRequest_(mutation, apiToken);
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`Monday API error for task ${taskId}: ${result.errors[0].message}`);
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      Logger.log(`Successfully updated task ${taskId} to "${newStatus}"`);
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task ${taskId}: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Phonexa"
+ */
+function setTaskStatusWaitingPhonexa() {
+  setAllActiveTasksToStatus_('Waiting on Phonexa');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Client"
+ */
+function setTaskStatusWaitingClient() {
+  setAllActiveTasksToStatus_('Waiting on Client');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Profitise"
+ */
+function setTaskStatusWaitingProfitise() {
+  setAllActiveTasksToStatus_('Waiting on Profitise');
+}
+
+/**
+ * Quick action: Set all active tasks to "Done"
+ */
+function setTaskStatusDone() {
+  setAllActiveTasksToStatus_('Done');
+}
+
+/**
+ * Set all active (non-Done) tasks for current vendor to a specific status
+ */
+function setAllActiveTasksToStatus_(newStatus) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 2);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done tasks
+  const activeTasks = tasks.filter(t => t.status !== 'Done');
+
+  if (activeTasks.length === 0) {
+    ui.alert('No Active Tasks', `All tasks for "${vendor}" are already marked as Done.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Confirm with user
+  const response = ui.alert(
+    `Update ${activeTasks.length} Task(s)`,
+    `Set ${activeTasks.length} active task(s) to "${newStatus}"?\n\n` +
+    `Tasks:\n${activeTasks.slice(0, 5).map(t => `• ${t.subject}`).join('\n')}` +
+    (activeTasks.length > 5 ? `\n... and ${activeTasks.length - 5} more` : ''),
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  ss.toast(`Updating ${activeTasks.length} task(s)...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const task of activeTasks) {
+    const result = updateMondayTaskStatus_(task.id, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s) to "${newStatus}"`, '✅ Done', 3);
+  } else {
+    ui.alert('Partial Update', `Updated ${successCount} task(s), ${errorCount} failed.`, ui.ButtonSet.OK);
+  }
+
+  // Hard refresh to capture the changes
+  Utilities.sleep(1000);
+  battleStationHardRefresh();
 }
