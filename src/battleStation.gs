@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 12:50PM PST
+ * Last Updated: 2026-01-07 1:05PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 12:50PM PST',
+  CODE_VERSION: '2026-01-07 1:05PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -230,9 +230,6 @@ function onOpen() {
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
     .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
-    .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
-    .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
-    .addItem('💤 Snooze Vendor...', 'battleStationSnoozeVendor')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addToUi();
@@ -250,6 +247,8 @@ function onOpen() {
   // Navigation menu - movement and traversal
   ui.createMenu('🧭 Navigation')
     .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
+    .addItem('📥 Inbox Mode (Oldest First)', 'inboxModeNext')
+    .addSeparator()
     .addItem('📬 Inbox Redirect Status', 'viewInboxRedirectStatus')
     .addItem('❌ Clear Inbox Redirect', 'clearInboxRedirectState')
     .addItem('🚀 Turbo Traverse (Batch)', 'turboTraverseAll')
@@ -262,9 +261,6 @@ function onOpen() {
     .addItem('▶ Next Vendor', 'battleStationNext')
     .addItem('◀ Previous Vendor', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
-    .addSeparator()
-    .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
-    .addItem('💤 Snooze Vendor...', 'battleStationSnoozeVendor')
     .addToUi();
 
   // Email Response Templates menu
@@ -8376,6 +8372,122 @@ function checkInboxForNewVendorEmails_(sinceTime) {
     console.error('Error checking inbox for vendor emails:', e);
     return null;
   }
+}
+
+/**
+ * Inbox Mode - Navigate to vendors based on oldest inbox emails
+ * Searches for inbox emails with zzzVendors/ labels, sorted oldest first
+ * Skips emails where the last message is from the user
+ */
+function inboxModeNext() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  ss.toast('Searching inbox for vendor emails...', '📥 Inbox Mode', 2);
+
+  // Get user's email to skip threads where last message is from me
+  const myEmail = Session.getEffectiveUser().getEmail().toLowerCase();
+
+  // Search inbox for all threads (get more to find vendor-labeled ones)
+  const threads = GmailApp.search('in:inbox', 0, 200);
+
+  if (threads.length === 0) {
+    ui.alert('Inbox Empty', 'No emails found in inbox.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Find all threads with zzzVendors labels
+  const vendorThreads = [];
+
+  for (const thread of threads) {
+    // Check if last message is from me - skip if so
+    const messages = thread.getMessages();
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      const fromHeader = lastMessage.getFrom().toLowerCase();
+      if (fromHeader.includes(myEmail)) {
+        continue; // Skip - last message is from me
+      }
+    }
+
+    // Check for zzzVendors label
+    const labels = thread.getLabels();
+    for (const label of labels) {
+      const labelName = label.getName();
+      if (labelName.startsWith('zzzVendors/')) {
+        const vendorName = labelName.substring('zzzVendors/'.length);
+        vendorThreads.push({
+          vendorName: vendorName,
+          threadId: thread.getId(),
+          subject: thread.getFirstMessageSubject(),
+          date: thread.getLastMessageDate(),
+          messageCount: thread.getMessageCount()
+        });
+        break; // Only need one vendor label per thread
+      }
+    }
+  }
+
+  if (vendorThreads.length === 0) {
+    ui.alert('No Vendor Emails', 'No inbox emails found with vendor labels (zzzVendors/).', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Sort by date - oldest first
+  vendorThreads.sort((a, b) => a.date - b.date);
+
+  // Get the oldest one
+  const oldest = vendorThreads[0];
+  Logger.log(`Inbox Mode: Found ${vendorThreads.length} vendor emails. Oldest: ${oldest.vendorName} (${oldest.date})`);
+
+  // Find vendor in list
+  const vendorIdx = findVendorIndexByName_(listSh, oldest.vendorName);
+
+  if (!vendorIdx) {
+    // Vendor not in list - try the next one
+    Logger.log(`Inbox Mode: Vendor "${oldest.vendorName}" not found in list`);
+
+    for (let i = 1; i < vendorThreads.length; i++) {
+      const next = vendorThreads[i];
+      const nextIdx = findVendorIndexByName_(listSh, next.vendorName);
+      if (nextIdx) {
+        ss.toast(`Navigating to ${next.vendorName} (oldest in inbox)`, '📥 Inbox Mode', 3);
+        loadVendorData(nextIdx, { forceChanged: true });
+
+        ui.alert(
+          '📥 Inbox Mode',
+          `Oldest inbox email for: ${next.vendorName}\n\n` +
+          `Subject: ${next.subject}\n` +
+          `Date: ${next.date.toLocaleString()}\n\n` +
+          `${vendorThreads.length} vendor email(s) in inbox total.`,
+          ui.ButtonSet.OK
+        );
+        return;
+      }
+    }
+
+    ui.alert('Vendor Not Found', `Vendor "${oldest.vendorName}" (and others) not found in list.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Navigate to the vendor
+  ss.toast(`Navigating to ${oldest.vendorName} (oldest in inbox)`, '📥 Inbox Mode', 3);
+  loadVendorData(vendorIdx, { forceChanged: true });
+
+  ui.alert(
+    '📥 Inbox Mode',
+    `Oldest inbox email for: ${oldest.vendorName}\n\n` +
+    `Subject: ${oldest.subject}\n` +
+    `Date: ${oldest.date.toLocaleString()}\n\n` +
+    `${vendorThreads.length} vendor email(s) in inbox total.`,
+    ui.ButtonSet.OK
+  );
 }
 
 /**
