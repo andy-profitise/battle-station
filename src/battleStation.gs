@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 12:35PM PST
+ * Last Updated: 2026-01-07 12:50PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 12:35PM PST',
+  CODE_VERSION: '2026-01-07 12:50PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -298,11 +298,6 @@ function onOpen() {
   // Tasks menu - update monday.com task statuses
   ui.createMenu('📋 Tasks')
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
-    .addSeparator()
-    .addItem('⏳ Set to: Waiting on Phonexa', 'setTaskStatusWaitingPhonexa')
-    .addItem('👤 Set to: Waiting on Client', 'setTaskStatusWaitingClient')
-    .addItem('🏢 Set to: Waiting on Profitise', 'setTaskStatusWaitingProfitise')
-    .addItem('✅ Set to: Done', 'setTaskStatusDone')
     .addToUi();
 }
 
@@ -8547,58 +8542,71 @@ function skipToNextChanged(trackComeback) {
   const storedResumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
   Logger.log(`InboxRedirect: lastRedirect=${lastInboxRedirectStr || 'none'}, lastCheck=${lastInboxCheckStr || 'none'}, resumeIdx=${storedResumeIdxStr || 'none'}, resumeVendor=${storedResumeVendorStr || 'none'}`);
 
-  // Record current time as the check time
-  const checkTime = new Date();
-  props.setProperty('BS_INBOX_CHECK_TIME', checkTime.toISOString());
-
   // Determine what time to use for checking new emails
   // If we had an Inbox Redirect, check for emails newer than that
   // Otherwise, check for emails newer than the last check
   const checkSinceTime = lastInboxRedirectTime || lastInboxCheckTime || new Date(0);
-  Logger.log(`Checking inbox for emails since: ${checkSinceTime.toISOString()}`);
 
-  ss.toast('Checking inbox for new vendor emails...', '📬 Inbox Check', 2);
+  // Throttle inbox checks - don't check if we checked less than 5 minutes ago
+  const INBOX_CHECK_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+  const timeSinceLastCheck = lastInboxCheckTime ? (new Date() - lastInboxCheckTime) : Infinity;
+  const shouldCheckInbox = timeSinceLastCheck >= INBOX_CHECK_THROTTLE_MS;
 
-  // Check inbox for new vendor emails
-  const inboxResult = checkInboxForNewVendorEmails_(checkSinceTime);
-  Logger.log(`Inbox check result: ${inboxResult ? `found email for ${inboxResult.vendorName}` : 'no new emails'}`);
+  if (shouldCheckInbox) {
+    Logger.log(`Checking inbox for emails since: ${checkSinceTime.toISOString()}`);
+    ss.toast('Checking inbox for new vendor emails...', '📬 Inbox Check', 2);
 
-  if (inboxResult) {
-    // Found a new email with zzzVendors label - do Inbox Redirect
-    const vendorIdx = findVendorIndexByName_(listSh, inboxResult.vendorName);
-    Logger.log(`DECISION PATH: Inbox Redirect - new email for ${inboxResult.vendorName}, vendorIdx=${vendorIdx}`);
+    // Record current time as the check time
+    const checkTime = new Date();
+    props.setProperty('BS_INBOX_CHECK_TIME', checkTime.toISOString());
 
-    if (vendorIdx) {
-      // Record this as an Inbox Redirect, including where we were so we can resume later
-      const originalIdx = currentVendorIdx || 1;
-      const originalVendor = currentVendorName || 'Vendor #1';
-      props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
-      // Store where to resume from: the NEXT vendor after where we currently are
-      props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', String(originalIdx + 1));
-      props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', originalVendor);
-      Logger.log(`NAVIGATING TO: Vendor #${vendorIdx} (${inboxResult.vendorName}) via Inbox Redirect`);
-      Logger.log(`Stored resume position: will resume from idx ${originalIdx + 1} (after ${originalVendor})`);
+    // Check inbox for new vendor emails
+    const inboxResult = checkInboxForNewVendorEmails_(checkSinceTime);
+    Logger.log(`Inbox check result: ${inboxResult ? `found email for ${inboxResult.vendorName}` : 'no new emails'}`);
 
-      ss.toast('');
-      loadVendorData(vendorIdx, { forceChanged: true });
+    if (inboxResult) {
+      // Found a new email with zzzVendors label - do Inbox Redirect
+      const vendorIdx = findVendorIndexByName_(listSh, inboxResult.vendorName);
+      Logger.log(`DECISION PATH: Inbox Redirect - new email for ${inboxResult.vendorName}, vendorIdx=${vendorIdx}`);
 
-      SpreadsheetApp.getUi().alert(
-        '📬 Inbox Redirect',
-        `New email found for: ${inboxResult.vendorName}\n\n` +
-        `Subject: ${inboxResult.subject}\n\n` +
-        `Redirecting to this vendor.\n\n` +
-        `(Will resume from ${originalVendor} on next skip if no new emails)`,
-        SpreadsheetApp.getUi().ButtonSet.OK
-      );
+      if (vendorIdx) {
+        // Record this as an Inbox Redirect, including where we were so we can resume later
+        const originalIdx = currentVendorIdx || 1;
+        const originalVendor = currentVendorName || 'Vendor #1';
+        props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
+        // Store where to resume from: the NEXT vendor after where we currently are
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', String(originalIdx + 1));
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', originalVendor);
+        Logger.log(`NAVIGATING TO: Vendor #${vendorIdx} (${inboxResult.vendorName}) via Inbox Redirect`);
+        Logger.log(`Stored resume position: will resume from idx ${originalIdx + 1} (after ${originalVendor})`);
 
-      if (trackComeback) checkComeback_();
-      return;
-    } else {
-      // Vendor not found in list - log and continue with normal flow
-      Logger.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list - continuing to normal flow`);
-      ss.toast(`Vendor "${inboxResult.vendorName}" not in list, continuing...`, '⚠️', 2);
+        ss.toast('');
+        loadVendorData(vendorIdx, { forceChanged: true });
+
+        SpreadsheetApp.getUi().alert(
+          '📬 Inbox Redirect',
+          `New email found for: ${inboxResult.vendorName}\n\n` +
+          `Subject: ${inboxResult.subject}\n\n` +
+          `Redirecting to this vendor.\n\n` +
+          `(Will resume from ${originalVendor} on next skip if no new emails)`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+
+        if (trackComeback) checkComeback_();
+        return;
+      } else {
+        // Vendor not found in list - log and continue with normal flow
+        Logger.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list - continuing to normal flow`);
+        ss.toast(`Vendor "${inboxResult.vendorName}" not in list, continuing...`, '⚠️', 2);
+      }
     }
-  } else if (lastInboxRedirectTime) {
+  } else {
+    const minutesAgo = Math.round(timeSinceLastCheck / 60000);
+    Logger.log(`Inbox check THROTTLED - last check was ${minutesAgo} minutes ago (threshold: 5 min)`);
+  }
+
+  // Handle resume from Inbox Redirect (only if we didn't just do a new redirect)
+  if (lastInboxRedirectTime) {
     // No new inbox emails since last Inbox Redirect - resume from stored position
     Logger.log(`DECISION PATH: Resume from Inbox Redirect (no new inbox emails since ${lastInboxRedirectTime.toISOString()})`);
 
@@ -13863,7 +13871,7 @@ function buildTaskStatusDialogHtml_(vendor, tasks) {
 
     return `
       <tr class="${rowClass}">
-        <td><input type="checkbox" name="task_${idx}" value="${task.id}" ${checkedAttr}></td>
+        <td><input type="checkbox" name="task_${idx}" value="${task.itemId}" ${checkedAttr}></td>
         <td class="task-name">${escapeHtml_(task.subject)}</td>
         <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
       </tr>
