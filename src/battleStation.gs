@@ -126,7 +126,10 @@ const BS_CFG = {
 
   // Add to BS_CFG:
   TASKS_PROJECT_COLUMN: 'board_relation_mkqbg3mb',
-  
+
+  // monday.com termColumns parameter for task links (required for search to work)
+  MONDAY_TERM_COLUMNS: '&termColumns=XQAAAAIHAQAAAAAAAABBKoMjDDqyANxrovq8XKyGwNnH_qlGnejuun9f58me3bIkQlIN-udrv_3l68n9913YtoUdByP1TEKuott7juTxyA1A3XyP-yDcTWiDbM6HgAGo7IMFxfsbtqtRlpMFCd04s-NQ9LohwAvGaQ0iWvLb0gXThsebqdG5Jz25EHNjYrlNuZuhw70owWm_wHFdnD9wnJLUCye1QGu-TMKeaokx96GXNU9OAZuVp3CRRre5SU____Xc3YA',
+
     // Large-Scale Projects ID to Name mapping
     PROJECT_MAP: {
       '9520665110': 'Home Services',
@@ -1980,7 +1983,7 @@ function loadVendorData(vendorIndex, options) {
     for (const task of tasks) {
       // Task name - clickable link to Tasks board filtered by task name
       const encodedTask = encodeURIComponent(task.subject);
-      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}`;
+      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
       bsSh.getRange(currentRow, 1)
         .setFormula(`=HYPERLINK("${taskFilterLink}", "${task.subject.replace(/"/g, '""')}")`)
         .setWrap(true)
@@ -5712,12 +5715,12 @@ function createEmailDraftAndGetUrl(recipients, subject, body) {
   try {
     // Get Gmail signature from settings
     let signature = '';
+    const myEmail = Session.getActiveUser().getEmail();
     try {
-      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
       const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
       if (sendAsSettings && sendAsSettings.sendAs) {
         const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
-                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail.toLowerCase()) ||
                               sendAsSettings.sendAs[0];
         if (primarySendAs && primarySendAs.signature) {
           signature = primarySendAs.signature;
@@ -5736,14 +5739,19 @@ function createEmailDraftAndGetUrl(recipients, subject, body) {
       fullBodyHtml += '<br><br>' + signature;
     }
 
-    // Create draft with HTML body
+    // Create draft with HTML body and BCC to sales@profitise.com
     const draft = GmailApp.createDraft(recipients, subject, '', {
-      htmlBody: fullBodyHtml
+      htmlBody: fullBodyHtml,
+      bcc: 'sales@profitise.com'
     });
     const draftId = draft.getId();
 
-    // Gmail draft URL format
-    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+    // Get the message ID via Gmail API for proper direct link
+    const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+    const messageId = gmailDraft.message.id;
+
+    // Gmail draft URL format - use message ID for direct compose link
+    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${messageId}`;
 
     return {
       success: true,
@@ -6335,12 +6343,10 @@ function getEmailContactsDialogHtml_(vendor, contactData) {
           document.getElementById('draftLoading').classList.remove('show');
 
           if (result.success) {
-            document.getElementById('success').innerHTML =
-              '✓ Draft created! <a href="' + result.draftUrl + '" target="_blank">Open in Gmail</a>';
-            document.getElementById('success').classList.add('show');
-
             // Open Gmail draft in new window
             window.open(result.draftUrl, '_blank');
+            // Close the dialog
+            google.script.host.close();
           } else {
             showError(result.error || 'Failed to create draft');
           }
@@ -12935,7 +12941,7 @@ SUMMARY:
   if (suggestedUpdates.length > 0) {
     updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
     for (const update of suggestedUpdates) {
-      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}`;
+      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}${BS_CFG.MONDAY_TERM_COLUMNS}`;
       const statusBg = getStatusColor_(update.newStatus);
 
       // Build alternative status buttons (exclude current and suggested)
