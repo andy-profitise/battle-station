@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 11:25AM PST
+ * Last Updated: 2026-01-07 12:05PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 11:25AM PST',
+  CODE_VERSION: '2026-01-07 12:05PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -13870,26 +13870,14 @@ function setAllActiveTasksToStatus_(newStatus) {
     return;
   }
 
-  // Confirm with user
-  const response = ui.alert(
-    `Update ${activeTasks.length} Task(s)`,
-    `Set ${activeTasks.length} active task(s) to "${newStatus}"?\n\n` +
-    `Tasks:\n${activeTasks.slice(0, 5).map(t => `• ${t.subject}`).join('\n')}` +
-    (activeTasks.length > 5 ? `\n... and ${activeTasks.length - 5} more` : ''),
-    ui.ButtonSet.YES_NO
-  );
-
-  if (response !== ui.Button.YES) {
-    return;
-  }
-
-  ss.toast(`Updating ${activeTasks.length} task(s)...`, '📋 Updating', -1);
+  // No confirmation - just do the update
+  ss.toast(`Updating ${activeTasks.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
 
   let successCount = 0;
   let errorCount = 0;
 
   for (const task of activeTasks) {
-    const result = updateMondayTaskStatus_(task.id, newStatus);
+    const result = updateMondayTaskStatus_(task.itemId, newStatus);
     if (result.success) {
       successCount++;
     } else {
