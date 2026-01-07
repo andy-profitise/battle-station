@@ -288,6 +288,16 @@ function onOpen() {
     .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
     .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
     .addToUi();
+
+  // Tasks menu - update monday.com task statuses
+  ui.createMenu('📋 Tasks')
+    .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addSeparator()
+    .addItem('⏳ Set to: Waiting on Phonexa', 'setTaskStatusWaitingPhonexa')
+    .addItem('👤 Set to: Waiting on Client', 'setTaskStatusWaitingClient')
+    .addItem('🏢 Set to: Waiting on Profitise', 'setTaskStatusWaitingProfitise')
+    .addItem('✅ Set to: Done', 'setTaskStatusDone')
+    .addToUi();
 }
 
 /************************************************************
@@ -6791,60 +6801,63 @@ The user selected email #${emailIndex + 1} (Subject: "${selectedEmail.subject}")
 function battleStationGoTo() {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!listSh) return;
-  
+
   const totalVendors = listSh.getLastRow() - 1;
+  const minRow = 2;  // Row 2 is first vendor (row 1 is header)
+  const maxRow = totalVendors + 1;
   const ui = SpreadsheetApp.getUi();
   const response = ui.prompt(
     'Go to Vendor',
-    `Enter vendor index (1-${totalVendors}) or vendor name:`,
+    `Enter row number (${minRow}-${maxRow}) or vendor name:`,
     ui.ButtonSet.OK_CANCEL
   );
-  
+
   if (response.getSelectedButton() === ui.Button.OK) {
     const input = response.getResponseText().trim();
-    const index = parseInt(input);
-    
-    // If it's a number, go directly to that index
-    if (!isNaN(index) && index >= 1 && index <= totalVendors) {
-      loadVendorData(index);
+    const rowNum = parseInt(input);
+
+    // If it's a number, treat it as a row number (row 2 = first vendor)
+    if (!isNaN(rowNum) && rowNum >= minRow && rowNum <= maxRow) {
+      const vendorIndex = rowNum - 1;  // Convert row to index (row 2 = index 1)
+      loadVendorData(vendorIndex);
       return;
     }
-    
+
     // Otherwise, search by name
     const searchTerm = input.toLowerCase();
     const data = listSh.getDataRange().getValues();
     const matches = [];
-    
+
     for (let i = 1; i < data.length; i++) {
       const vendorName = String(data[i][0] || '').toLowerCase();
       if (vendorName.includes(searchTerm)) {
-        matches.push({ index: i, name: data[i][0] });
+        matches.push({ index: i, row: i + 1, name: data[i][0] });
       }
     }
-    
+
     if (matches.length === 0) {
       ui.alert(`No vendors found matching "${input}"`);
     } else if (matches.length === 1) {
       loadVendorData(matches[0].index);
     } else {
-      // Multiple matches - show list
-      let matchList = matches.slice(0, 15).map(m => `${m.index}: ${m.name}`).join('\n');
+      // Multiple matches - show list with row numbers
+      let matchList = matches.slice(0, 15).map(m => `Row ${m.row}: ${m.name}`).join('\n');
       if (matches.length > 15) {
         matchList += `\n... and ${matches.length - 15} more`;
       }
-      
+
       const pickResponse = ui.prompt(
         `Found ${matches.length} matches`,
-        `${matchList}\n\nEnter the index number to go to:`,
+        `${matchList}\n\nEnter the row number to go to:`,
         ui.ButtonSet.OK_CANCEL
       );
-      
+
       if (pickResponse.getSelectedButton() === ui.Button.OK) {
-        const pickIndex = parseInt(pickResponse.getResponseText());
-        if (!isNaN(pickIndex) && pickIndex >= 1 && pickIndex <= totalVendors) {
-          loadVendorData(pickIndex);
+        const pickRow = parseInt(pickResponse.getResponseText());
+        if (!isNaN(pickRow) && pickRow >= minRow && pickRow <= maxRow) {
+          loadVendorData(pickRow - 1);  // Convert row to index
         }
       }
     }
@@ -13388,4 +13401,416 @@ function saveStatusOverride(taskName, chosenStatus, comment) {
   settingsSh.getRange(matchedRow, colT).setValue(newValue);
 
   Logger.log(`Appended override feedback to row ${matchedRow}: "${feedback}"`);
+}
+
+/************************************************************
+ * TASK STATUS UPDATE FUNCTIONS
+ * Update monday.com task statuses directly from the interface
+ ************************************************************/
+
+/**
+ * Task status options for monday.com
+ */
+const TASK_STATUS_OPTIONS = [
+  { label: 'Waiting on Phonexa', value: 'Waiting on Phonexa' },
+  { label: 'Waiting on Client', value: 'Waiting on Client' },
+  { label: 'Waiting on Profitise', value: 'Waiting on Profitise' },
+  { label: 'Done', value: 'Done' }
+];
+
+/**
+ * Open dialog to select tasks and update their status
+ */
+function openTaskStatusDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 3);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done tasks by default (but show all in dialog)
+  const activeTasks = tasks.filter(t => t.status !== 'Done');
+
+  // Build HTML dialog
+  const htmlContent = buildTaskStatusDialogHtml_(vendor, tasks);
+
+  const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
+    .setWidth(600)
+    .setHeight(500);
+
+  ui.showModalDialog(htmlOutput, `📋 Update Task Status - ${vendor}`);
+}
+
+/**
+ * Build HTML for task status dialog
+ */
+function buildTaskStatusDialogHtml_(vendor, tasks) {
+  const taskRows = tasks.map((task, idx) => {
+    const isDone = task.status === 'Done';
+    const rowClass = isDone ? 'task-done' : '';
+    const checkedAttr = isDone ? '' : 'checked';
+
+    return `
+      <tr class="${rowClass}">
+        <td><input type="checkbox" name="task_${idx}" value="${task.id}" ${checkedAttr}></td>
+        <td class="task-name">${escapeHtml_(task.subject)}</td>
+        <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const statusOptions = TASK_STATUS_OPTIONS.map(opt =>
+    `<option value="${opt.value}">${opt.label}</option>`
+  ).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <base target="_top">
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; }
+        h3 { margin-top: 0; color: #1a73e8; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f3f3f3; font-weight: bold; }
+        .task-done { color: #999; }
+        .task-done td { text-decoration: line-through; }
+        .task-name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .task-status { font-size: 12px; color: #666; }
+        .controls { margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; }
+        select { padding: 8px; font-size: 14px; width: 200px; }
+        button { padding: 10px 20px; font-size: 14px; cursor: pointer; margin-right: 10px; }
+        .btn-primary { background: #1a73e8; color: white; border: none; border-radius: 4px; }
+        .btn-primary:hover { background: #1557b0; }
+        .btn-secondary { background: #f1f3f4; color: #333; border: 1px solid #ddd; border-radius: 4px; }
+        .btn-select { font-size: 12px; padding: 4px 8px; margin-right: 5px; }
+        .selection-controls { margin-bottom: 10px; }
+        .status-label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .info { color: #666; font-size: 12px; margin-bottom: 15px; }
+      </style>
+    </head>
+    <body>
+      <h3>Select Tasks to Update</h3>
+      <p class="info">Select the tasks you want to update, then choose a new status.</p>
+
+      <div class="selection-controls">
+        <button type="button" class="btn-select btn-secondary" onclick="selectAll()">Select All</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectNone()">Select None</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectActive()">Select Active Only</button>
+      </div>
+
+      <form id="taskForm">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 30px;"></th>
+              <th>Task</th>
+              <th style="width: 150px;">Current Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${taskRows}
+          </tbody>
+        </table>
+
+        <div class="controls">
+          <label class="status-label">New Status:</label>
+          <select id="newStatus" name="newStatus">
+            ${statusOptions}
+          </select>
+        </div>
+
+        <div class="controls">
+          <button type="button" class="btn-primary" onclick="submitForm()">Update Selected Tasks</button>
+          <button type="button" class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
+        </div>
+      </form>
+
+      <script>
+        function selectAll() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        }
+
+        function selectNone() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        }
+
+        function selectActive() {
+          document.querySelectorAll('tr').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (cb) {
+              cb.checked = !row.classList.contains('task-done');
+            }
+          });
+        }
+
+        function submitForm() {
+          const selectedTaskIds = [];
+          document.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+            selectedTaskIds.push(cb.value);
+          });
+
+          if (selectedTaskIds.length === 0) {
+            alert('Please select at least one task to update.');
+            return;
+          }
+
+          const newStatus = document.getElementById('newStatus').value;
+
+          // Disable the button to prevent double-clicks
+          const btn = document.querySelector('.btn-primary');
+          btn.disabled = true;
+          btn.textContent = 'Updating...';
+
+          google.script.run
+            .withSuccessHandler(function(result) {
+              if (result.success) {
+                google.script.host.close();
+              } else {
+                alert('Error: ' + result.error);
+                btn.disabled = false;
+                btn.textContent = 'Update Selected Tasks';
+              }
+            })
+            .withFailureHandler(function(error) {
+              alert('Error: ' + error.message);
+              btn.disabled = false;
+              btn.textContent = 'Update Selected Tasks';
+            })
+            .updateTaskStatusesFromDialog(selectedTaskIds, newStatus);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Helper to escape HTML
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Called from dialog to update multiple task statuses
+ */
+function updateTaskStatusesFromDialog(taskIds, newStatus) {
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast(`Updating ${taskIds.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+  const errors = [];
+
+  for (const taskId of taskIds) {
+    const result = updateMondayTaskStatus_(taskId, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+      errors.push(result.error);
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s)`, '✅ Done', 3);
+
+    // Hard refresh to capture the changes
+    Utilities.sleep(1000);
+    battleStationHardRefresh();
+
+    return { success: true };
+  } else {
+    const errorMsg = `Updated ${successCount} task(s), ${errorCount} failed: ${errors.slice(0, 3).join(', ')}`;
+    return { success: false, error: errorMsg };
+  }
+}
+
+/**
+ * Update a single monday.com task's status
+ * @param {string} taskId - The monday.com item ID
+ * @param {string} newStatus - The new status label
+ * @returns {object} { success: boolean, error?: string }
+ */
+function updateMondayTaskStatus_(taskId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Status column value must be JSON with "label" key
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value(
+        board_id: ${boardId},
+        item_id: ${taskId},
+        column_id: "status",
+        value: "${escapedValue}"
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    const result = mondayApiRequest_(mutation, apiToken);
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`Monday API error for task ${taskId}: ${result.errors[0].message}`);
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      Logger.log(`Successfully updated task ${taskId} to "${newStatus}"`);
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task ${taskId}: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Phonexa"
+ */
+function setTaskStatusWaitingPhonexa() {
+  setAllActiveTasksToStatus_('Waiting on Phonexa');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Client"
+ */
+function setTaskStatusWaitingClient() {
+  setAllActiveTasksToStatus_('Waiting on Client');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Profitise"
+ */
+function setTaskStatusWaitingProfitise() {
+  setAllActiveTasksToStatus_('Waiting on Profitise');
+}
+
+/**
+ * Quick action: Set all active tasks to "Done"
+ */
+function setTaskStatusDone() {
+  setAllActiveTasksToStatus_('Done');
+}
+
+/**
+ * Set all active (non-Done) tasks for current vendor to a specific status
+ */
+function setAllActiveTasksToStatus_(newStatus) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 2);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done tasks
+  const activeTasks = tasks.filter(t => t.status !== 'Done');
+
+  if (activeTasks.length === 0) {
+    ui.alert('No Active Tasks', `All tasks for "${vendor}" are already marked as Done.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Confirm with user
+  const response = ui.alert(
+    `Update ${activeTasks.length} Task(s)`,
+    `Set ${activeTasks.length} active task(s) to "${newStatus}"?\n\n` +
+    `Tasks:\n${activeTasks.slice(0, 5).map(t => `• ${t.subject}`).join('\n')}` +
+    (activeTasks.length > 5 ? `\n... and ${activeTasks.length - 5} more` : ''),
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  ss.toast(`Updating ${activeTasks.length} task(s)...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const task of activeTasks) {
+    const result = updateMondayTaskStatus_(task.id, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s) to "${newStatus}"`, '✅ Done', 3);
+  } else {
+    ui.alert('Partial Update', `Updated ${successCount} task(s), ${errorCount} failed.`, ui.ButtonSet.OK);
+  }
+
+  // Hard refresh to capture the changes
+  Utilities.sleep(1000);
+  battleStationHardRefresh();
 }
