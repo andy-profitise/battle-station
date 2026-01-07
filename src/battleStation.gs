@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 12:05PM PST
+ * Last Updated: 2026-01-07 12:15PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 12:05PM PST',
+  CODE_VERSION: '2026-01-07 12:15PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -240,6 +240,7 @@ function onOpen() {
     .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
     .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
     .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addItem('💥 Hardest Refresh (Reset All Caches)', 'battleStationHardestRefresh')
     .addSeparator()
     .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
@@ -5312,7 +5313,37 @@ function battleStationHardRefresh() {
   // Clear the cache
   clearBSCache_();
   ss.toast('Cache cleared, refreshing...', '🔄 Hard Refresh', 2);
-  
+
+  const currentIndex = getCurrentVendorIndex_();
+  loadVendorData(currentIndex || 1, { useCache: false });
+}
+
+/**
+ * Hardest Refresh - clears ALL caches including batch caches (monday.com tasks, calendar events, etc.)
+ * Use when you need completely fresh data from all external sources
+ */
+function battleStationHardestRefresh() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  ss.toast('Clearing ALL caches (sheet + script)...', '💥 Hardest Refresh', 2);
+
+  // Clear the BS Cache sheet (box, gdrive, airtable, monday_items, monday_tasks, etc.)
+  clearBSCache_();
+
+  // Clear the Script Cache (calendar events)
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Hardest Refresh: All caches cleared (BS Cache sheet + Script Cache)');
+
+  ss.toast('All caches cleared, refreshing...', '💥 Hardest Refresh', 2);
+
   const currentIndex = getCurrentVendorIndex_();
   loadVendorData(currentIndex || 1, { useCache: false });
 }
