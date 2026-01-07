@@ -1779,7 +1779,12 @@ function loadVendorData(vendorIndex, options) {
     } else if (!storedData) {
       Logger.log(`First view for ${vendor} - no previous checksums`);
     }
-    
+
+    // Color the vendor's row in the List sheet based on change status
+    const rowColor = isUnchanged ? BS_CFG.COLOR_ROW_SKIPPED : BS_CFG.COLOR_ROW_CHANGED;
+    setListRowColor_(listSh, listRow, rowColor);
+    Logger.log(`Set row ${listRow} color to ${isUnchanged ? 'yellow (unchanged)' : 'green (changed)'}`);
+
     // Store the new checksums including module checksums
     storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums);
     Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}`);
