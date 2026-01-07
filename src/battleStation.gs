@@ -4994,18 +4994,22 @@ function setListRowColor_(listSh, listRow, color) {
 
 /**
  * Skip to next vendor with changes (different checksum)
+ *
+ * Automatic Return Path: When Skip Unchanged jumps over skipped vendors to find one with changes,
+ * it stores the original position. The next Skip Unchanged call will return to that position
+ * and continue from there, ensuring you don't miss any vendors in your sequential review.
  */
 function skipToNextChanged(trackComeback) {
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   const props = PropertiesService.getScriptProperties();
-  
+
   if (!bsSh || !listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
   // If trackComeback wasn't explicitly passed, check if there's an existing comeback pending
   if (trackComeback === undefined) {
     const comebackStr = props.getProperty('BS_COMEBACK');
@@ -5013,39 +5017,76 @@ function skipToNextChanged(trackComeback) {
       trackComeback = true;  // Auto-enable if comeback is pending
     }
   }
-  
+
   const listData = listSh.getDataRange().getValues();
   const totalVendors = listData.length - 1;
-  
-  // Get current index using the same function as other navigation
-  let currentIdx = getCurrentVendorIndex_() || 1;
-  
+
+  // Check for return path from previous skip operation
+  // If we previously jumped ahead, we should return to where we were and continue from there
+  const returnPathStr = props.getProperty('BS_SKIP_RETURN_PATH');
+  let startIdx;
+  let usingReturnPath = false;
+
+  if (returnPathStr) {
+    try {
+      const returnPath = JSON.parse(returnPathStr);
+      startIdx = returnPath.returnToIndex;
+      usingReturnPath = true;
+      props.deleteProperty('BS_SKIP_RETURN_PATH');  // Clear it - we're using it now
+      Logger.log(`Using return path: continuing from vendor ${startIdx} (was at ${returnPath.jumpedToIndex})`);
+      ss.toast(`Returning to continue from vendor #${startIdx}...`, '↩️ Return Path', 2);
+    } catch (e) {
+      props.deleteProperty('BS_SKIP_RETURN_PATH');
+      startIdx = getCurrentVendorIndex_() || 1;
+    }
+  } else {
+    startIdx = getCurrentVendorIndex_() || 1;
+  }
+
+  // Store the starting position for potential return path
+  const originalStartIdx = startIdx;
+  let currentIdx = startIdx;
   let skippedCount = 0;
-  
+
   ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
-  
+
   // Loop through vendors looking for one with changes - start from NEXT vendor
   while (true) {
     currentIdx++;  // Move to next vendor FIRST
-    
+
     // Stop at end
     if (currentIdx > totalVendors) {
       ss.toast('');
       SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
       return;
     }
-    
+
     const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
     const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
     const listRow = currentIdx + 1;
-    
+
     ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
-    
+
     // Use the centralized change detection helper
     const changeResult = checkVendorForChanges_(vendor, listRow, source);
-    
+
     if (changeResult.hasChanges) {
       ss.toast('');
+
+      // If we skipped vendors to get here, set up a return path for next Skip Unchanged
+      // This ensures we go back to where we were and continue our sequential review
+      if (skippedCount > 0 && !usingReturnPath) {
+        const returnPath = {
+          returnToIndex: originalStartIdx,  // Return to where we were before the jump
+          jumpedToIndex: currentIdx,
+          jumpedToVendor: vendor,
+          skippedCount: skippedCount,
+          timestamp: new Date().toISOString()
+        };
+        props.setProperty('BS_SKIP_RETURN_PATH', JSON.stringify(returnPath));
+        Logger.log(`Set return path: after ${vendor}, return to vendor ${originalStartIdx} to continue`);
+      }
+
       loadVendorData(currentIdx, { forceChanged: true, rowColor: BS_CFG.COLOR_ROW_CHANGED });
       if (skippedCount > 0) {
         SpreadsheetApp.getUi().alert(`Skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
@@ -5053,7 +5094,7 @@ function skipToNextChanged(trackComeback) {
       if (trackComeback) checkComeback_();
       return;
     }
-    
+
     // No changes - mark as skipped (yellow)
     setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
     skippedCount++;
