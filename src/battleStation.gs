@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 11:15AM PST
+ * Last Updated: 2026-01-07 11:25AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 11:15AM PST',
+  CODE_VERSION: '2026-01-07 11:25AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -8038,6 +8038,9 @@ function findVendorIndexByName_(listSh, vendorName) {
  */
 function checkInboxForNewVendorEmails_(sinceTime) {
   try {
+    // Get current user's email to check if last message is from me
+    const myEmail = Session.getEffectiveUser().getEmail().toLowerCase();
+
     // Search inbox for emails since the given time
     const threads = GmailApp.search('in:inbox', 0, 100);
 
@@ -8047,6 +8050,18 @@ function checkInboxForNewVendorEmails_(sinceTime) {
       // Skip if older than sinceTime
       if (lastMessageDate <= sinceTime) {
         continue;
+      }
+
+      // Check if last message in thread is from me - skip if so
+      // (It's probably a response I sent that's still in inbox waiting for reply)
+      const messages = thread.getMessages();
+      if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const fromHeader = lastMessage.getFrom().toLowerCase();
+        if (fromHeader.includes(myEmail)) {
+          console.log(`Skipping inbox thread - last message is from me: ${thread.getFirstMessageSubject()}`);
+          continue;
+        }
       }
 
       // Check for zzzVendors label
