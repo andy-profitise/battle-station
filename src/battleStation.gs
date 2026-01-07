@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-06 10:45PM PST
+ * Last Updated: 2026-01-07 11:15AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -3043,234 +3043,180 @@ function searchGmailFromLink_(gmailLink, querySetName) {
 
 /**
  * Get tasks for a specific vendor from monday.com Tasks board
+ * Uses cached batch data from getAllMondayTasks_() for fast lookups
  */
 function getTasksForVendor_(vendor, listRow) {
-  const apiToken = BS_CFG.MONDAY_API_TOKEN;
-  const tasksBoardId = BS_CFG.TASKS_BOARD_ID;
-  
-  Logger.log(`=== MONDAY.COM TASKS SEARCH ===`);
+  Logger.log(`=== MONDAY.COM TASKS SEARCH (cached) ===`);
   Logger.log(`Vendor: ${vendor}`);
-  
-  const escapedVendor = vendor.replace(/"/g, '\\"');
-  
-  const query = `
-    query {
-      boards (ids: [${tasksBoardId}]) {
-        items_page (
-          limit: 100
-          query_params: {
-            rules: [
-              {
-                column_id: "name"
-                compare_value: ["${escapedVendor}"]
-                operator: contains_text
-              }
-            ]
-          }
-        ) {
-          items {
-            id
-            name
-            group {
-              id
-              title
-            }
-            column_values {
-              id
-              text
-              type
-              ... on BoardRelationValue {
-                linked_items {
-                  id
-                  name
-                }
-              }
-            }
-            created_at
-            updated_at
-          }
-        }
-      }
-    }
-  `;
-  
-  try {
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
-      muteHttpExceptions: true
-    };
-    
-    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
-    const result = JSON.parse(response.getContentText());
-    
-    if (result.errors && result.errors.length > 0) {
-      Logger.log(`API Error: ${result.errors[0].message}`);
-      return [];
-    }
-    
-    if (!result.data?.boards?.[0]?.items_page?.items) {
-      Logger.log('No items found in Tasks board');
-      return [];
-    }
-    
-    const items = result.data.boards[0].items_page.items;
-    Logger.log(`Found ${items.length} tasks matching vendor`);
-    
-    const tasks = [];
-    
-    // Group priority for sorting (DESC = higher number first)
-    const groupPriority = {
-      'topics': 3,                    // Ongoing Projects
-      'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
-      'group_title': 1,              // Completed Projects
-      'group_mkqf4yzy': 0            // Task Templates
-    };
-    
-    // Explicit project order (from Large-Scale Projects board structure)
-    const projectPriority = {
-      'Home Services': 1,
-      'ACA': 2,
-      'Vertical Activation': 3,
-      'Monthly Returns': 4,
-      'CPL/Zip Optimizations': 5,
-      'Accounting/Invoices': 6,
-      'System Admin': 7,
-      'URL Whitelist': 8,
-      'Outbound Communication': 9,
-      'Pre-Onboarding': 10,
-      'Appointments': 11,
-      'Onboarding - Buyer': 12,
-      'Onboarding - Affiliate': 13,
-      'Onboarding - Vertical': 14,
-      'Templates': 15,
-      'Morning Meeting': 16,
-      'Week of 07/28/25': 17
-    };
-    
-    for (const item of items) {
-      const itemName = String(item.name || '');
-      const groupId = item.group?.id || '';
-      const groupTitle = item.group?.title || '';
-      
-      let status = '';
-      let projectName = '';
-      let tempInd = null;
-      let taskDate = '';  // Date from timeline column
-      let statusColumnId = 'status';  // Default, will be updated if found
-      let lastUpdated = '';  // Last Updated column
 
-      for (const col of item.column_values) {
-        // Status column
-        if (col.id === 'status' || col.id === 'status4' || col.id === 'status_1') {
-          status = col.text || '';
-          statusColumnId = col.id;  // Remember which column has the status
-        }
-        // Project column (board relation)
-        else if (col.id === BS_CFG.TASKS_PROJECT_COLUMN) {
-          if (col.linked_items && col.linked_items.length > 0) {
-            projectName = col.linked_items.map(li => li.name).join(', ');
-          } else if (col.text) {
-            projectName = col.text;
-          }
-        }
-        // temp_ind column
-        else if (col.id === 'numeric_mkt9pbj0') {
-          if (col.text && col.text.trim()) {
-            tempInd = parseFloat(col.text);
-          }
-        }
-        // Date column (timeline type - shows as "YYYY-MM-DD - YYYY-MM-DD" or just end date)
-        else if (col.id === 'timerange_mkqfmzyf') {
-          if (col.text && col.text.trim()) {
-            // Timeline format is "Start - End", we want the end date
-            const dateParts = col.text.split(' - ');
-            taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
-          }
-        }
-        // Last Updated column
-        else if (col.id === 'pulse_updated_mkyyesw') {
-          if (col.text && col.text.trim()) {
-            // Format is typically "YYYY-MM-DD HH:MM:SS" or similar, extract just the date
-            const datePart = col.text.split(' ')[0];
-            lastUpdated = datePart;
-          }
-        }
-      }
-      
-      const createdDate = new Date(item.created_at);
-      const tz = 'America/Los_Angeles';
-      const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
-      
-      tasks.push({
-        itemId: item.id,  // Monday.com item ID for updates
-        statusColumnId: statusColumnId,  // Status column ID for updates
-        subject: itemName,
-        status: status || 'No Status',
-        taskDate: taskDate,  // Date from timeline column
-        lastUpdated: lastUpdated,  // Last Updated column
-        created: createdFormatted,
-        project: projectName || `Group: ${groupTitle}`,
-        isDone: (status.toLowerCase() === 'done'),
+  // Get all tasks from cache (or fetch if not cached)
+  const allTasks = getAllMondayTasks_();
 
-        // Sorting fields
-        groupId: groupId,
-        groupPriority: groupPriority[groupId] || -1,
-        projectName: projectName,
-        projectPriority: projectPriority[projectName] || 999,
-        tempInd: tempInd,
-        tempIndSort: (tempInd === null) ? 999999 : tempInd  // Blanks at end
-      });
-      
-      Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+  if (!allTasks || allTasks.length === 0) {
+    Logger.log('No tasks found in cache');
+    return [];
+  }
+
+  // Filter tasks by vendor name (case-insensitive contains)
+  const searchTerm = vendor.toLowerCase();
+  const matchingItems = allTasks.filter(task => task.nameLower.includes(searchTerm));
+
+  Logger.log(`Found ${matchingItems.length} tasks matching vendor (from ${allTasks.length} cached tasks)`);
+
+  if (matchingItems.length === 0) {
+    return [];
+  }
+
+  const tasks = [];
+
+  // Group priority for sorting (DESC = higher number first)
+  const groupPriority = {
+    'topics': 3,                    // Ongoing Projects
+    'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
+    'group_title': 1,              // Completed Projects
+    'group_mkqf4yzy': 0            // Task Templates
+  };
+
+  // Explicit project order (from Large-Scale Projects board structure)
+  const projectPriority = {
+    'Home Services': 1,
+    'ACA': 2,
+    'Vertical Activation': 3,
+    'Monthly Returns': 4,
+    'CPL/Zip Optimizations': 5,
+    'Accounting/Invoices': 6,
+    'System Admin': 7,
+    'URL Whitelist': 8,
+    'Outbound Communication': 9,
+    'Pre-Onboarding': 10,
+    'Appointments': 11,
+    'Onboarding - Buyer': 12,
+    'Onboarding - Affiliate': 13,
+    'Onboarding - Vertical': 14,
+    'Templates': 15,
+    'Morning Meeting': 16,
+    'Week of 07/28/25': 17
+  };
+
+  const tz = 'America/Los_Angeles';
+
+  for (const item of matchingItems) {
+    const itemName = item.name;
+    const groupId = item.groupId;
+    const groupTitle = item.groupTitle;
+    const colVals = item.columnValues || {};
+
+    // Extract values from cached column data
+    let status = '';
+    let statusColumnId = 'status';
+    let projectName = '';
+    let tempInd = null;
+    let taskDate = '';
+    let lastUpdated = '';
+
+    // Status column - check common status column IDs
+    for (const colId of ['status', 'status4', 'status_1']) {
+      if (colVals[colId]?.text) {
+        status = colVals[colId].text;
+        statusColumnId = colId;
+        break;
+      }
     }
-    
-    // Sort by: Done status (not done first)
-    // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
-    // For DONE: Created Date (DESC) only
-    tasks.sort((a, b) => {
-      // 0. Done status (not done before done)
-      if (a.isDone !== b.isDone) {
-        return a.isDone ? 1 : -1;
+
+    // Project column (board relation)
+    const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+    if (projectCol) {
+      if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+        projectName = projectCol.linked_items.map(li => li.name).join(', ');
+      } else if (projectCol.text) {
+        projectName = projectCol.text;
       }
-      
-      // If BOTH are done, sort only by Created Date DESC
-      if (a.isDone && b.isDone) {
-        const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
-        const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
-        return dateB - dateA;
-      }
-      
-      // For not-done tasks, use full sorting logic:
-      // 1. Group priority (DESC - higher numbers first)
-      if (a.groupPriority !== b.groupPriority) {
-        return b.groupPriority - a.groupPriority;
-      }
-      
-      // 2. Project (explicit order from Large-Scale Projects)
-      if (a.projectPriority !== b.projectPriority) {
-        return a.projectPriority - b.projectPriority;
-      }
-      
-      // 3. temp_ind (ASC - low to high, blanks at end)
-      if (a.tempIndSort !== b.tempIndSort) {
-        return a.tempIndSort - b.tempIndSort;
-      }
-      
-      // 4. Created Date (DESC - newest first)
+    }
+
+    // temp_ind column
+    const tempIndCol = colVals['numeric_mkt9pbj0'];
+    if (tempIndCol?.text && tempIndCol.text.trim()) {
+      tempInd = parseFloat(tempIndCol.text);
+    }
+
+    // Date column (timeline)
+    const dateCol = colVals['timerange_mkqfmzyf'];
+    if (dateCol?.text && dateCol.text.trim()) {
+      const dateParts = dateCol.text.split(' - ');
+      taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
+    }
+
+    // Last Updated column
+    const lastUpdatedCol = colVals['pulse_updated_mkyyesw'];
+    if (lastUpdatedCol?.text && lastUpdatedCol.text.trim()) {
+      lastUpdated = lastUpdatedCol.text.split(' ')[0];
+    }
+
+    const createdDate = new Date(item.createdAt);
+    const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
+
+    tasks.push({
+      itemId: item.id,
+      statusColumnId: statusColumnId,
+      subject: itemName,
+      status: status || 'No Status',
+      taskDate: taskDate,
+      lastUpdated: lastUpdated,
+      created: createdFormatted,
+      project: projectName || `Group: ${groupTitle}`,
+      isDone: (status.toLowerCase() === 'done'),
+
+      // Sorting fields
+      groupId: groupId,
+      groupPriority: groupPriority[groupId] || -1,
+      projectName: projectName,
+      projectPriority: projectPriority[projectName] || 999,
+      tempInd: tempInd,
+      tempIndSort: (tempInd === null) ? 999999 : tempInd
+    });
+
+    Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+  }
+
+  // Sort by: Done status (not done first)
+  // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
+  // For DONE: Created Date (DESC) only
+  tasks.sort((a, b) => {
+    // 0. Done status (not done before done)
+    if (a.isDone !== b.isDone) {
+      return a.isDone ? 1 : -1;
+    }
+
+    // If BOTH are done, sort only by Created Date DESC
+    if (a.isDone && b.isDone) {
       const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
       const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
       return dateB - dateA;
-    });
-    
-    return tasks.slice(0, 30);
-    
-  } catch (e) {
-    Logger.log(`Error fetching monday.com tasks: ${e.message}`);
-    return [];
-  }
+    }
+
+    // For not-done tasks, use full sorting logic:
+    // 1. Group priority (DESC - higher numbers first)
+    if (a.groupPriority !== b.groupPriority) {
+      return b.groupPriority - a.groupPriority;
+    }
+
+    // 2. Project (explicit order from Large-Scale Projects)
+    if (a.projectPriority !== b.projectPriority) {
+      return a.projectPriority - b.projectPriority;
+    }
+
+    // 3. temp_ind (ASC - low to high, blanks at end)
+    if (a.tempIndSort !== b.tempIndSort) {
+      return a.tempIndSort - b.tempIndSort;
+    }
+
+    // 4. Created Date (DESC - newest first)
+    const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
+    const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
+    return dateB - dateA;
+  });
+
+  return tasks.slice(0, 30);
 }
 
 /**
@@ -4835,6 +4781,122 @@ function getAllMondayBoardItems_(boardId, apiToken) {
     return [];
   } catch (e) {
     Logger.log(`Error fetching Monday.com items: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get all tasks from the Tasks board with full details (cached)
+ * This is much faster than querying per-vendor since it's one API call per session
+ * @returns {array} Array of task objects with full details
+ */
+function getAllMondayTasks_() {
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_tasks', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com tasks loaded from cache: ${cached.length} tasks`);
+    return cached;
+  }
+
+  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation)...`);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Fetch all tasks with full details needed for display and checksum
+  const query = `
+    query {
+      boards (ids: [${boardId}]) {
+        items_page (limit: 500) {
+          cursor
+          items {
+            id
+            name
+            group {
+              id
+              title
+            }
+            column_values {
+              id
+              text
+              type
+              ... on BoardRelationValue {
+                linked_items {
+                  id
+                  name
+                }
+              }
+            }
+            created_at
+            updated_at
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: query }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`API Error fetching tasks: ${result.errors[0].message}`);
+      return [];
+    }
+
+    if (!result.data?.boards?.[0]?.items_page?.items) {
+      Logger.log('No tasks found in Tasks board');
+      return [];
+    }
+
+    const items = result.data.boards[0].items_page.items;
+    Logger.log(`Fetched ${items.length} tasks from Monday.com Tasks board`);
+
+    // Process items into a more usable format
+    const tasks = items.map(item => {
+      const colVals = {};
+      for (const col of (item.column_values || [])) {
+        colVals[col.id] = col;
+      }
+
+      // Get project from board_relation column
+      let project = '';
+      const projectCol = colVals['board_relation'] || colVals['connect_boards'];
+      if (projectCol && projectCol.linked_items && projectCol.linked_items.length > 0) {
+        project = projectCol.linked_items[0].name || '';
+      }
+
+      return {
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase(),
+        groupId: item.group?.id || '',
+        groupTitle: item.group?.title || '',
+        status: colVals['status']?.text || '',
+        project: project,
+        tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+        columnValues: colVals
+      };
+    });
+
+    // Cache for future lookups (1 hour cache)
+    setCachedData_('monday_tasks', cacheKey, tasks);
+
+    return tasks;
+  } catch (e) {
+    Logger.log(`Error fetching Monday.com tasks: ${e.message}`);
     return [];
   }
 }
