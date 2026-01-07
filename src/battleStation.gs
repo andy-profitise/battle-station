@@ -5139,7 +5139,12 @@ function battleStationQuickRefresh() {
   
   // Update checksum for emails
   const newEmailChecksum = generateEmailChecksum_(emails);
-  updateEmailChecksum_(vendor, newEmailChecksum);
+
+  // Also update vendor label checksum to prevent false "new vendor emails" detection after snooze
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+  const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+  updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum);
 
   ss.toast('Emails refreshed!', '⚡ Done', 2);
 }
@@ -5200,9 +5205,12 @@ function battleStationQuickRefreshUntilChanged() {
 }
 
 /**
- * Update just the email checksum for a vendor
+ * Update the email checksum (and optionally vendor label checksum) for a vendor
+ * @param {string} vendor - Vendor name
+ * @param {string} newEmailChecksum - New email checksum
+ * @param {string} [newVendorLabelChecksum] - Optional new vendor label checksum
  */
-function updateEmailChecksum_(vendor, newEmailChecksum) {
+function updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
 
@@ -5211,7 +5219,14 @@ function updateEmailChecksum_(vendor, newEmailChecksum) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
       sh.getRange(i + 1, 3).setValue(newEmailChecksum); // Column C = EmailChecksum
       sh.getRange(i + 1, 5).setValue(new Date()); // Column E = Last Viewed
-      Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+
+      // Also update vendor label checksum if provided (Column I = 9)
+      if (newVendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(newVendorLabelChecksum);
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}, vendorLabel: ${newVendorLabelChecksum}`);
+      } else {
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+      }
       return;
     }
   }
@@ -7732,16 +7747,19 @@ function filterTasksBySource_(tasks, source) {
 /**
  * Check if a vendor has changes compared to stored checksums
  * Returns detailed change info for use in skip functions
- * 
+ *
  * @param {string} vendor - Vendor name
  * @param {number} listRow - Row number in List sheet
  * @param {string} source - Vendor source for task filtering
+ * @param {object} [options] - Optional settings
+ * @param {boolean} [options.skipVendorLabelCheck] - Skip the vendor label checksum check (faster, but may miss unlabeled emails)
  * @returns {object} { hasChanges, changeType, data }
  *   - hasChanges: boolean
  *   - changeType: string describing what changed (or 'first_view' or 'unchanged')
  *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
  */
-function checkVendorForChanges_(vendor, listRow, source) {
+function checkVendorForChanges_(vendor, listRow, source, options) {
+  options = options || {};
   // Check if vendor is flagged - always stop on flagged vendors (fast - no API)
   if (isVendorFlagged_(vendor)) {
     Logger.log(`${vendor}: flagged for review`);
@@ -7813,8 +7831,8 @@ function checkVendorForChanges_(vendor, listRow, source) {
   }
 
   // Check vendor-label-only checksum (catches emails without 00.received label)
-  // Only check if vendor has a stored vendorLabelChecksum - if not, skip this check
-  if (storedData.vendorLabelChecksum) {
+  // Skip if: no stored checksum, or skipVendorLabelCheck option is true (for faster skip unchanged)
+  if (storedData.vendorLabelChecksum && !options.skipVendorLabelCheck) {
     const ss = SpreadsheetApp.getActive();
     const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
     const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
@@ -8265,7 +8283,7 @@ function skipToNextChanged(trackComeback) {
         ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
 
         // Use the centralized change detection helper
-        const changeResult = checkVendorForChanges_(vendor, listRow, source);
+        const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
 
         if (changeResult.hasChanges) {
           Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via resume path]`);
@@ -8375,7 +8393,7 @@ function skipToNextChanged(trackComeback) {
     }
 
     // Use the centralized change detection helper
-    const changeResult = checkVendorForChanges_(vendor, listRow, source);
+    const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
 
     if (changeResult.hasChanges) {
       // If Skip 5 session is active, update it
