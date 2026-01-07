@@ -192,6 +192,13 @@ const BS_CFG = {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
+
+  // Create Email Responses submenu
+  const emailResponsesMenu = ui.createMenu('✉️ Email Responses')
+    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addSeparator()
+    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog');
+
   ui.createMenu('⚡ Battle Station')
     .addItem('🔧 Setup Battle Station', 'setupBattleStation')
     .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
@@ -214,8 +221,7 @@ function onOpen() {
     .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
     .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
-    .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
-    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addSubMenu(emailResponsesMenu)
     .addSeparator()
     .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
     .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
@@ -4039,6 +4045,762 @@ function battleStationEmailContacts() {
   } catch (e) {
     SpreadsheetApp.getUi().alert(`Error creating draft: ${e.message}`);
   }
+}
+
+/**
+ * Open Email Contacts dialog with Claude AI assistance for composing emails
+ * Allows contact selection, AI-assisted message composition, and direct Gmail draft creation
+ */
+function battleStationEmailContactsDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex || isNaN(currentIndex)) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+  ss.toast('Loading contacts...', '📧 Email Contacts', 2);
+
+  const contactData = getVendorContacts_(vendor, listRow);
+
+  if (contactData.contacts.length === 0) {
+    SpreadsheetApp.getUi().alert('No contacts found for this vendor.');
+    return;
+  }
+
+  // Pass data to the dialog via template
+  const html = HtmlService.createHtmlOutput(getEmailContactsDialogHtml_(vendor, contactData))
+    .setWidth(800)
+    .setHeight(700);
+  SpreadsheetApp.getUi().showModalDialog(html, `Email Contacts: ${vendor}`);
+}
+
+/**
+ * Get contacts data for the dialog (called from HTML)
+ */
+function getEmailContactsData() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return { error: 'Required sheets not found.' };
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) return { error: 'Could not determine current vendor index.' };
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const contactData = getVendorContacts_(vendor, listRow);
+
+  return {
+    vendor: vendor,
+    contacts: contactData.contacts,
+    notes: contactData.notes
+  };
+}
+
+/**
+ * Generate email copy with Claude AI
+ * @param {string} vendor - Vendor name
+ * @param {string} purpose - Email purpose/context
+ * @param {string} tone - Desired tone
+ * @param {string} additionalContext - Any additional context
+ * @returns {object} Result with generated email content
+ */
+function generateEmailWithClaude(vendor, purpose, tone, additionalContext) {
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    return { error: 'Claude API key not configured.' };
+  }
+
+  const prompt = `You are a professional email writer for a lead generation company called Profitise.
+Write a concise, professional email for the following scenario:
+
+VENDOR: ${vendor}
+PURPOSE: ${purpose}
+TONE: ${tone}
+${additionalContext ? `ADDITIONAL CONTEXT: ${additionalContext}` : ''}
+
+Guidelines:
+- Keep the email brief and to the point (2-4 short paragraphs max)
+- Be professional but personable
+- Use clear, actionable language
+- Don't use excessive pleasantries or filler words
+- End with a clear call to action if appropriate
+- Sign off as "Andy Worford" from "Profitise"
+
+Return ONLY the email body (no subject line). Start with an appropriate greeting.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, claudeApiKey);
+
+    if (response.error) {
+      return { error: response.error };
+    }
+
+    return { content: response.content };
+
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Create Gmail draft and return draft URL for direct navigation
+ * @param {string} recipients - Comma-separated email addresses
+ * @param {string} subject - Email subject
+ * @param {string} body - Email body
+ * @returns {object} Result with draft URL or error
+ */
+function createEmailDraftAndGetUrl(recipients, subject, body) {
+  try {
+    const draft = GmailApp.createDraft(recipients, subject, body);
+    const draftId = draft.getId();
+
+    // Gmail draft URL format
+    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+
+    return {
+      success: true,
+      draftId: draftId,
+      draftUrl: draftUrl,
+      recipients: recipients,
+      subject: subject
+    };
+
+  } catch (e) {
+    return {
+      success: false,
+      error: e.message
+    };
+  }
+}
+
+/**
+ * Generate HTML for the Email Contacts dialog
+ */
+function getEmailContactsDialogHtml_(vendor, contactData) {
+  // Sort contacts: Active first, then by type
+  const sortedContacts = contactData.contacts.sort((a, b) => {
+    // Active contacts first
+    if (a.status === 'Active' && b.status !== 'Active') return -1;
+    if (b.status === 'Active' && a.status !== 'Active') return 1;
+    // Then by contact type
+    const typeOrder = ['Primary', 'Technical', 'Contracts', 'Accounting', ''];
+    const aTypeIndex = typeOrder.indexOf(a.contactType) >= 0 ? typeOrder.indexOf(a.contactType) : 99;
+    const bTypeIndex = typeOrder.indexOf(b.contactType) >= 0 ? typeOrder.indexOf(b.contactType) : 99;
+    return aTypeIndex - bTypeIndex;
+  });
+
+  // Build contacts HTML
+  const contactsHtml = sortedContacts.map((c, i) => {
+    const statusClass = c.status === 'Active' ? 'active' : 'inactive';
+    const hasEmail = c.email && c.email.trim();
+    return `
+      <div class="contact-item ${statusClass}">
+        <label class="contact-checkbox">
+          <input type="checkbox" name="contact" value="${i}" data-email="${c.email || ''}" ${hasEmail ? 'checked' : 'disabled'}>
+          <span class="checkmark"></span>
+        </label>
+        <div class="contact-info">
+          <div class="contact-name">${escapeHtml_(c.name)}</div>
+          <div class="contact-meta">
+            ${hasEmail ? `<span class="email">${escapeHtml_(c.email)}</span>` : '<span class="no-email">No email</span>'}
+            ${c.phone ? ` | <span class="phone">${escapeHtml_(c.phone)}</span>` : ''}
+          </div>
+        </div>
+        <div class="contact-badges">
+          ${c.contactType ? `<span class="badge type">${escapeHtml_(c.contactType)}</span>` : ''}
+          <span class="badge status ${statusClass}">${escapeHtml_(c.status || 'Unknown')}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Google Sans', Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #f8f9fa;
+      font-size: 13px;
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .header h2 {
+      color: #1a73e8;
+      margin: 0 0 5px 0;
+      font-size: 18px;
+    }
+
+    .header p {
+      color: #5f6368;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .section {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .section-title {
+      font-weight: 600;
+      color: #202124;
+      margin-bottom: 12px;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .contacts-list {
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .contact-item {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid #f1f3f4;
+      gap: 12px;
+    }
+
+    .contact-item:last-child {
+      border-bottom: none;
+    }
+
+    .contact-item.inactive {
+      opacity: 0.6;
+    }
+
+    .contact-checkbox {
+      position: relative;
+      cursor: pointer;
+    }
+
+    .contact-checkbox input {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+
+    .contact-checkbox input:disabled {
+      cursor: not-allowed;
+    }
+
+    .contact-info {
+      flex: 1;
+    }
+
+    .contact-name {
+      font-weight: 500;
+      color: #202124;
+    }
+
+    .contact-meta {
+      font-size: 12px;
+      color: #5f6368;
+      margin-top: 2px;
+    }
+
+    .contact-meta .no-email {
+      color: #d93025;
+      font-style: italic;
+    }
+
+    .contact-badges {
+      display: flex;
+      gap: 6px;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .badge.type {
+      background: #e8f0fe;
+      color: #1a73e8;
+    }
+
+    .badge.status.active {
+      background: #e6f4ea;
+      color: #137333;
+    }
+
+    .badge.status.inactive {
+      background: #fce8e6;
+      color: #c5221f;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      font-weight: 500;
+      color: #202124;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .form-group input,
+    .form-group textarea,
+    .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-group input:focus,
+    .form-group textarea:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+    }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .form-row .form-group {
+      flex: 1;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-primary {
+      background: #1a73e8;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #1557b0;
+    }
+
+    .btn-secondary {
+      background: #f1f3f4;
+      color: #202124;
+    }
+
+    .btn-secondary:hover {
+      background: #e8eaed;
+    }
+
+    .btn-success {
+      background: #137333;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background: #0d5626;
+    }
+
+    .btn:disabled {
+      background: #dadce0;
+      color: #9aa0a6;
+      cursor: not-allowed;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .email-preview {
+      background: #fafafa;
+      border: 1px solid #e8eaed;
+      border-radius: 4px;
+      padding: 12px;
+      min-height: 120px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .loading {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      color: #5f6368;
+      font-size: 13px;
+    }
+
+    .loading.show {
+      display: flex;
+    }
+
+    .spinner {
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #1a73e8;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .error {
+      background: #fce8e6;
+      color: #c5221f;
+      padding: 10px 12px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+      font-size: 13px;
+    }
+
+    .error.show {
+      display: block;
+    }
+
+    .success {
+      background: #e6f4ea;
+      color: #137333;
+      padding: 12px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    .success.show {
+      display: block;
+    }
+
+    .success a {
+      color: #137333;
+      font-weight: 500;
+    }
+
+    .quick-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .quick-prompt {
+      padding: 4px 10px;
+      background: #e8f0fe;
+      color: #1a73e8;
+      border-radius: 16px;
+      font-size: 11px;
+      cursor: pointer;
+      border: none;
+      transition: background 0.2s;
+    }
+
+    .quick-prompt:hover {
+      background: #d0e1fd;
+    }
+
+    .recipients-display {
+      background: #f1f3f4;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #5f6368;
+      margin-bottom: 12px;
+    }
+
+    .recipients-display strong {
+      color: #202124;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Email Contacts</h2>
+    <p>Compose an email to ${escapeHtml_(vendor)} contacts with Claude AI assistance</p>
+  </div>
+
+  <!-- Step 1: Select Contacts -->
+  <div class="section">
+    <div class="section-title">1. Select Recipients</div>
+    <div class="contacts-list">
+      ${contactsHtml}
+    </div>
+  </div>
+
+  <!-- Step 2: Compose with AI -->
+  <div class="section">
+    <div class="section-title">2. Compose Email</div>
+
+    <div class="form-group">
+      <label>Subject</label>
+      <input type="text" id="subject" value="Re: ${escapeHtml_(vendor)}" placeholder="Email subject">
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Purpose</label>
+        <select id="purpose">
+          <option value="Follow up on our previous conversation">Follow up</option>
+          <option value="Schedule a meeting or call">Schedule meeting</option>
+          <option value="Request information or documentation">Request info</option>
+          <option value="Send a status update">Status update</option>
+          <option value="Discuss pricing or contract terms">Pricing/Contract</option>
+          <option value="Introduce ourselves and explore partnership">Introduction</option>
+          <option value="Address an issue or concern">Address issue</option>
+          <option value="Custom (describe below)">Custom...</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tone</label>
+        <select id="tone">
+          <option value="Professional and friendly">Professional & Friendly</option>
+          <option value="Formal and businesslike">Formal</option>
+          <option value="Casual and conversational">Casual</option>
+          <option value="Urgent and action-oriented">Urgent</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Additional Context <span style="font-weight: normal; color: #5f6368;">(optional)</span></label>
+      <textarea id="context" placeholder="Add any specific details, talking points, or context for the email..."></textarea>
+      <div class="quick-prompts">
+        <button class="quick-prompt" onclick="addContext('Mention our recent performance improvements')">Performance updates</button>
+        <button class="quick-prompt" onclick="addContext('Ask about their current lead volume needs')">Lead volume</button>
+        <button class="quick-prompt" onclick="addContext('Discuss expanding to new verticals')">New verticals</button>
+        <button class="quick-prompt" onclick="addContext('Follow up on pending invoice')">Invoice follow-up</button>
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" id="generateBtn" onclick="generateEmail()">
+        🤖 Generate with Claude
+      </button>
+      <div class="loading" id="generateLoading">
+        <div class="spinner"></div>
+        Generating email...
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 3: Review and Send -->
+  <div class="section">
+    <div class="section-title">3. Review & Send</div>
+
+    <div class="recipients-display" id="recipientsDisplay">
+      <strong>To:</strong> <span id="selectedRecipients">Select contacts above</span>
+    </div>
+
+    <div class="form-group">
+      <label>Email Body</label>
+      <textarea id="emailBody" rows="8" placeholder="Generated email will appear here. You can also write your own or edit the generated content."></textarea>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-success" id="createDraftBtn" onclick="createDraft()">
+        ✉️ Create Draft & Open Gmail
+      </button>
+      <div class="loading" id="draftLoading">
+        <div class="spinner"></div>
+        Creating draft...
+      </div>
+    </div>
+
+    <div class="error" id="error"></div>
+    <div class="success" id="success"></div>
+  </div>
+
+  <script>
+    const vendor = '${escapeHtml_(vendor).replace(/'/g, "\\'")}';
+
+    // Update recipients display when checkboxes change
+    document.querySelectorAll('input[name="contact"]').forEach(cb => {
+      cb.addEventListener('change', updateRecipients);
+    });
+
+    // Initial update
+    updateRecipients();
+
+    function updateRecipients() {
+      const checked = document.querySelectorAll('input[name="contact"]:checked');
+      const emails = Array.from(checked).map(cb => cb.dataset.email).filter(e => e);
+
+      if (emails.length > 0) {
+        document.getElementById('selectedRecipients').textContent = emails.join(', ');
+        document.getElementById('createDraftBtn').disabled = false;
+      } else {
+        document.getElementById('selectedRecipients').textContent = 'Select contacts above';
+        document.getElementById('createDraftBtn').disabled = true;
+      }
+    }
+
+    function addContext(text) {
+      const textarea = document.getElementById('context');
+      if (textarea.value) {
+        textarea.value += '\\n' + text;
+      } else {
+        textarea.value = text;
+      }
+    }
+
+    function generateEmail() {
+      const purpose = document.getElementById('purpose').value;
+      const tone = document.getElementById('tone').value;
+      const context = document.getElementById('context').value;
+
+      // Show loading
+      document.getElementById('generateBtn').disabled = true;
+      document.getElementById('generateLoading').classList.add('show');
+      document.getElementById('error').classList.remove('show');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('generateBtn').disabled = false;
+          document.getElementById('generateLoading').classList.remove('show');
+
+          if (result.error) {
+            showError(result.error);
+          } else {
+            document.getElementById('emailBody').value = result.content;
+          }
+        })
+        .withFailureHandler(function(error) {
+          document.getElementById('generateBtn').disabled = false;
+          document.getElementById('generateLoading').classList.remove('show');
+          showError(error.message || 'Failed to generate email');
+        })
+        .generateEmailWithClaude(vendor, purpose, tone, context);
+    }
+
+    function createDraft() {
+      const checked = document.querySelectorAll('input[name="contact"]:checked');
+      const recipients = Array.from(checked).map(cb => cb.dataset.email).filter(e => e).join(', ');
+
+      if (!recipients) {
+        showError('Please select at least one contact with an email address.');
+        return;
+      }
+
+      const subject = document.getElementById('subject').value.trim();
+      const body = document.getElementById('emailBody').value.trim();
+
+      if (!subject) {
+        showError('Please enter a subject.');
+        return;
+      }
+
+      if (!body) {
+        showError('Please enter an email body or generate one with Claude.');
+        return;
+      }
+
+      // Show loading
+      document.getElementById('createDraftBtn').disabled = true;
+      document.getElementById('draftLoading').classList.add('show');
+      document.getElementById('error').classList.remove('show');
+      document.getElementById('success').classList.remove('show');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('createDraftBtn').disabled = false;
+          document.getElementById('draftLoading').classList.remove('show');
+
+          if (result.success) {
+            document.getElementById('success').innerHTML =
+              '✓ Draft created! <a href="' + result.draftUrl + '" target="_blank">Open in Gmail</a>';
+            document.getElementById('success').classList.add('show');
+
+            // Open Gmail draft in new window
+            window.open(result.draftUrl, '_blank');
+          } else {
+            showError(result.error || 'Failed to create draft');
+          }
+        })
+        .withFailureHandler(function(error) {
+          document.getElementById('createDraftBtn').disabled = false;
+          document.getElementById('draftLoading').classList.remove('show');
+          showError(error.message || 'Failed to create draft');
+        })
+        .createEmailDraftAndGetUrl(recipients, subject, body);
+    }
+
+    function showError(message) {
+      const errorDiv = document.getElementById('error');
+      errorDiv.textContent = message;
+      errorDiv.classList.add('show');
+    }
+  </script>
+</body>
+</html>
+`;
+}
+
+/**
+ * HTML escape helper
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 /**
