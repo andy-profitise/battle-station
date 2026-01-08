@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-08 9:00AM PST
+ * Last Updated: 2026-01-08 9:15AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-08 9:00AM PST',
+  CODE_VERSION: '2026-01-08 9:15AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -4785,6 +4785,12 @@ function getAllMondayBoardItems_(boardId, apiToken) {
 /**
  * Get all tasks from the Tasks board with full details (cached)
  * This is much faster than querying per-vendor since it's one API call per session
+ *
+ * Filters:
+ * - Group: "Ongoing Projects" OR "Completed Projects"
+ * - Project: "Onboarding - Buyer" OR "Onboarding - Affiliate"
+ *
+ * Uses cursor-based pagination to fetch beyond 500 item limit
  * @returns {array} Array of task objects with full details
  */
 function getAllMondayTasks_() {
@@ -4797,13 +4803,17 @@ function getAllMondayTasks_() {
     return cached;
   }
 
-  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation)...`);
+  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation with pagination)...`);
 
   const apiToken = BS_CFG.MONDAY_API_TOKEN;
   const boardId = BS_CFG.TASKS_BOARD_ID;
 
-  // Fetch all tasks with full details needed for display and checksum
-  const query = `
+  // Groups and Projects to include
+  const VALID_GROUPS = ['ongoing projects', 'completed projects'];
+  const VALID_PROJECTS = ['onboarding - buyer', 'onboarding - affiliate'];
+
+  // First query to get initial page
+  const initialQuery = `
     query {
       boards (ids: [${boardId}]) {
         items_page (limit: 500) {
@@ -4834,15 +4844,50 @@ function getAllMondayTasks_() {
     }
   `;
 
+  // Query for subsequent pages using cursor
+  const nextPageQuery = (cursor) => `
+    query {
+      next_items_page (limit: 500, cursor: "${cursor}") {
+        cursor
+        items {
+          id
+          name
+          group {
+            id
+            title
+          }
+          column_values {
+            id
+            text
+            type
+            ... on BoardRelationValue {
+              linked_items {
+                id
+                name
+              }
+            }
+          }
+          created_at
+          updated_at
+        }
+      }
+    }
+  `;
+
   try {
     const options = {
       method: 'post',
       contentType: 'application/json',
       headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
       muteHttpExceptions: true
     };
 
+    let allItems = [];
+    let cursor = null;
+    let pageNum = 1;
+
+    // First page
+    options.payload = JSON.stringify({ query: initialQuery });
     const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
     const result = JSON.parse(response.getContentText());
 
@@ -4856,11 +4901,46 @@ function getAllMondayTasks_() {
       return [];
     }
 
-    const items = result.data.boards[0].items_page.items;
-    Logger.log(`Fetched ${items.length} tasks from Monday.com Tasks board`);
+    allItems = result.data.boards[0].items_page.items;
+    cursor = result.data.boards[0].items_page.cursor;
+    Logger.log(`Page ${pageNum}: Fetched ${allItems.length} tasks, cursor: ${cursor ? 'yes' : 'no'}`);
 
-    // Process items into a more usable format
-    const tasks = items.map(item => {
+    // Fetch additional pages if cursor exists
+    while (cursor) {
+      pageNum++;
+      options.payload = JSON.stringify({ query: nextPageQuery(cursor) });
+      const nextResponse = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      const nextResult = JSON.parse(nextResponse.getContentText());
+
+      if (nextResult.errors && nextResult.errors.length > 0) {
+        Logger.log(`API Error on page ${pageNum}: ${nextResult.errors[0].message}`);
+        break;
+      }
+
+      if (!nextResult.data?.next_items_page?.items) {
+        Logger.log(`No more items on page ${pageNum}`);
+        break;
+      }
+
+      const pageItems = nextResult.data.next_items_page.items;
+      allItems = allItems.concat(pageItems);
+      cursor = nextResult.data.next_items_page.cursor;
+      Logger.log(`Page ${pageNum}: Fetched ${pageItems.length} tasks (total: ${allItems.length}), cursor: ${cursor ? 'yes' : 'no'}`);
+
+      // Safety limit to prevent infinite loops
+      if (pageNum >= 20) {
+        Logger.log('Reached page limit (20), stopping pagination');
+        break;
+      }
+    }
+
+    Logger.log(`Total fetched from Monday.com: ${allItems.length} tasks across ${pageNum} page(s)`);
+
+    // Process items into a more usable format AND filter by group/project
+    const tasks = [];
+    let filteredOutCount = 0;
+
+    for (const item of allItems) {
       const colVals = {};
       for (const col of (item.column_values || [])) {
         colVals[col.id] = col;
@@ -4873,20 +4953,39 @@ function getAllMondayTasks_() {
         project = projectCol.linked_items[0].name || '';
       }
 
-      return {
+      const groupTitle = item.group?.title || '';
+
+      // Filter: Only include tasks from valid groups AND valid projects
+      const groupLower = groupTitle.toLowerCase();
+      const projectLower = project.toLowerCase();
+
+      if (!VALID_GROUPS.includes(groupLower)) {
+        filteredOutCount++;
+        continue;
+      }
+
+      if (!VALID_PROJECTS.includes(projectLower)) {
+        filteredOutCount++;
+        continue;
+      }
+
+      tasks.push({
         id: item.id,
         name: item.name,
         nameLower: String(item.name || '').toLowerCase(),
         groupId: item.group?.id || '',
-        groupTitle: item.group?.title || '',
+        groupTitle: groupTitle,
         status: colVals['status']?.text || '',
         project: project,
         tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
         columnValues: colVals
-      };
-    });
+      });
+    }
+
+    Logger.log(`After filtering: ${tasks.length} tasks (filtered out ${filteredOutCount} from wrong group/project)`);
+    Logger.log(`Groups: ${VALID_GROUPS.join(', ')} | Projects: ${VALID_PROJECTS.join(', ')}`);
 
     // Cache for future lookups (1 hour cache)
     setCachedData_('monday_tasks', cacheKey, tasks);
