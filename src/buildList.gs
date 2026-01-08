@@ -1,7 +1,7 @@
 /************************************************************
  * BUILD LIST - Vendor list builder with Gmail and monday.com integration
  *
- * Last Updated: 2026-01-07 10:45 PST
+ * Last Updated: 2026-01-07 1:15PM PST
  ************************************************************/
 
 /***** CONFIG *****/
@@ -643,6 +643,9 @@ function readMetricSheet_(sh, type, sourceLabel, blacklist) {
 function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   console.log(`\n[${sourceLabel}] START READ`);
 
+  // DEBUG: Set a vendor name to trace through the entire process (case-insensitive)
+  const DEBUG_VENDOR = 'purity';  // Change this to trace a specific vendor
+
   // Get raw array data instead of objects for monday.com sheets
   const allValues = sh.getDataRange().getValues();
   if (allValues.length < 2) return []; // Need at least header + 1 row
@@ -678,9 +681,15 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
     // Name is always in column A
     const rawName = row[nameIdx] || '';
     const name = normalizeName_(rawName);
+    const isDebugVendor = DEBUG_VENDOR && name.toLowerCase().includes(DEBUG_VENDOR.toLowerCase());
+
+    if (isDebugVendor) {
+      console.log(`\n🔍 DEBUG [${sourceLabel}] Found "${name}" (raw: "${rawName}") at row ${i + 1}`);
+    }
 
     if (!name) {
       skippedNoName++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: No name after normalization`);
       continue;
     }
 
@@ -688,11 +697,13 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
 
     if (blacklist.has(key)) {
       skippedBlacklist++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: In blacklist`);
       continue;
     }
 
     if (existingSet.has(key)) {
       skippedExisting++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: Already exists in L1M/L6M set`);
       continue;
     }
 
@@ -702,8 +713,13 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
       .map(s => normalizeName_(s).toLowerCase())
       .filter(Boolean);
 
+    if (isDebugVendor && aliases.length > 0) {
+      console.log(`  Aliases: ${aliases.join(', ')}`);
+    }
+
     if (aliases.some(a => existingSet.has(a) || blacklist.has(a))) {
       skippedAlias++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: Alias matches existing/blacklist`);
       recordSkipReason_({ name, source: sourceLabel, reason: 'alias-duplicate' });
       continue;
     }
@@ -714,6 +730,10 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
     // Use raw status value (Group name) instead of normalizing
     const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
     const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
+
+    if (isDebugVendor) {
+      console.log(`  ✅ ADDED: name="${name}", ttl=${ttl}, type="${finalType}", status="${status}"`);
+    }
 
     out.push({ name, ttl, type: finalType, source: sourceLabel, status, notes });
     existingSet.add(key);
