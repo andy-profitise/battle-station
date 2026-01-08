@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 1:05PM PST
+ * Last Updated: 2026-01-07 1:20PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 1:05PM PST',
+  CODE_VERSION: '2026-01-07 1:20PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -13967,7 +13967,7 @@ function openTaskStatusDialog() {
 
   const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
     .setWidth(600)
-    .setHeight(500);
+    .setHeight(650);
 
   ui.showModalDialog(htmlOutput, `📋 Update Task Status - ${vendor}`);
 }
@@ -14089,27 +14089,11 @@ function buildTaskStatusDialogHtml_(vendor, tasks) {
 
           const newStatus = document.getElementById('newStatus').value;
 
-          // Disable the button to prevent double-clicks
-          const btn = document.querySelector('.btn-primary');
-          btn.disabled = true;
-          btn.textContent = 'Updating...';
+          // Close dialog immediately, update happens in background
+          google.script.host.close();
 
-          google.script.run
-            .withSuccessHandler(function(result) {
-              if (result.success) {
-                google.script.host.close();
-              } else {
-                alert('Error: ' + result.error);
-                btn.disabled = false;
-                btn.textContent = 'Update Selected Tasks';
-              }
-            })
-            .withFailureHandler(function(error) {
-              alert('Error: ' + error.message);
-              btn.disabled = false;
-              btn.textContent = 'Update Selected Tasks';
-            })
-            .updateTaskStatusesFromDialog(selectedTaskIds, newStatus);
+          // Fire and forget - update runs in background
+          google.script.run.updateTaskStatusesFromDialog(selectedTaskIds, newStatus);
         }
       </script>
     </body>
