@@ -14344,7 +14344,7 @@ function openTaskStatusDialog() {
 
   const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
     .setWidth(600)
-    .setHeight(650);
+    .setHeight(750);
 
   ui.showModalDialog(htmlOutput, `📋 Update Task Status - ${vendor}`);
 }
