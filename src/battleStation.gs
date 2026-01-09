@@ -7813,7 +7813,7 @@ function markEmailAsOverdue() {
     ss.toast(`Marked as overdue: "${emailData.subject}"`, '🔴 Done', 3);
 
     Utilities.sleep(500);
-    battleStationHardRefresh();
+    battleStationQuickRefreshUntilChange();
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
@@ -7838,7 +7838,7 @@ function clearOverdueFromEmail() {
     ss.toast(`Cleared overdue: "${emailData.subject}"`, '✅ Done', 3);
 
     Utilities.sleep(500);
-    battleStationHardRefresh();
+    battleStationQuickRefreshUntilChange();
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
