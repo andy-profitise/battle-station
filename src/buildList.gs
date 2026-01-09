@@ -286,8 +286,8 @@ function buildListWithGmailAndNotes() {
           .replace(/^-+|-+$/g, '');
       }
 
-      const gmailAll = `https://mail.google.com/mail/u/0/#search/label%3A00.received+AND+label%3Azzzvendors-${vendorSlug}+-label%3A03.noInbox`;
-      const gmailNoSnooze = `https://mail.google.com/mail/u/0/#search/label%3A00.received+AND+label%3Azzzvendors-${vendorSlug}+-is%3Asnoozed+-label%3A03.noInbox`;
+      const gmailAll = `https://mail.google.com/mail/u/0/#search/label%3Azzzvendors-${vendorSlug}`;
+      const gmailNoSnooze = `https://mail.google.com/mail/u/0/#search/label%3Azzzvendors-${vendorSlug}+-is%3Asnoozed`;
 
       return [gmailAll, gmailNoSnooze, false];
     });
