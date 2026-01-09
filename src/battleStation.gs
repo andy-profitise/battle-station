@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-09 9:30AM PST
+ * Last Updated: 2026-01-09 9:45AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-09 9:30AM PST',
+  CODE_VERSION: '2026-01-09 9:45AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -4801,7 +4801,6 @@ function getAllMondayBoardItems_(boardId, apiToken) {
  *
  * Filters:
  * - Group: "Ongoing Projects" OR "Completed Projects"
- * - Project: "Onboarding - Buyer" OR "Onboarding - Affiliate"
  *
  * Uses cursor-based pagination to fetch beyond 500 item limit
  * @returns {array} Array of task objects with full details
@@ -4821,9 +4820,8 @@ function getAllMondayTasks_() {
   const apiToken = BS_CFG.MONDAY_API_TOKEN;
   const boardId = BS_CFG.TASKS_BOARD_ID;
 
-  // Groups and Projects to include
+  // Groups to include (no project filter - include all projects)
   const VALID_GROUPS = ['ongoing projects', 'completed projects'];
-  const VALID_PROJECTS = ['onboarding - buyer', 'onboarding - affiliate'];
 
   // First query to get initial page
   const initialQuery = `
@@ -4968,16 +4966,10 @@ function getAllMondayTasks_() {
 
       const groupTitle = item.group?.title || '';
 
-      // Filter: Only include tasks from valid groups AND valid projects
+      // Filter: Only include tasks from valid groups
       const groupLower = groupTitle.toLowerCase();
-      const projectLower = project.toLowerCase();
 
       if (!VALID_GROUPS.includes(groupLower)) {
-        filteredOutCount++;
-        continue;
-      }
-
-      if (!VALID_PROJECTS.includes(projectLower)) {
         filteredOutCount++;
         continue;
       }
@@ -4997,8 +4989,8 @@ function getAllMondayTasks_() {
       });
     }
 
-    Logger.log(`After filtering: ${tasks.length} tasks (filtered out ${filteredOutCount} from wrong group/project)`);
-    Logger.log(`Groups: ${VALID_GROUPS.join(', ')} | Projects: ${VALID_PROJECTS.join(', ')}`);
+    Logger.log(`After filtering: ${tasks.length} tasks (filtered out ${filteredOutCount} from other groups)`);
+    Logger.log(`Valid groups: ${VALID_GROUPS.join(', ')}`);
 
     // Cache for future lookups (1 hour cache)
     setCachedData_('monday_tasks', cacheKey, tasks);
@@ -5488,13 +5480,69 @@ function getBSCacheSheet_() {
 function clearBSCache_() {
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
-  
+
   if (sh) {
     sh.clear();
     sh.getRange(1, 1, 1, 4).setValues([['Type', 'Key', 'Data', 'LastUpdated']]);
   }
-  
+
   Logger.log('BS Cache cleared');
+}
+
+/**
+ * Refresh batch caches (monday.com tasks, calendar events)
+ * Called when buildList runs to ensure fresh data for vendor review
+ */
+function refreshBatchCaches_() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Clear specific cache types for batch data
+  clearCacheByType_('monday_tasks');
+  clearCacheByType_('monday_items');
+  clearCacheByType_('airtable');
+  clearCacheByType_('gdrive_folders');
+
+  // Clear Script Cache for calendar events
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Batch caches cleared, refetching...');
+
+  // Refetch batch data to populate caches
+  ss.toast('Refreshing monday.com tasks...', '🔄 Cache Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Batch refresh: Fetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refreshing calendar events...', '🔄 Cache Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Batch refresh: Fetched ${events.length} calendar events`);
+
+  ss.toast('Caches refreshed!', '🔄 Done', 2);
+}
+
+/**
+ * Clear cache entries by type
+ */
+function clearCacheByType_(type) {
+  const sh = getBSCacheSheet_();
+  const data = sh.getDataRange().getValues();
+
+  // Find rows to delete (in reverse order to avoid index shifting)
+  const rowsToDelete = [];
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][0] === type) {
+      rowsToDelete.push(i + 1); // Sheet rows are 1-indexed
+    }
+  }
+
+  // Delete rows
+  for (const row of rowsToDelete) {
+    sh.deleteRow(row);
+  }
+
+  if (rowsToDelete.length > 0) {
+    Logger.log(`Cleared ${rowsToDelete.length} cache entries of type: ${type}`);
+  }
 }
 
 /**
@@ -7976,12 +8024,19 @@ function generateContactsChecksum_(contacts) {
 /**
  * Generate checksum for meetings data
  * Only includes future meetings - past meetings falling off shouldn't trigger changes
+ * Excludes [DAILY] and [WEEKLY] recurring events as they change too often
  * @param {array} meetings - Array of meeting objects
  * @returns {string} Hash string
  */
 function generateMeetingsChecksum_(meetings) {
-  // Filter to only future meetings for checksum
-  const futureMeetings = (meetings || []).filter(m => !m.isPast);
+  // Filter to only future meetings for checksum, excluding recurring [DAILY]/[WEEKLY] events
+  const futureMeetings = (meetings || []).filter(m => {
+    if (m.isPast) return false;
+    // Exclude recurring events that change daily/weekly
+    const title = (m.title || '').toUpperCase();
+    if (title.includes('[DAILY]') || title.includes('[WEEKLY]')) return false;
+    return true;
+  });
   return hashString_(JSON.stringify(futureMeetings.map(m => ({
     title: m.title,
     date: m.date,
