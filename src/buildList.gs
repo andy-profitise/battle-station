@@ -174,7 +174,8 @@ function buildListWithGmailAndNotes() {
   // 1. INBOX (highest) - vendors with emails currently in inbox
   // 2. CHAT - vendors detected via OCR from Teams/Telegram/WhatsApp
   // 3. HOT - vendors with 00.received or recent sent emails
-  // 4. NORMAL - everything else
+  // 4. MONTHLY RETURNS - vendors with open Monthly Returns tasks
+  // 5. NORMAL - everything else
   console.log('Detecting priority vendors...');
   const { inboxSet, hotSet } = getHotVendorsFromGmail_(all);
   console.log('Inbox vendors found:', inboxSet.size);
@@ -190,9 +191,14 @@ function buildListWithGmailAndNotes() {
     console.log('Error getting OCR vendors:', e.message);
   }
 
+  // Get vendors with open Monthly Returns tasks
+  const monthlyReturnsSet = getVendorsWithOpenMonthlyReturns_();
+  console.log('Monthly Returns vendors found:', monthlyReturnsSet.size);
+
   const inboxZone = [];
   const chatZone = [];
   const hotZone = [];
+  const monthlyReturnsZone = [];
   const normalZone = [];
 
   for (const r of all) {
@@ -203,14 +209,16 @@ function buildListWithGmailAndNotes() {
       chatZone.push(r);
     } else if (hotSet.has(nameLower)) {
       hotZone.push(r);
+    } else if (monthlyReturnsSet.has(nameLower)) {
+      monthlyReturnsZone.push(r);
     } else {
       normalZone.push(r);
     }
   }
 
-  // Final list: Inbox at top, then chat zone, then hot zone, then normal zone
+  // Final list: Inbox at top, then chat, hot, monthly returns, then normal zone
   // Each zone keeps same sort order as `all` (already sorted)
-  const finalList = [...inboxZone, ...chatZone, ...hotZone, ...normalZone];
+  const finalList = [...inboxZone, ...chatZone, ...hotZone, ...monthlyReturnsZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
 
@@ -279,10 +287,10 @@ function buildListWithGmailAndNotes() {
   console.log('=== BUILD LIST WITH GMAIL & NOTES END ===');
 
   const counts = {
-    '🔥 HOT (recent emails)': hotZone.length,
-    'Total vendors': finalList.length,
-    'With status': finalList.filter(v => v.status).length,
-    'With notes': finalList.filter(v => v.notes).length
+    '📥 Inbox': inboxZone.length,
+    '🔥 Hot': hotZone.length,
+    '📊 Monthly Returns': monthlyReturnsZone.length,
+    'Total': finalList.length
   };
 
   console.log('Final counts:', counts);
@@ -292,6 +300,57 @@ function buildListWithGmailAndNotes() {
     '✅ List Built',
     8
   );
+}
+
+
+/** ========== MONTHLY RETURNS DETECTION ========== **/
+
+/**
+ * Get vendors with open Monthly Returns tasks
+ * Looks at monday.com tasks where Project = "Monthly Returns" and status is not "Done"
+ * Returns a Set of vendor names (lowercased) for matching
+ */
+function getVendorsWithOpenMonthlyReturns_() {
+  const vendorSet = new Set();
+
+  try {
+    // Get all tasks from cache (already filtered by group)
+    const allTasks = getAllMondayTasks_();
+
+    if (!allTasks || allTasks.length === 0) {
+      console.log('No monday.com tasks found for Monthly Returns check');
+      return vendorSet;
+    }
+
+    // Filter to Monthly Returns tasks that are not Done
+    const openMonthlyReturns = allTasks.filter(task => {
+      const project = (task.project || '').toLowerCase();
+      const status = (task.status || '').toLowerCase();
+      return project === 'monthly returns' && status !== 'done';
+    });
+
+    console.log(`Found ${openMonthlyReturns.length} open Monthly Returns tasks`);
+
+    // Extract vendor names from task names
+    // Format: "Monthly Returns (Month Year) - VendorName"
+    for (const task of openMonthlyReturns) {
+      const taskName = task.name || '';
+      const dashIndex = taskName.lastIndexOf(' - ');
+      if (dashIndex > 0) {
+        const vendorName = taskName.substring(dashIndex + 3).trim();
+        if (vendorName) {
+          vendorSet.add(vendorName.toLowerCase());
+          console.log(`  Monthly Returns vendor: ${vendorName}`);
+        }
+      }
+    }
+
+    console.log(`Extracted ${vendorSet.size} unique vendors with open Monthly Returns`);
+  } catch (e) {
+    console.log('Error getting Monthly Returns vendors:', e.message);
+  }
+
+  return vendorSet;
 }
 
 
