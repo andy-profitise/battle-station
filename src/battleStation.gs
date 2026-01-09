@@ -8456,6 +8456,9 @@ function checkInboxForNewVendorEmails_(sinceTime) {
  * Skips emails where the last message is from the user
  */
 function inboxModeNext() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
@@ -8643,6 +8646,9 @@ function findResumePosition_(listSh) {
  * - On next skip, resumes normal flow if no new inbox emails
  */
 function skipToNextChanged(trackComeback) {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
@@ -9285,9 +9291,12 @@ function skip5AndReturn() {
  * Called automatically or can be called manually
  */
 function continueSkip5AndReturn() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const props = PropertiesService.getScriptProperties();
   const sessionStr = props.getProperty('BS_SKIP5_SESSION');
-  
+
   if (!sessionStr) {
     SpreadsheetApp.getUi().alert('No Skip 5 & Return session active.\n\nUse "Skip 5 & Return" to start a new session.');
     return;
