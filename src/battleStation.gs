@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-09 10:00AM PST
+ * Last Updated: 2026-01-09 10:30AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-09 10:00AM PST',
+  CODE_VERSION: '2026-01-09 10:30AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -4959,11 +4959,15 @@ function getAllMondayTasks_() {
         colVals[col.id] = col;
       }
 
-      // Get project from board_relation column
+      // Get project from board_relation column (use correct column ID from config)
       let project = '';
-      const projectCol = colVals['board_relation'] || colVals['connect_boards'];
-      if (projectCol && projectCol.linked_items && projectCol.linked_items.length > 0) {
-        project = projectCol.linked_items[0].name || '';
+      const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+      if (projectCol) {
+        if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+          project = projectCol.linked_items[0].name || '';
+        } else if (projectCol.text) {
+          project = projectCol.text;
+        }
       }
 
       const groupTitle = item.group?.title || '';
