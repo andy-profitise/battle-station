@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-09 9:45AM PST
+ * Last Updated: 2026-01-09 10:00AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-09 9:45AM PST',
+  CODE_VERSION: '2026-01-09 10:00AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
