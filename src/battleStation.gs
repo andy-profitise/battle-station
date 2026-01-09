@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-09 10:00AM PST
+ * Last Updated: 2026-01-09 10:30AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-09 10:00AM PST',
+  CODE_VERSION: '2026-01-09 10:30AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -552,7 +552,9 @@ function loadVendorData(vendorIndex, options) {
   }
 
   // Highlight current vendor's row in List sheet
+  Logger.log(`Setting row ${listRow} color to ${rowColor}`);
   setListRowColor_(listSh, listRow, rowColor);
+  SpreadsheetApp.flush();  // Force the color change to be applied immediately
 
   const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
   
@@ -4957,11 +4959,15 @@ function getAllMondayTasks_() {
         colVals[col.id] = col;
       }
 
-      // Get project from board_relation column
+      // Get project from board_relation column (use correct column ID from config)
       let project = '';
-      const projectCol = colVals['board_relation'] || colVals['connect_boards'];
-      if (projectCol && projectCol.linked_items && projectCol.linked_items.length > 0) {
-        project = projectCol.linked_items[0].name || '';
+      const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+      if (projectCol) {
+        if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+          project = projectCol.linked_items[0].name || '';
+        } else if (projectCol.text) {
+          project = projectCol.text;
+        }
       }
 
       const groupTitle = item.group?.title || '';
@@ -8267,7 +8273,12 @@ function formatChangeType_(changeType) {
  */
 function setListRowColor_(listSh, listRow, color) {
   const numCols = listSh.getLastColumn();
-  listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  Logger.log(`setListRowColor_: row=${listRow}, cols=${numCols}, color=${color}`);
+  if (numCols > 0) {
+    listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  } else {
+    Logger.log(`WARNING: numCols is ${numCols}, skipping row color`);
+  }
 }
 
 /**
