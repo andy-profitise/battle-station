@@ -8024,17 +8024,17 @@ function generateContactsChecksum_(contacts) {
 /**
  * Generate checksum for meetings data
  * Only includes future meetings - past meetings falling off shouldn't trigger changes
- * Excludes [DAILY] and [WEEKLY] recurring events as they change too often
+ * Excludes [DAILY], [WEEKLY], and [MONTHLY] recurring events as they change too often
  * @param {array} meetings - Array of meeting objects
  * @returns {string} Hash string
  */
 function generateMeetingsChecksum_(meetings) {
-  // Filter to only future meetings for checksum, excluding recurring [DAILY]/[WEEKLY] events
+  // Filter to only future meetings for checksum, excluding recurring events
   const futureMeetings = (meetings || []).filter(m => {
     if (m.isPast) return false;
-    // Exclude recurring events that change daily/weekly
+    // Exclude recurring events that change daily/weekly/monthly
     const title = (m.title || '').toUpperCase();
-    if (title.includes('[DAILY]') || title.includes('[WEEKLY]')) return false;
+    if (title.includes('[DAILY]') || title.includes('[WEEKLY]') || title.includes('[MONTHLY]')) return false;
     return true;
   });
   return hashString_(JSON.stringify(futureMeetings.map(m => ({
