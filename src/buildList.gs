@@ -221,20 +221,21 @@ function buildListWithGmailAndNotes() {
       inboxZone.push(r);
     } else if (chatSet.has(nameLower)) {
       chatZone.push(r);
-    } else if (hotSet.has(nameLower)) {
-      hotZone.push(r);
     } else if (matchesMonthlyReturns(nameLower)) {
       // Partial match for Monthly Returns - vendor list name or task vendor name may vary slightly
+      // Monthly Returns takes priority over Hot
       monthlyReturnsZone.push(r);
       console.log(`Monthly Returns match: "${r.name}" matched`);
+    } else if (hotSet.has(nameLower)) {
+      hotZone.push(r);
     } else {
       normalZone.push(r);
     }
   }
 
-  // Final list: Inbox at top, then chat, hot, monthly returns, then normal zone
+  // Final list: Inbox at top, then chat, monthly returns, hot, then normal zone
   // Each zone keeps same sort order as `all` (already sorted)
-  const finalList = [...inboxZone, ...chatZone, ...hotZone, ...monthlyReturnsZone, ...normalZone];
+  const finalList = [...inboxZone, ...chatZone, ...monthlyReturnsZone, ...hotZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
 
