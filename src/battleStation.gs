@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-08 9:15AM PST
+ * Last Updated: 2026-01-09 9:30AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-08 9:15AM PST',
+  CODE_VERSION: '2026-01-09 9:30AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -2994,6 +2994,19 @@ function searchGmailFromLink_(gmailLink, querySetName) {
         lastFrom = 'ACCOUNTING';
       } else if (lastSender.includes('@zeroparallel.com') || lastSender.includes('@profitise.com') || lastSender.includes('@phonexa.com')) {
         lastFrom = 'INTERNAL';
+      } else {
+        // It's a vendor - extract first name from the From field
+        const senderRaw = lastMessage.getFrom(); // Get original case
+        let firstName = '';
+        // Try to extract name from "First Last <email>" format
+        const nameMatch = senderRaw.match(/^"?([^"<]+)/);
+        if (nameMatch) {
+          const fullName = nameMatch[1].trim();
+          firstName = fullName.split(/\s+/)[0]; // Get first word
+        }
+        if (firstName && firstName.length > 1 && !firstName.includes('@')) {
+          lastFrom = `VENDOR (${firstName})`;
+        }
       }
 
       // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
@@ -10758,6 +10771,222 @@ function createDraftAndGetUrl_(thread, responseBody) {
 }
 
 /**
+ * Create email with proper threading, then send it immediately
+ * Similar to createDraftAndGetUrl_ but sends instead of returning draft URL
+ * Returns URL to the sent message in Gmail
+ */
+function createAndSendEmail_(thread, responseBody) {
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
+
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
+
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Helper to split email addresses respecting quoted names
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  let toRecipients = '';
+  let ccRecipients = '';
+  let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    toRecipients = internalRecipients.join(', ');
+  }
+
+  // Add sales@profitise.com to BCC if not already included
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  if (!allRecipientsStr.includes('sales@profitise.com')) {
+    bccRecipients = 'sales@profitise.com';
+  }
+
+  Logger.log('=== SEND EMAIL RECIPIENTS ===');
+  Logger.log(`To: ${toRecipients || '(none)'}`);
+  Logger.log(`Cc: ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log('=============================');
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  const lastMsgBody = lastMessage.getBody() || '';
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Helper to escape HTML
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+  // Full email body with signature and quote
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
+  if (signature) {
+    fullBodyHtml += `<br><br>${signature}`;
+  }
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+  // Create draft reply for proper threading
+  Logger.log('Creating draft for threading, then sending...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draftId = draftReply.getId();
+
+  // Get threading headers from the actual messages
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) allMessageIds.push(msgId);
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Get the subject (with Re: if needed)
+  const subject = draftReply.getMessage().getSubject();
+
+  // Build raw RFC 2822 message for proper threading
+  const boundary = 'boundary_' + Utilities.getUuid();
+  let rawMessage = '';
+  rawMessage += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
+  rawMessage += `Subject: ${subject}\r\n`;
+  rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
+  rawMessage += `References: ${referencesHeader}\r\n`;
+  rawMessage += `MIME-Version: 1.0\r\n`;
+  rawMessage += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`;
+  rawMessage += `\r\n`;
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
+  rawMessage += responseBody + '\r\n';
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+  rawMessage += fullBodyHtml + '\r\n';
+  rawMessage += `--${boundary}--`;
+
+  // Encode for Gmail API
+  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+
+  // Send the message using Gmail API
+  const sentMessage = Gmail.Users.Messages.send(
+    { raw: encodedMessage, threadId: thread.getId() },
+    'me'
+  );
+
+  Logger.log(`Email sent! Message ID: ${sentMessage.id}`);
+
+  // Delete the placeholder draft
+  try {
+    Gmail.Users.Drafts.remove('me', draftId);
+  } catch (e) {
+    Logger.log(`Could not delete placeholder draft: ${e.message}`);
+  }
+
+  // Track for auto-archive (same as draft flow)
+  addPendingArchiveThread_(thread.getId());
+
+  // Return URL to the sent message
+  return `https://mail.google.com/mail/u/0/#sent/${sentMessage.id}`;
+}
+
+/**
  * Add a thread ID to the pending archive list (stored in Script Properties)
  * These threads will be archived on next email refresh once Last=ME
  */
@@ -11041,7 +11270,8 @@ function showDraftPreviewDialog_(responseBody, threadId) {
 <body>
   <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
   <div class="buttons">
-    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft and Open</button>
+    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft</button>
+    <button id="sendBtn" class="btn btn-primary" style="background: #34a853;" onclick="doSendNow()">Send Now</button>
     <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
   </div>
   <div id="previewContent" class="preview">${escapedResponse}</div>
@@ -11057,6 +11287,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
   <script>
     function doCreateDraft() {
       document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
       document.getElementById('reviseBtn').disabled = true;
       document.getElementById('loadingMsg').textContent = 'Creating draft...';
       document.getElementById('loadingMsg').style.display = 'block';
@@ -11069,10 +11300,36 @@ function showDraftPreviewDialog_(responseBody, threadId) {
         .withFailureHandler(function(err) {
           alert('Error: ' + (err.message || err));
           document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
           document.getElementById('reviseBtn').disabled = false;
           document.getElementById('loadingMsg').style.display = 'none';
         })
         .createDraftFromPreview();
+    }
+
+    function doSendNow() {
+      if (!confirm('Send this email now?')) return;
+
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Sending email...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(url) {
+          alert('Email sent!');
+          if (url) window.open(url, '_blank');
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .sendEmailFromPreview();
     }
 
     function doShowRevision() {
@@ -11089,6 +11346,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
 
       document.getElementById('regenerateBtn').disabled = true;
       document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
       document.getElementById('loadingMsg').textContent = 'Regenerating...';
       document.getElementById('loadingMsg').style.display = 'block';
 
@@ -11103,6 +11361,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
           document.getElementById('revisionInput').value = '';
           document.getElementById('regenerateBtn').disabled = false;
           document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
           document.getElementById('loadingMsg').style.display = 'none';
           document.getElementById('revisionInput').focus();
         })
@@ -11110,6 +11369,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
           alert('Error: ' + (err.message || err));
           document.getElementById('regenerateBtn').disabled = false;
           document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
           document.getElementById('loadingMsg').style.display = 'none';
         })
         .reviseEmailDraft(feedback);
@@ -11158,6 +11418,40 @@ function createDraftFromPreview() {
   PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
 
   return draftUrl;
+}
+
+/**
+ * Send email directly from the previewed response (no underscore - must be callable from client)
+ * Creates a draft for proper threading, then immediately sends it
+ */
+function sendEmailFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Sending email...', '📧 Sending', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft (for proper threading), then send it
+  const sentUrl = createAndSendEmail_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  ss.toast('Email sent!', '✅ Sent', 3);
+
+  return sentUrl;
 }
 
 /**
