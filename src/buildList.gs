@@ -201,6 +201,20 @@ function buildListWithGmailAndNotes() {
   const monthlyReturnsZone = [];
   const normalZone = [];
 
+  // Convert monthlyReturnsSet to array for partial matching
+  const monthlyReturnsNames = Array.from(monthlyReturnsSet);
+
+  // Helper to check if vendor matches a Monthly Returns vendor (partial match with min length)
+  const matchesMonthlyReturns = (vendorLower) => {
+    if (monthlyReturnsSet.has(vendorLower)) return true;
+    // Partial match: require at least 6 chars to prevent false positives
+    const MIN_MATCH_LEN = 6;
+    return monthlyReturnsNames.some(mrName => {
+      if (mrName.length < MIN_MATCH_LEN && vendorLower.length < MIN_MATCH_LEN) return false;
+      return vendorLower.includes(mrName) || mrName.includes(vendorLower);
+    });
+  };
+
   for (const r of all) {
     const nameLower = r.name.toLowerCase();
     if (inboxSet.has(nameLower)) {
@@ -209,8 +223,10 @@ function buildListWithGmailAndNotes() {
       chatZone.push(r);
     } else if (hotSet.has(nameLower)) {
       hotZone.push(r);
-    } else if (monthlyReturnsSet.has(nameLower)) {
+    } else if (matchesMonthlyReturns(nameLower)) {
+      // Partial match for Monthly Returns - vendor list name or task vendor name may vary slightly
       monthlyReturnsZone.push(r);
+      console.log(`Monthly Returns match: "${r.name}" matched`);
     } else {
       normalZone.push(r);
     }
