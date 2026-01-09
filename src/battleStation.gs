@@ -43,7 +43,7 @@ const BS_CFG = {
   DATA_START_ROW: 5,
   
   // Modern Color Palette - sleeker, more professional look
-  COLOR_HEADER: '#1a73e8',        // Google Blue - main header
+  COLOR_HEADER: '#34a853',        // Google Green - main header
   COLOR_SUBHEADER: '#e8f0fe',     // Light blue - section headers
   COLOR_EMAIL: '#fef7e0',         // Warm cream - email section
   COLOR_TASK: '#e6f4ea',          // Fresh mint - tasks section
@@ -7813,7 +7813,7 @@ function markEmailAsOverdue() {
     ss.toast(`Marked as overdue: "${emailData.subject}"`, '🔴 Done', 3);
 
     Utilities.sleep(500);
-    battleStationHardRefresh();
+    battleStationQuickRefreshUntilChange();
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
@@ -7838,7 +7838,7 @@ function clearOverdueFromEmail() {
     ss.toast(`Cleared overdue: "${emailData.subject}"`, '✅ Done', 3);
 
     Utilities.sleep(500);
-    battleStationHardRefresh();
+    battleStationQuickRefreshUntilChange();
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
