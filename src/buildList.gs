@@ -59,6 +59,10 @@ function buildListWithGmailAndNotes() {
 
   console.log('=== BUILD LIST WITH GMAIL & NOTES START ===');
 
+  // Refresh batch caches since buildList usually means user is about to review vendors
+  console.log('Refreshing batch caches for vendor review...');
+  refreshBatchCaches_();
+
   // Get all vendors using existing buildVendorList logic
   const shBuyL1 = mustGetSheet_(ss, SHEET_BUYERS_L1M);
   const shBuyL6 = mustGetSheet_(ss, SHEET_BUYERS_L6M);

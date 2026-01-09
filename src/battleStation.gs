@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-07 1:20PM PST
+ * Last Updated: 2026-01-09 9:45AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -20,7 +20,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-07 1:20PM PST',
+  CODE_VERSION: '2026-01-09 9:45AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -280,8 +280,8 @@ function onOpen() {
     .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
     .addSeparator()
-    .addItem('🔴 Mark Email(s) as Overdue', 'markEmailsAsOverdue')
-    .addItem('✅ Clear Overdue from Email(s)', 'clearOverdueFromEmails')
+    .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
+    .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
     .addToUi();
 
   // Chat OCR menu - find vendors from chat screenshots/text
@@ -2994,6 +2994,19 @@ function searchGmailFromLink_(gmailLink, querySetName) {
         lastFrom = 'ACCOUNTING';
       } else if (lastSender.includes('@zeroparallel.com') || lastSender.includes('@profitise.com') || lastSender.includes('@phonexa.com')) {
         lastFrom = 'INTERNAL';
+      } else {
+        // It's a vendor - extract first name from the From field
+        const senderRaw = lastMessage.getFrom(); // Get original case
+        let firstName = '';
+        // Try to extract name from "First Last <email>" format
+        const nameMatch = senderRaw.match(/^"?([^"<]+)/);
+        if (nameMatch) {
+          const fullName = nameMatch[1].trim();
+          firstName = fullName.split(/\s+/)[0]; // Get first word
+        }
+        if (firstName && firstName.length > 1 && !firstName.includes('@')) {
+          lastFrom = `VENDOR (${firstName})`;
+        }
       }
 
       // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
@@ -4785,6 +4798,11 @@ function getAllMondayBoardItems_(boardId, apiToken) {
 /**
  * Get all tasks from the Tasks board with full details (cached)
  * This is much faster than querying per-vendor since it's one API call per session
+ *
+ * Filters:
+ * - Group: "Ongoing Projects" OR "Completed Projects"
+ *
+ * Uses cursor-based pagination to fetch beyond 500 item limit
  * @returns {array} Array of task objects with full details
  */
 function getAllMondayTasks_() {
@@ -4797,13 +4815,16 @@ function getAllMondayTasks_() {
     return cached;
   }
 
-  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation)...`);
+  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation with pagination)...`);
 
   const apiToken = BS_CFG.MONDAY_API_TOKEN;
   const boardId = BS_CFG.TASKS_BOARD_ID;
 
-  // Fetch all tasks with full details needed for display and checksum
-  const query = `
+  // Groups to include (no project filter - include all projects)
+  const VALID_GROUPS = ['ongoing projects', 'completed projects'];
+
+  // First query to get initial page
+  const initialQuery = `
     query {
       boards (ids: [${boardId}]) {
         items_page (limit: 500) {
@@ -4834,15 +4855,50 @@ function getAllMondayTasks_() {
     }
   `;
 
+  // Query for subsequent pages using cursor
+  const nextPageQuery = (cursor) => `
+    query {
+      next_items_page (limit: 500, cursor: "${cursor}") {
+        cursor
+        items {
+          id
+          name
+          group {
+            id
+            title
+          }
+          column_values {
+            id
+            text
+            type
+            ... on BoardRelationValue {
+              linked_items {
+                id
+                name
+              }
+            }
+          }
+          created_at
+          updated_at
+        }
+      }
+    }
+  `;
+
   try {
     const options = {
       method: 'post',
       contentType: 'application/json',
       headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
       muteHttpExceptions: true
     };
 
+    let allItems = [];
+    let cursor = null;
+    let pageNum = 1;
+
+    // First page
+    options.payload = JSON.stringify({ query: initialQuery });
     const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
     const result = JSON.parse(response.getContentText());
 
@@ -4856,11 +4912,46 @@ function getAllMondayTasks_() {
       return [];
     }
 
-    const items = result.data.boards[0].items_page.items;
-    Logger.log(`Fetched ${items.length} tasks from Monday.com Tasks board`);
+    allItems = result.data.boards[0].items_page.items;
+    cursor = result.data.boards[0].items_page.cursor;
+    Logger.log(`Page ${pageNum}: Fetched ${allItems.length} tasks, cursor: ${cursor ? 'yes' : 'no'}`);
 
-    // Process items into a more usable format
-    const tasks = items.map(item => {
+    // Fetch additional pages if cursor exists
+    while (cursor) {
+      pageNum++;
+      options.payload = JSON.stringify({ query: nextPageQuery(cursor) });
+      const nextResponse = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      const nextResult = JSON.parse(nextResponse.getContentText());
+
+      if (nextResult.errors && nextResult.errors.length > 0) {
+        Logger.log(`API Error on page ${pageNum}: ${nextResult.errors[0].message}`);
+        break;
+      }
+
+      if (!nextResult.data?.next_items_page?.items) {
+        Logger.log(`No more items on page ${pageNum}`);
+        break;
+      }
+
+      const pageItems = nextResult.data.next_items_page.items;
+      allItems = allItems.concat(pageItems);
+      cursor = nextResult.data.next_items_page.cursor;
+      Logger.log(`Page ${pageNum}: Fetched ${pageItems.length} tasks (total: ${allItems.length}), cursor: ${cursor ? 'yes' : 'no'}`);
+
+      // Safety limit to prevent infinite loops
+      if (pageNum >= 20) {
+        Logger.log('Reached page limit (20), stopping pagination');
+        break;
+      }
+    }
+
+    Logger.log(`Total fetched from Monday.com: ${allItems.length} tasks across ${pageNum} page(s)`);
+
+    // Process items into a more usable format AND filter by group/project
+    const tasks = [];
+    let filteredOutCount = 0;
+
+    for (const item of allItems) {
       const colVals = {};
       for (const col of (item.column_values || [])) {
         colVals[col.id] = col;
@@ -4873,20 +4964,33 @@ function getAllMondayTasks_() {
         project = projectCol.linked_items[0].name || '';
       }
 
-      return {
+      const groupTitle = item.group?.title || '';
+
+      // Filter: Only include tasks from valid groups
+      const groupLower = groupTitle.toLowerCase();
+
+      if (!VALID_GROUPS.includes(groupLower)) {
+        filteredOutCount++;
+        continue;
+      }
+
+      tasks.push({
         id: item.id,
         name: item.name,
         nameLower: String(item.name || '').toLowerCase(),
         groupId: item.group?.id || '',
-        groupTitle: item.group?.title || '',
+        groupTitle: groupTitle,
         status: colVals['status']?.text || '',
         project: project,
         tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
         columnValues: colVals
-      };
-    });
+      });
+    }
+
+    Logger.log(`After filtering: ${tasks.length} tasks (filtered out ${filteredOutCount} from other groups)`);
+    Logger.log(`Valid groups: ${VALID_GROUPS.join(', ')}`);
 
     // Cache for future lookups (1 hour cache)
     setCachedData_('monday_tasks', cacheKey, tasks);
@@ -5376,13 +5480,69 @@ function getBSCacheSheet_() {
 function clearBSCache_() {
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
-  
+
   if (sh) {
     sh.clear();
     sh.getRange(1, 1, 1, 4).setValues([['Type', 'Key', 'Data', 'LastUpdated']]);
   }
-  
+
   Logger.log('BS Cache cleared');
+}
+
+/**
+ * Refresh batch caches (monday.com tasks, calendar events)
+ * Called when buildList runs to ensure fresh data for vendor review
+ */
+function refreshBatchCaches_() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Clear specific cache types for batch data
+  clearCacheByType_('monday_tasks');
+  clearCacheByType_('monday_items');
+  clearCacheByType_('airtable');
+  clearCacheByType_('gdrive_folders');
+
+  // Clear Script Cache for calendar events
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Batch caches cleared, refetching...');
+
+  // Refetch batch data to populate caches
+  ss.toast('Refreshing monday.com tasks...', '🔄 Cache Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Batch refresh: Fetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refreshing calendar events...', '🔄 Cache Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Batch refresh: Fetched ${events.length} calendar events`);
+
+  ss.toast('Caches refreshed!', '🔄 Done', 2);
+}
+
+/**
+ * Clear cache entries by type
+ */
+function clearCacheByType_(type) {
+  const sh = getBSCacheSheet_();
+  const data = sh.getDataRange().getValues();
+
+  // Find rows to delete (in reverse order to avoid index shifting)
+  const rowsToDelete = [];
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][0] === type) {
+      rowsToDelete.push(i + 1); // Sheet rows are 1-indexed
+    }
+  }
+
+  // Delete rows
+  for (const row of rowsToDelete) {
+    sh.deleteRow(row);
+  }
+
+  if (rowsToDelete.length > 0) {
+    Logger.log(`Cleared ${rowsToDelete.length} cache entries of type: ${type}`);
+  }
 }
 
 /**
@@ -7535,249 +7695,55 @@ function battleStationSnoozeVendor() {
 }
 
 /**
- * Mark selected email threads as manually overdue
- * Shows a dialog to select which emails to mark
+ * Mark the highlighted email as manually overdue
+ * Works on the email row that is currently selected in the sheet
  */
-function markEmailsAsOverdue() {
+function markEmailAsOverdue() {
   const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  try {
+    const emailData = getSelectedEmailThread_();
+    ss.toast(`Marking email as overdue...`, '🔴 Overdue', 2);
 
-  if (!bsSh) {
-    ui.alert('A(I)DEN sheet not found.');
-    return;
-  }
-
-  // Get current vendor
-  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
-  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
-  if (!vendor) {
-    ui.alert('No vendor currently displayed.');
-    return;
-  }
-
-  ss.toast('Loading emails...', '🔴 Mark Overdue', 2);
-
-  // Get emails for this vendor
-  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  const currentIdx = getCurrentVendorIndex_();
-  const listRow = currentIdx + 1;
-  const emails = getEmailsForVendor_(vendor, listRow) || [];
-
-  if (emails.length === 0) {
-    ui.alert('No emails found for this vendor.');
-    return;
-  }
-
-  // Filter to emails that aren't already manually overdue
-  const eligibleEmails = emails.filter(e => !e.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL));
-
-  if (eligibleEmails.length === 0) {
-    ui.alert('All emails are already marked as overdue.');
-    return;
-  }
-
-  // Build selection dialog
-  const html = buildOverdueSelectionDialog_(eligibleEmails, 'mark');
-  const dialog = HtmlService.createHtmlOutput(html)
-    .setWidth(600)
-    .setHeight(400);
-  ui.showModalDialog(dialog, '🔴 Mark Emails as Overdue');
-}
-
-/**
- * Clear manual overdue label from selected emails
- */
-function clearOverdueFromEmails() {
-  const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
-
-  if (!bsSh) {
-    ui.alert('A(I)DEN sheet not found.');
-    return;
-  }
-
-  // Get current vendor
-  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
-  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
-  if (!vendor) {
-    ui.alert('No vendor currently displayed.');
-    return;
-  }
-
-  ss.toast('Loading emails...', '✅ Clear Overdue', 2);
-
-  // Get emails for this vendor
-  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  const currentIdx = getCurrentVendorIndex_();
-  const listRow = currentIdx + 1;
-  const emails = getEmailsForVendor_(vendor, listRow) || [];
-
-  if (emails.length === 0) {
-    ui.alert('No emails found for this vendor.');
-    return;
-  }
-
-  // Filter to emails that have the manual overdue label
-  const overdueEmails = emails.filter(e => e.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL));
-
-  if (overdueEmails.length === 0) {
-    ui.alert('No emails are manually marked as overdue.');
-    return;
-  }
-
-  // Build selection dialog
-  const html = buildOverdueSelectionDialog_(overdueEmails, 'clear');
-  const dialog = HtmlService.createHtmlOutput(html)
-    .setWidth(600)
-    .setHeight(400);
-  ui.showModalDialog(dialog, '✅ Clear Overdue from Emails');
-}
-
-/**
- * Build HTML dialog for selecting emails to mark/clear overdue
- */
-function buildOverdueSelectionDialog_(emails, action) {
-  const actionLabel = action === 'mark' ? 'Mark as Overdue' : 'Clear Overdue';
-  const buttonColor = action === 'mark' ? '#d32f2f' : '#388e3c';
-
-  let emailRows = '';
-  for (const email of emails) {
-    const subject = escapeHtml_(email.subject || '(No Subject)');
-    const date = escapeHtml_(email.date || '');
-    const threadId = email.threadId;
-    const truncSubject = subject.length > 50 ? subject.substring(0, 47) + '...' : subject;
-
-    emailRows += `
-      <tr>
-        <td><input type="checkbox" name="email" value="${threadId}" checked></td>
-        <td title="${subject}">${truncSubject}</td>
-        <td>${date}</td>
-      </tr>
-    `;
-  }
-
-  return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: Arial, sans-serif; padding: 10px; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background: #f5f5f5; }
-        .actions { margin-top: 15px; text-align: right; }
-        button { padding: 8px 16px; margin-left: 8px; cursor: pointer; }
-        .primary { background: ${buttonColor}; color: white; border: none; border-radius: 4px; }
-        .cancel { background: #9e9e9e; color: white; border: none; border-radius: 4px; }
-        .select-all { margin-bottom: 10px; }
-      </style>
-    </head>
-    <body>
-      <div class="select-all">
-        <label><input type="checkbox" id="selectAll" checked onchange="toggleAll()"> Select All</label>
-      </div>
-      <table>
-        <tr>
-          <th width="30"></th>
-          <th>Subject</th>
-          <th width="120">Date</th>
-        </tr>
-        ${emailRows}
-      </table>
-      <div class="actions">
-        <button class="cancel" onclick="google.script.host.close()">Cancel</button>
-        <button class="primary" onclick="submit()">${actionLabel}</button>
-      </div>
-      <script>
-        function toggleAll() {
-          const checked = document.getElementById('selectAll').checked;
-          document.querySelectorAll('input[name="email"]').forEach(cb => cb.checked = checked);
-        }
-        function submit() {
-          const selected = [];
-          document.querySelectorAll('input[name="email"]:checked').forEach(cb => selected.push(cb.value));
-          if (selected.length === 0) {
-            alert('Please select at least one email.');
-            return;
-          }
-          google.script.run
-            .withSuccessHandler(() => google.script.host.close())
-            .withFailureHandler(err => alert('Error: ' + err.message))
-            .${action === 'mark' ? 'applyManualOverdueLabel_' : 'removeManualOverdueLabel_'}(selected);
-        }
-      </script>
-    </body>
-    </html>
-  `;
-}
-
-/**
- * Apply manual overdue label to selected thread IDs
- */
-function applyManualOverdueLabel_(threadIds) {
-  const ss = SpreadsheetApp.getActive();
-  ss.toast(`Marking ${threadIds.length} email(s) as overdue...`, '🔴 Overdue', -1);
-
-  // Get or create the label
-  let label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
-  if (!label) {
-    label = GmailApp.createLabel(BS_CFG.MANUAL_OVERDUE_LABEL);
-    Logger.log(`Created label: ${BS_CFG.MANUAL_OVERDUE_LABEL}`);
-  }
-
-  let count = 0;
-  for (const threadId of threadIds) {
-    try {
-      const thread = GmailApp.getThreadById(threadId);
-      if (thread) {
-        thread.addLabel(label);
-        count++;
-      }
-    } catch (e) {
-      Logger.log(`Error adding label to thread ${threadId}: ${e.message}`);
+    // Get or create the label
+    let label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+    if (!label) {
+      label = GmailApp.createLabel(BS_CFG.MANUAL_OVERDUE_LABEL);
+      Logger.log(`Created label: ${BS_CFG.MANUAL_OVERDUE_LABEL}`);
     }
+
+    emailData.thread.addLabel(label);
+    ss.toast(`Marked as overdue: "${emailData.subject}"`, '🔴 Done', 3);
+
+    Utilities.sleep(500);
+    battleStationHardRefresh();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
-
-  ss.toast(`Marked ${count} email(s) as overdue`, '🔴 Done', 3);
-
-  // Hard refresh to show the changes
-  Utilities.sleep(500);
-  battleStationHardRefresh();
 }
 
 /**
- * Remove manual overdue label from selected thread IDs
+ * Clear manual overdue label from the highlighted email
+ * Works on the email row that is currently selected in the sheet
  */
-function removeManualOverdueLabel_(threadIds) {
+function clearOverdueFromEmail() {
   const ss = SpreadsheetApp.getActive();
-  ss.toast(`Clearing overdue from ${threadIds.length} email(s)...`, '✅ Clear', -1);
+  try {
+    const emailData = getSelectedEmailThread_();
+    ss.toast(`Clearing overdue...`, '✅ Clear', 2);
 
-  const label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
-  if (!label) {
-    ss.toast('Manual overdue label not found', '⚠️ Warning', 3);
-    return;
-  }
-
-  let count = 0;
-  for (const threadId of threadIds) {
-    try {
-      const thread = GmailApp.getThreadById(threadId);
-      if (thread) {
-        thread.removeLabel(label);
-        count++;
-      }
-    } catch (e) {
-      Logger.log(`Error removing label from thread ${threadId}: ${e.message}`);
+    const label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+    if (!label) {
+      throw new Error('Manual overdue label not found');
     }
+
+    emailData.thread.removeLabel(label);
+    ss.toast(`Cleared overdue: "${emailData.subject}"`, '✅ Done', 3);
+
+    Utilities.sleep(500);
+    battleStationHardRefresh();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
-
-  ss.toast(`Cleared overdue from ${count} email(s)`, '✅ Done', 3);
-
-  // Hard refresh to show the changes
-  Utilities.sleep(500);
-  battleStationHardRefresh();
 }
 
 /**
@@ -8058,12 +8024,19 @@ function generateContactsChecksum_(contacts) {
 /**
  * Generate checksum for meetings data
  * Only includes future meetings - past meetings falling off shouldn't trigger changes
+ * Excludes [DAILY] and [WEEKLY] recurring events as they change too often
  * @param {array} meetings - Array of meeting objects
  * @returns {string} Hash string
  */
 function generateMeetingsChecksum_(meetings) {
-  // Filter to only future meetings for checksum
-  const futureMeetings = (meetings || []).filter(m => !m.isPast);
+  // Filter to only future meetings for checksum, excluding recurring [DAILY]/[WEEKLY] events
+  const futureMeetings = (meetings || []).filter(m => {
+    if (m.isPast) return false;
+    // Exclude recurring events that change daily/weekly
+    const title = (m.title || '').toUpperCase();
+    if (title.includes('[DAILY]') || title.includes('[WEEKLY]')) return false;
+    return true;
+  });
   return hashString_(JSON.stringify(futureMeetings.map(m => ({
     title: m.title,
     date: m.date,
@@ -10853,6 +10826,222 @@ function createDraftAndGetUrl_(thread, responseBody) {
 }
 
 /**
+ * Create email with proper threading, then send it immediately
+ * Similar to createDraftAndGetUrl_ but sends instead of returning draft URL
+ * Returns URL to the sent message in Gmail
+ */
+function createAndSendEmail_(thread, responseBody) {
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
+
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
+
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Helper to split email addresses respecting quoted names
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  let toRecipients = '';
+  let ccRecipients = '';
+  let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    toRecipients = internalRecipients.join(', ');
+  }
+
+  // Add sales@profitise.com to BCC if not already included
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  if (!allRecipientsStr.includes('sales@profitise.com')) {
+    bccRecipients = 'sales@profitise.com';
+  }
+
+  Logger.log('=== SEND EMAIL RECIPIENTS ===');
+  Logger.log(`To: ${toRecipients || '(none)'}`);
+  Logger.log(`Cc: ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log('=============================');
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  const lastMsgBody = lastMessage.getBody() || '';
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Helper to escape HTML
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+  // Full email body with signature and quote
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
+  if (signature) {
+    fullBodyHtml += `<br><br>${signature}`;
+  }
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+  // Create draft reply for proper threading
+  Logger.log('Creating draft for threading, then sending...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draftId = draftReply.getId();
+
+  // Get threading headers from the actual messages
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) allMessageIds.push(msgId);
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Get the subject (with Re: if needed)
+  const subject = draftReply.getMessage().getSubject();
+
+  // Build raw RFC 2822 message for proper threading
+  const boundary = 'boundary_' + Utilities.getUuid();
+  let rawMessage = '';
+  rawMessage += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
+  rawMessage += `Subject: ${subject}\r\n`;
+  rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
+  rawMessage += `References: ${referencesHeader}\r\n`;
+  rawMessage += `MIME-Version: 1.0\r\n`;
+  rawMessage += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`;
+  rawMessage += `\r\n`;
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
+  rawMessage += responseBody + '\r\n';
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+  rawMessage += fullBodyHtml + '\r\n';
+  rawMessage += `--${boundary}--`;
+
+  // Encode for Gmail API
+  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+
+  // Send the message using Gmail API
+  const sentMessage = Gmail.Users.Messages.send(
+    { raw: encodedMessage, threadId: thread.getId() },
+    'me'
+  );
+
+  Logger.log(`Email sent! Message ID: ${sentMessage.id}`);
+
+  // Delete the placeholder draft
+  try {
+    Gmail.Users.Drafts.remove('me', draftId);
+  } catch (e) {
+    Logger.log(`Could not delete placeholder draft: ${e.message}`);
+  }
+
+  // Track for auto-archive (same as draft flow)
+  addPendingArchiveThread_(thread.getId());
+
+  // Return URL to the sent message
+  return `https://mail.google.com/mail/u/0/#sent/${sentMessage.id}`;
+}
+
+/**
  * Add a thread ID to the pending archive list (stored in Script Properties)
  * These threads will be archived on next email refresh once Last=ME
  */
@@ -11136,7 +11325,8 @@ function showDraftPreviewDialog_(responseBody, threadId) {
 <body>
   <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
   <div class="buttons">
-    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft and Open</button>
+    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft</button>
+    <button id="sendBtn" class="btn btn-primary" style="background: #34a853;" onclick="doSendNow()">Send Now</button>
     <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
   </div>
   <div id="previewContent" class="preview">${escapedResponse}</div>
@@ -11152,6 +11342,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
   <script>
     function doCreateDraft() {
       document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
       document.getElementById('reviseBtn').disabled = true;
       document.getElementById('loadingMsg').textContent = 'Creating draft...';
       document.getElementById('loadingMsg').style.display = 'block';
@@ -11164,10 +11355,36 @@ function showDraftPreviewDialog_(responseBody, threadId) {
         .withFailureHandler(function(err) {
           alert('Error: ' + (err.message || err));
           document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
           document.getElementById('reviseBtn').disabled = false;
           document.getElementById('loadingMsg').style.display = 'none';
         })
         .createDraftFromPreview();
+    }
+
+    function doSendNow() {
+      if (!confirm('Send this email now?')) return;
+
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Sending email...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(url) {
+          alert('Email sent!');
+          if (url) window.open(url, '_blank');
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .sendEmailFromPreview();
     }
 
     function doShowRevision() {
@@ -11184,6 +11401,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
 
       document.getElementById('regenerateBtn').disabled = true;
       document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
       document.getElementById('loadingMsg').textContent = 'Regenerating...';
       document.getElementById('loadingMsg').style.display = 'block';
 
@@ -11198,6 +11416,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
           document.getElementById('revisionInput').value = '';
           document.getElementById('regenerateBtn').disabled = false;
           document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
           document.getElementById('loadingMsg').style.display = 'none';
           document.getElementById('revisionInput').focus();
         })
@@ -11205,6 +11424,7 @@ function showDraftPreviewDialog_(responseBody, threadId) {
           alert('Error: ' + (err.message || err));
           document.getElementById('regenerateBtn').disabled = false;
           document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
           document.getElementById('loadingMsg').style.display = 'none';
         })
         .reviseEmailDraft(feedback);
@@ -11253,6 +11473,40 @@ function createDraftFromPreview() {
   PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
 
   return draftUrl;
+}
+
+/**
+ * Send email directly from the previewed response (no underscore - must be callable from client)
+ * Creates a draft for proper threading, then immediately sends it
+ */
+function sendEmailFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Sending email...', '📧 Sending', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft (for proper threading), then send it
+  const sentUrl = createAndSendEmail_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  ss.toast('Email sent!', '✅ Sent', 3);
+
+  return sentUrl;
 }
 
 /**
