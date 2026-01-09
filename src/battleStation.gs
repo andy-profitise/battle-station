@@ -552,7 +552,9 @@ function loadVendorData(vendorIndex, options) {
   }
 
   // Highlight current vendor's row in List sheet
+  Logger.log(`Setting row ${listRow} color to ${rowColor}`);
   setListRowColor_(listSh, listRow, rowColor);
+  SpreadsheetApp.flush();  // Force the color change to be applied immediately
 
   const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
   
@@ -8267,7 +8269,12 @@ function formatChangeType_(changeType) {
  */
 function setListRowColor_(listSh, listRow, color) {
   const numCols = listSh.getLastColumn();
-  listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  Logger.log(`setListRowColor_: row=${listRow}, cols=${numCols}, color=${color}`);
+  if (numCols > 0) {
+    listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  } else {
+    Logger.log(`WARNING: numCols is ${numCols}, skipping row color`);
+  }
 }
 
 /**
