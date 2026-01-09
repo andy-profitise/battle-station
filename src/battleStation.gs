@@ -5866,33 +5866,46 @@ function battleStationMarkReviewed() {
 }
 
 /**
- * Open Gmail search for current vendor
+ * Open Gmail search for current vendor - just the zzzVendors label
  */
 function battleStationOpenGmail() {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
   const currentIndex = getCurrentVendorIndex_();
-  
+
   if (!currentIndex) {
     SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
     return;
   }
-  
+
   const listRow = currentIndex + 1;
   const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
-  
+
   if (!gmailLink || gmailLink.toString().indexOf('#search') === -1) {
     SpreadsheetApp.getUi().alert('No valid Gmail search link found.');
     return;
   }
-  
-  const html = `<html><body><script>window.open('${gmailLink}', '_blank');google.script.host.close();</script></body></html>`;
+
+  // Extract just the zzzvendors label from the full link
+  const linkStr = gmailLink.toString();
+  const match = linkStr.match(/label%3Azzzvendors-[a-z0-9.-]+/i);
+
+  let simpleLink;
+  if (match) {
+    // Build simplified URL with just the zzzvendors label
+    simpleLink = `https://mail.google.com/mail/u/0/#search/${match[0]}`;
+  } else {
+    // Fallback to original link if pattern not found
+    simpleLink = gmailLink;
+  }
+
+  const html = `<html><body><script>window.open('${simpleLink}', '_blank');google.script.host.close();</script></body></html>`;
   const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
   SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
 }
