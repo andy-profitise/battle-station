@@ -11475,8 +11475,6 @@ function showDraftPreviewDialog_(responseBody, threadId) {
     }
 
     function doSendNow() {
-      if (!confirm('Send this email now?')) return;
-
       document.getElementById('createBtn').disabled = true;
       document.getElementById('sendBtn').disabled = true;
       document.getElementById('reviseBtn').disabled = true;
