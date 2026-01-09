@@ -647,6 +647,9 @@ function loadVendorData(vendorIndex, options) {
   const contactData = getVendorContacts_(vendor, listRow);
   const mondayNotes = contactData.notes || notes;
   const contacts = contactData.contacts;
+
+  // Cache original notes for auto-save detection on transition
+  cacheOriginalNotes_(mondayNotes || '');
   
   // Vendor details - build Phonexa link display
   let phonexaDisplay = '';
@@ -5050,15 +5053,18 @@ function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
  * Navigation: Go to next vendor
  */
 function battleStationNext() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
     SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
-  
+
   const currentIndex = getCurrentVendorIndex_();
   
   if (!currentIndex) {
@@ -5090,14 +5096,17 @@ function battleStationNext() {
  * Navigation: Go to previous vendor
  */
 function battleStationPrevious() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
-  
+
   if (!bsSh) {
     SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
-  
+
   const currentIndex = getCurrentVendorIndex_();
   
   if (!currentIndex) {
@@ -5605,6 +5614,84 @@ function setCachedData_(type, key, data) {
 }
 
 /**
+ * Cache original notes when loading a vendor (for auto-save on transition)
+ */
+function cacheOriginalNotes_(notes) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('aiden_original_notes', notes || '');
+}
+
+/**
+ * Get cached original notes
+ */
+function getOriginalNotes_() {
+  const props = PropertiesService.getScriptProperties();
+  return props.getProperty('aiden_original_notes') || '';
+}
+
+/**
+ * Check if notes changed and auto-save to monday.com if so
+ * Called before transitioning to another vendor
+ */
+function checkAndAutoSaveNotes_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) return;
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) return;
+
+  // Find the notes row - look for 📝 NOTES header
+  let notesRow = -1;
+  for (let i = 5; i < 50; i++) {
+    const label = String(bsSh.getRange(i, 1).getValue() || '');
+    if (label.indexOf('📝 NOTES') !== -1) {
+      notesRow = i + 1;  // Notes content is in the row after the header
+      break;
+    }
+  }
+
+  if (notesRow === -1) return;
+
+  const currentNotes = String(bsSh.getRange(notesRow, 1).getValue() || '').trim();
+  const originalNotes = getOriginalNotes_();
+
+  // Skip if notes haven't changed or are empty/placeholder
+  if (currentNotes === originalNotes) return;
+  if (!currentNotes || currentNotes === '(no notes)') return;
+  if (currentNotes.startsWith('=HYPERLINK')) return;  // It's a formula, not user content
+
+  // Notes changed - auto-save to monday.com
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+  if (!vendor) return;
+
+  Logger.log(`Auto-saving notes for ${vendor} (changed from "${originalNotes.substring(0, 50)}..." to "${currentNotes.substring(0, 50)}...")`);
+  ss.toast(`Auto-saving notes for ${vendor}...`, '💾 Auto-Save', 2);
+
+  try {
+    // Update List sheet
+    listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(currentNotes);
+
+    // Update monday.com
+    const result = updateMondayComNotesForVendor_(vendor, currentNotes, listRow);
+
+    if (result.success) {
+      // Update cache so we don't try to save again
+      cacheOriginalNotes_(currentNotes);
+      ss.toast(`Notes auto-saved for ${vendor}`, '✅ Saved', 2);
+    } else {
+      Logger.log(`Auto-save failed: ${result.error}`);
+    }
+  } catch (e) {
+    Logger.log(`Auto-save error: ${e.message}`);
+  }
+}
+
+/**
  * Update monday.com notes for current vendor - NO DIALOGS
  */
 function battleStationUpdateMondayNotes() {
@@ -5660,8 +5747,10 @@ function battleStationUpdateMondayNotes() {
     listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(notes);
     
     const result = updateMondayComNotesForVendor_(vendor, notes, listRow);
-    
+
     if (result.success) {
+      // Update cached original notes so auto-save won't trigger again
+      cacheOriginalNotes_(notes);
       ss.toast(`Notes updated for ${vendor}`, '✅ Success', 3);
       battleStationRefresh();
     } else {
@@ -7078,6 +7167,9 @@ The user selected email #${emailIndex + 1} (Subject: "${selectedEmail.subject}")
  * Go to a specific vendor by index or name
  */
 function battleStationGoTo() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
 
