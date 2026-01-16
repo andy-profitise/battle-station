@@ -282,6 +282,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
     .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
+    .addItem('📤 Send to Aden', 'sendToAden')
     .addToUi();
 
   // Chat OCR menu - find vendors from chat screenshots/text
@@ -7855,6 +7856,146 @@ function clearOverdueFromEmail() {
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
+}
+
+/**
+ * Send highlighted email to Aden for investigation
+ * Shows dialog for context, then sends email with Gmail search link
+ */
+function sendToAden() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    // Get sender email from the thread
+    const messages = emailData.thread.getMessages();
+    const lastMessage = messages[messages.length - 1];
+    const senderEmail = lastMessage.getFrom();
+
+    // Extract just the email address from "Name <email>" format
+    const emailMatch = senderEmail.match(/<([^>]+)>/) || [null, senderEmail];
+    const senderEmailClean = emailMatch[1] || senderEmail;
+
+    // Build the dialog HTML
+    const escapedSubject = emailData.subject.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    const escapedSender = senderEmailClean.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .info { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; }
+    .info-label { font-weight: bold; color: #5f6368; }
+    .info-value { color: #202124; margin-left: 5px; }
+    .context-label { font-weight: bold; margin-bottom: 8px; display: block; }
+    textarea {
+      width: 100%;
+      height: 100px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+    .buttons { margin-top: 15px; display: flex; gap: 10px; }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-send { background: #34a853; color: white; }
+    .btn-send:hover { background: #2d8e47; }
+    .btn-cancel { background: #f1f3f4; color: #5f6368; }
+    .btn-cancel:hover { background: #e8eaed; }
+    .loading { color: #5f6368; font-style: italic; display: none; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="info">
+    <div><span class="info-label">Subject:</span><span class="info-value">${escapedSubject}</span></div>
+    <div><span class="info-label">From:</span><span class="info-value">${escapedSender}</span></div>
+  </div>
+
+  <label class="context-label">Context for Aden:</label>
+  <textarea id="context" placeholder="Add any context or notes about what needs to be investigated..."></textarea>
+
+  <div class="buttons">
+    <button class="btn btn-send" onclick="doSend()">Send to Aden</button>
+    <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div id="loading" class="loading">Sending...</div>
+
+  <script>
+    function doSend() {
+      var context = document.getElementById('context').value;
+      document.querySelector('.btn-send').disabled = true;
+      document.querySelector('.btn-cancel').disabled = true;
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.querySelector('.btn-send').disabled = false;
+          document.querySelector('.btn-cancel').disabled = false;
+          document.getElementById('loading').style.display = 'none';
+        })
+        .sendToAdenExecute('${escapedSubject}', '${escapedSender}', context);
+    }
+
+    // Focus on textarea when dialog opens
+    document.getElementById('context').focus();
+  </script>
+</body>
+</html>`;
+
+    const htmlOutput = HtmlService.createHtmlOutput(html)
+      .setWidth(500)
+      .setHeight(320);
+
+    SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📤 Send to Aden');
+
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Execute sending email to Aden (called from dialog)
+ */
+function sendToAdenExecute(subject, senderEmail, context) {
+  const recipient = 'aden@profitise.com';
+  const emailSubject = `SUBJECT: ${subject} - PLEASE INVESTIGATE/REACH-OUT/RESOLVE`;
+
+  // Build Gmail search URL: subject + from sender
+  const searchQuery = `subject:(${subject}) from:(${senderEmail})`;
+  const encodedQuery = encodeURIComponent(searchQuery);
+  const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/${encodedQuery}`;
+
+  // Build email body
+  let body = `Hi Aden,\n\n`;
+  body += `Please investigate/reach-out/resolve the following email:\n\n`;
+  body += `Subject: ${subject}\n`;
+  body += `From: ${senderEmail}\n\n`;
+  body += `Gmail Search Link:\n${gmailSearchUrl}\n\n`;
+
+  if (context && context.trim()) {
+    body += `Context:\n${context.trim()}\n\n`;
+  }
+
+  body += `Thanks,\nAndy`;
+
+  // Send the email
+  GmailApp.sendEmail(recipient, emailSubject, body);
+
+  SpreadsheetApp.getActive().toast(`Sent to Aden: "${subject}"`, '📤 Sent', 3);
 }
 
 /**
