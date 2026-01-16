@@ -57,10 +57,9 @@ const BS_CFG = {
   COLOR_PHONEXA: '#ffe0b2',       // Peach - Phonexa waiting
   COLOR_OVERDUE: '#ffcdd2',       // Light red - overdue
 
-  // Row highlight colors for skip/traverse
-  COLOR_ROW_CHANGED: '#c8e6c9',   // Green - vendor has changes
-  COLOR_ROW_SKIPPED: '#fff9c4',   // Yellow - vendor unchanged
+  // Row highlight colors for List sheet
   COLOR_ROW_CURRENT: '#b3e5fc',   // Light blue - currently viewing
+  COLOR_ROW_VIEWED: '#fff9c4',    // Yellow - already looked at
 
   // Section styling
   COLOR_SECTION_BG: '#fafafa',    // Light gray for section backgrounds
@@ -517,7 +516,6 @@ function loadVendorData(vendorIndex, options) {
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
   const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
   const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
-  const rowColor = options.rowColor || BS_CFG.COLOR_ROW_CURRENT;  // Color for List row highlighting
   // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
 
   const ss = SpreadsheetApp.getActive();
@@ -528,7 +526,7 @@ function loadVendorData(vendorIndex, options) {
     throw new Error('Required sheets not found');
   }
 
-  // Get previous vendor index before we update, so we can clear its row highlight
+  // Get previous vendor index before we update, so we can set its row to yellow (viewed)
   const previousIndex = getCurrentVendorIndex_();
 
   const totalVendors = listSh.getLastRow() - 1;
@@ -538,23 +536,17 @@ function loadVendorData(vendorIndex, options) {
 
   const listRow = vendorIndex + 1;
 
-  // Clear previous vendor's row highlight only if it's the "current" color (blue)
-  // Don't clear green/yellow colors from skip operations
+  // Set previous vendor's row to yellow (viewed) when navigating away
   if (previousIndex && previousIndex !== vendorIndex) {
     const prevListRow = previousIndex + 1;
-    const numCols = listSh.getLastColumn();
     if (prevListRow > 1 && prevListRow <= totalVendors + 1) {
-      const prevBg = listSh.getRange(prevListRow, 1).getBackground();
-      // Only clear if it's the "current" blue color, not green/yellow from skip
-      if (prevBg === BS_CFG.COLOR_ROW_CURRENT) {
-        listSh.getRange(prevListRow, 1, 1, numCols).setBackground(null);
-      }
+      setListRowColor_(listSh, prevListRow, BS_CFG.COLOR_ROW_VIEWED);
     }
   }
 
-  // Highlight current vendor's row in List sheet
-  Logger.log(`Setting row ${listRow} color to ${rowColor}`);
-  setListRowColor_(listSh, listRow, rowColor);
+  // Highlight current vendor's row in blue (current)
+  Logger.log(`Setting row ${listRow} color to blue (current)`);
+  setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CURRENT);
   SpreadsheetApp.flush();  // Force the color change to be applied immediately
 
   const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
@@ -8744,7 +8736,7 @@ function findResumePosition_(listSh) {
   for (let i = 0; i < backgrounds.length; i++) {
     const rowBg = backgrounds[i][0];  // Check first column's background
     const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
-    const isColored = rowBg === BS_CFG.COLOR_ROW_CHANGED || rowBg === BS_CFG.COLOR_ROW_SKIPPED;
+    const isColored = rowBg === BS_CFG.COLOR_ROW_CURRENT || rowBg === BS_CFG.COLOR_ROW_VIEWED;
 
     if (isColored) {
       hasSeenColored = true;
@@ -8775,7 +8767,7 @@ function findResumePosition_(listSh) {
         let coloredBefore = false;
         for (let j = 0; j < i; j++) {
           const prevBg = backgrounds[j][0];
-          if (prevBg === BS_CFG.COLOR_ROW_CHANGED || prevBg === BS_CFG.COLOR_ROW_SKIPPED) {
+          if (prevBg === BS_CFG.COLOR_ROW_CURRENT || prevBg === BS_CFG.COLOR_ROW_VIEWED) {
             coloredBefore = true;
             break;
           }
@@ -9015,7 +9007,7 @@ function skipToNextChanged(trackComeback) {
         if (changeResult.hasChanges) {
           Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via resume path]`);
           ss.toast('');
-          loadVendorData(currentIdx, { forceChanged: true, rowColor: BS_CFG.COLOR_ROW_CHANGED });
+          loadVendorData(currentIdx, { forceChanged: true });
           if (skippedCount > 0) {
             SpreadsheetApp.getUi().alert(`Resumed and skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
           }
@@ -9023,8 +9015,8 @@ function skipToNextChanged(trackComeback) {
           return;
         }
 
-        // No changes - mark as skipped (yellow)
-        setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+        // No changes - mark as viewed (yellow)
+        setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
         skippedCount++;
       }
     }
@@ -9114,7 +9106,7 @@ function skipToNextChanged(trackComeback) {
 
       // Load this vendor with a note about the safeguard
       loadVendorData(currentIdx, { forceChanged: false, changeType: `No changes - stopped after ${skippedCount} skips (timeout safeguard)` });
-      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
       if (trackComeback) checkComeback_();
       return;
     }
@@ -9148,14 +9140,14 @@ function skipToNextChanged(trackComeback) {
       const changeLabel = formatChangeType_(changeResult.changeType);
       ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
 
-      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType, rowColor: BS_CFG.COLOR_ROW_CHANGED });
+      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
       // WHAT CHANGED section now shows the details, no need for dialog
       if (trackComeback) checkComeback_();
       return;
     }
 
-    // No changes - mark as skipped (yellow)
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+    // No changes - mark as viewed (yellow)
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
     skippedCount++;
   }
 }
