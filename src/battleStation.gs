@@ -14497,11 +14497,10 @@ function buildTaskStatusDialogHtml_(vendor, tasks) {
   const taskRows = tasks.map((task, idx) => {
     const isDone = task.status === 'Done';
     const rowClass = isDone ? 'task-done' : '';
-    const checkedAttr = isDone ? '' : 'checked';
 
     return `
       <tr class="${rowClass}">
-        <td><input type="checkbox" name="task_${idx}" value="${task.itemId}" ${checkedAttr}></td>
+        <td><input type="checkbox" name="task_${idx}" value="${task.itemId}"></td>
         <td class="task-name">${escapeHtml_(task.subject)}</td>
         <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
       </tr>
