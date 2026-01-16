@@ -8910,15 +8910,34 @@ function skipToNextChanged(trackComeback) {
       Logger.log(`DECISION PATH: Inbox Redirect - new email for ${inboxResult.vendorName}, vendorIdx=${vendorIdx}`);
 
       if (vendorIdx) {
-        // Record this as an Inbox Redirect, including where we were so we can resume later
-        const originalIdx = currentVendorIdx || 1;
-        const originalVendor = currentVendorName || 'Vendor #1';
+        // Check if there's already an active inbox redirect with a resume position
+        // If so, DON'T overwrite the resume position - keep the original one
+        const existingResumeIdx = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+        const existingResumeVendor = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+        let resumeFromIdx, resumeFromVendor;
+
+        if (existingResumeIdx && existingResumeVendor && lastInboxRedirectTime) {
+          // Chained redirect - keep original resume position
+          resumeFromIdx = existingResumeIdx;
+          resumeFromVendor = existingResumeVendor;
+          Logger.log(`Chained Inbox Redirect - preserving original resume: idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+        } else {
+          // First redirect - record where we were so we can resume later
+          const originalIdx = currentVendorIdx || 1;
+          const originalVendor = currentVendorName || 'Vendor #1';
+          resumeFromIdx = String(originalIdx + 1);
+          resumeFromVendor = originalVendor;
+          Logger.log(`First Inbox Redirect - saving resume: idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+        }
+
+        // Update timestamp (always) and resume position (only if not chained)
         props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
-        // Store where to resume from: the NEXT vendor after where we currently are
-        props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', String(originalIdx + 1));
-        props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', originalVendor);
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', resumeFromIdx);
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', resumeFromVendor);
+
         Logger.log(`NAVIGATING TO: Vendor #${vendorIdx} (${inboxResult.vendorName}) via Inbox Redirect`);
-        Logger.log(`Stored resume position: will resume from idx ${originalIdx + 1} (after ${originalVendor})`);
+        Logger.log(`Resume position: will resume from idx ${resumeFromIdx} (after ${resumeFromVendor})`);
 
         ss.toast('');
         loadVendorData(vendorIdx, { forceChanged: true });
@@ -8928,7 +8947,7 @@ function skipToNextChanged(trackComeback) {
           `New email found for: ${inboxResult.vendorName}\n\n` +
           `Subject: ${inboxResult.subject}\n\n` +
           `Redirecting to this vendor.\n\n` +
-          `(Will resume from ${originalVendor} on next skip if no new emails)`,
+          `(Will resume from ${resumeFromVendor} on next skip if no new emails)`,
           SpreadsheetApp.getUi().ButtonSet.OK
         );
 
