@@ -4365,7 +4365,10 @@ CRITICAL CONTEXT:
 - "OUR TEAM" = Profitise/ZeroParallel/Phonexa (emails from @profitise.com, @zeroparallel.com, @phonexa.com)
 - "VENDOR" = ${vendor} (the external party)
 - If WE sent the last message → we are WAITING on the vendor to respond (🟡)
-- If THEY sent the last message → we need to take action/respond (🔴)
+- If THEY sent the last message AND it has 01.priority/1 label → urgent, we need to respond (🔴)
+- If THEY sent the last message but NO 01.priority/1 label → less urgent (🟡)
+
+IMPORTANT: Only use 🔴 (red) if the email has the "01.priority/1" label. Without that label, use 🟡 (yellow) instead.
 
 ACTIVE EMAILS IN INBOX (label:00.received):
 ${emailContext || 'None'}
@@ -4373,20 +4376,20 @@ ${emailContext || 'None'}
 SNOOZED EMAILS (deferred for later):
 ${snoozedContext || 'None'}
 
-Analyze these emails and provide a BRIEF, ACTIONABLE summary. Pay close attention to WHO sent the last message:
-- If our team sent the last email, we're WAITING on the vendor - use 🟡
-- If the vendor sent the last email, we need to respond - use 🔴
+Analyze these emails and provide a BRIEF, ACTIONABLE summary. Pay close attention to:
+1. WHO sent the last message
+2. Whether the email has the 01.priority/1 label (check the Labels line)
 
 Format your response as a SHORT bulleted list (3-6 bullets max). Be concise - each bullet should be 10 words or less.
 Start each bullet with an emoji:
-- 🔴 = We need to respond/take action (they sent last)
-- 🟡 = Waiting on vendor to respond (we sent last)
+- 🔴 = URGENT: they sent last AND has 01.priority/1 label
+- 🟡 = Waiting/needs attention but not urgent (no priority label, or we sent last)
 - 🔵 = Snoozed/deferred for later
 - 🟢 = FYI/informational
 
 Example format:
 • 🟡 Awaiting vendor response on Invoice #123
-• 🔴 Need to reply to their pricing question
+• 🔴 URGENT: Reply to their pricing question (priority)
 • 🔵 Follow-up snoozed until Jan 15`;
 
     const apiKey = BS_CFG.CLAUDE_API_KEY;
@@ -7819,7 +7822,7 @@ function markEmailAsOverdue() {
     ss.toast(`Marked as overdue: "${emailData.subject}"`, '🔴 Done', 3);
 
     Utilities.sleep(500);
-    battleStationQuickRefreshUntilChange();
+    battleStationQuickRefreshUntilChanged();
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
@@ -7844,7 +7847,7 @@ function clearOverdueFromEmail() {
     ss.toast(`Cleared overdue: "${emailData.subject}"`, '✅ Done', 3);
 
     Utilities.sleep(500);
-    battleStationQuickRefreshUntilChange();
+    battleStationQuickRefreshUntilChanged();
   } catch (e) {
     SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
   }
