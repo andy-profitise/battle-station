@@ -317,10 +317,15 @@ function doGet(e) {
     props.setProperty('PENDING_VENDOR_URL', decodeURIComponent(vendor));
     props.setProperty('PENDING_VENDOR_TIME', new Date().toISOString());
 
-    // Redirect to the Google Sheet
-    const sheetUrl = SpreadsheetApp.getActive().getUrl();
+    // Redirect to the Google Sheet's A(I)DEN tab
+    const ss = SpreadsheetApp.getActive();
+    const aidenSheet = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+    const sheetUrl = ss.getUrl();
+    const gid = aidenSheet ? aidenSheet.getSheetId() : '';
+    const fullUrl = gid ? `${sheetUrl}#gid=${gid}` : sheetUrl;
+
     return HtmlService.createHtmlOutput(
-      `<html><head><meta http-equiv="refresh" content="0;url=${sheetUrl}"></head>` +
+      `<html><head><meta http-equiv="refresh" content="0;url=${fullUrl}"></head>` +
       `<body>Redirecting to ${vendor}...</body></html>`
     );
   }
