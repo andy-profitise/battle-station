@@ -262,6 +262,7 @@ function onOpen() {
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
     .addSeparator()
     .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
+    .addItem('⚙️ Set Deep Link URL...', 'setDeepLinkBaseUrl')
     .addToUi();
 
   // Email Response Templates menu
@@ -406,46 +407,86 @@ function copyVendorDeepLink() {
     return;
   }
 
-  // Get the web app URL - user needs to deploy and update this
-  const scriptId = ScriptApp.getScriptId();
+  // Build the deep link URL
   const encodedVendor = encodeURIComponent(vendor);
 
-  // Show dialog with the URL (user needs to copy manually - GAS can't access clipboard)
+  // Try to get the web app URL from script properties (user can set this)
+  const props = PropertiesService.getScriptProperties();
+  let webAppUrl = props.getProperty('VENDOR_DEEP_LINK_BASE_URL');
+
+  if (!webAppUrl) {
+    // Default placeholder - user needs to set this once
+    webAppUrl = 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec';
+  }
+
+  const fullUrl = webAppUrl + '?vendor=' + encodedVendor;
+
+  // Escape for HTML attribute
+  const escapedVendor = vendor.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escapedUrl = fullUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+
+  const needsSetup = webAppUrl.includes('YOUR_DEPLOYMENT_ID');
+  const setupNote = needsSetup
+    ? '<p class="note">⚠️ First time setup: Run "Set Deep Link URL" from the Navigation menu after deploying as web app.</p>'
+    : '';
+
+  // Show dialog with the URL
   const html = `
     <html>
     <head>
       <style>
         body { font-family: Arial, sans-serif; padding: 20px; }
-        .url-box {
-          background: #f5f5f5;
-          padding: 10px;
-          border-radius: 4px;
-          word-break: break-all;
-          font-family: monospace;
-          font-size: 12px;
-          margin: 15px 0;
-        }
-        .note { color: #666; font-size: 12px; margin-top: 15px; }
-        input { width: 100%; padding: 8px; font-size: 13px; }
-        button { margin-top: 10px; padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .note { color: #d93025; font-size: 12px; margin-top: 15px; }
+        input { width: 100%; padding: 10px; font-size: 13px; box-sizing: border-box; }
+        button { margin-top: 15px; padding: 10px 20px; background: #34a853; color: white; border: none; border-radius: 4px; cursor: pointer; }
       </style>
     </head>
     <body>
       <h3>🔗 Vendor Deep Link</h3>
-      <p>Share this URL to open directly to <strong>${vendor}</strong>:</p>
-      <input type="text" id="url" value="https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec?vendor=${encodedVendor}" onclick="this.select()">
-      <p class="note">⚠️ Replace YOUR_DEPLOYMENT_ID with your actual web app deployment ID.<br><br>
-      To deploy: Extensions → Apps Script → Deploy → New deployment → Web app</p>
+      <p>URL for <strong>${escapedVendor}</strong>:</p>
+      <input type="text" id="url" value="${escapedUrl}" onclick="this.select()" readonly>
+      ${setupNote}
       <button onclick="google.script.host.close()">Close</button>
     </body>
     </html>
   `;
 
   const htmlOutput = HtmlService.createHtmlOutput(html)
-    .setWidth(500)
-    .setHeight(300);
+    .setWidth(550)
+    .setHeight(220);
 
   SpreadsheetApp.getUi().showModalDialog(htmlOutput, '🔗 Copy Vendor URL');
+}
+
+/**
+ * Set the base URL for vendor deep links (one-time setup)
+ */
+function setDeepLinkBaseUrl() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const currentUrl = props.getProperty('VENDOR_DEEP_LINK_BASE_URL') || '';
+
+  const response = ui.prompt(
+    '⚙️ Set Deep Link Base URL',
+    'Enter your web app deployment URL (without ?vendor= parameter):\n\nExample: https://script.google.com/macros/s/ABC123.../exec\n\nCurrent: ' + (currentUrl || '(not set)'),
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() === ui.Button.OK) {
+    let url = response.getResponseText().trim();
+
+    // Clean up the URL - remove any query params
+    if (url.includes('?')) {
+      url = url.split('?')[0];
+    }
+
+    if (url && url.includes('script.google.com')) {
+      props.setProperty('VENDOR_DEEP_LINK_BASE_URL', url);
+      ui.alert('✅ Deep link URL saved!\n\nYou can now use "Copy Vendor Deep Link" to get shareable URLs.');
+    } else if (url) {
+      ui.alert('⚠️ Invalid URL. Please enter a Google Apps Script web app URL.');
+    }
+  }
 }
 
 /************************************************************
