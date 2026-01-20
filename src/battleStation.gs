@@ -260,6 +260,8 @@ function onOpen() {
     .addItem('▶ Next Vendor', 'battleStationNext')
     .addItem('◀ Previous Vendor', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addSeparator()
+    .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
     .addToUi();
 
   // Email Response Templates menu
@@ -295,6 +297,150 @@ function onOpen() {
   ui.createMenu('📋 Tasks')
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
     .addToUi();
+
+  // Check for pending vendor from URL deep link
+  checkPendingVendorFromUrl_();
+}
+
+/**
+ * Web App entry point - handles deep links with vendor parameter
+ * Deploy as web app: Execute as "Me", Access "Anyone"
+ *
+ * URL format: https://script.google.com/macros/s/DEPLOYMENT_ID/exec?vendor=Vendor+Name
+ */
+function doGet(e) {
+  const vendor = e.parameter.vendor;
+
+  if (vendor) {
+    // Store the vendor name to load when sheet opens
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty('PENDING_VENDOR_URL', decodeURIComponent(vendor));
+    props.setProperty('PENDING_VENDOR_TIME', new Date().toISOString());
+
+    // Redirect to the Google Sheet
+    const sheetUrl = SpreadsheetApp.getActive().getUrl();
+    return HtmlService.createHtmlOutput(
+      `<html><head><meta http-equiv="refresh" content="0;url=${sheetUrl}"></head>` +
+      `<body>Redirecting to ${vendor}...</body></html>`
+    );
+  }
+
+  return HtmlService.createHtmlOutput('Missing vendor parameter. Use ?vendor=Vendor+Name');
+}
+
+/**
+ * Check for pending vendor from URL deep link and navigate to it
+ * Called from onOpen
+ */
+function checkPendingVendorFromUrl_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingVendor = props.getProperty('PENDING_VENDOR_URL');
+  const pendingTime = props.getProperty('PENDING_VENDOR_TIME');
+
+  if (!pendingVendor || !pendingTime) return;
+
+  // Only process if the pending vendor was set within the last 30 seconds
+  const timeSince = Date.now() - new Date(pendingTime).getTime();
+  if (timeSince > 30000) {
+    // Too old, clear it
+    props.deleteProperty('PENDING_VENDOR_URL');
+    props.deleteProperty('PENDING_VENDOR_TIME');
+    return;
+  }
+
+  // Clear the pending vendor
+  props.deleteProperty('PENDING_VENDOR_URL');
+  props.deleteProperty('PENDING_VENDOR_TIME');
+
+  // Find and navigate to the vendor
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return;
+
+  const vendorIdx = findVendorIndexByName_(listSh, pendingVendor);
+
+  if (vendorIdx) {
+    // Small delay to let the sheet finish opening
+    Utilities.sleep(500);
+    loadVendorData(vendorIdx);
+    ss.toast(`Loaded from URL: ${pendingVendor}`, '🔗 Deep Link', 3);
+  } else {
+    SpreadsheetApp.getUi().alert(
+      '🔗 Vendor Not Found',
+      `Could not find vendor "${pendingVendor}" in the List.\n\nMake sure the vendor name matches exactly.`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Copy a deep link URL for the current vendor to clipboard
+ * User can share this URL to open directly to this vendor
+ */
+function copyVendorDeepLink() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('List sheet not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    SpreadsheetApp.getUi().alert('Could not determine vendor name.');
+    return;
+  }
+
+  // Get the web app URL - user needs to deploy and update this
+  const scriptId = ScriptApp.getScriptId();
+  const encodedVendor = encodeURIComponent(vendor);
+
+  // Show dialog with the URL (user needs to copy manually - GAS can't access clipboard)
+  const html = `
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .url-box {
+          background: #f5f5f5;
+          padding: 10px;
+          border-radius: 4px;
+          word-break: break-all;
+          font-family: monospace;
+          font-size: 12px;
+          margin: 15px 0;
+        }
+        .note { color: #666; font-size: 12px; margin-top: 15px; }
+        input { width: 100%; padding: 8px; font-size: 13px; }
+        button { margin-top: 10px; padding: 10px 20px; background: #1a73e8; color: white; border: none; border-radius: 4px; cursor: pointer; }
+      </style>
+    </head>
+    <body>
+      <h3>🔗 Vendor Deep Link</h3>
+      <p>Share this URL to open directly to <strong>${vendor}</strong>:</p>
+      <input type="text" id="url" value="https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec?vendor=${encodedVendor}" onclick="this.select()">
+      <p class="note">⚠️ Replace YOUR_DEPLOYMENT_ID with your actual web app deployment ID.<br><br>
+      To deploy: Extensions → Apps Script → Deploy → New deployment → Web app</p>
+      <button onclick="google.script.host.close()">Close</button>
+    </body>
+    </html>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(500)
+    .setHeight(300);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '🔗 Copy Vendor URL');
 }
 
 /************************************************************
