@@ -367,10 +367,22 @@ function checkPendingVendorFromUrl_() {
   const vendorIdx = findVendorIndexByName_(listSh, pendingVendor);
 
   if (vendorIdx) {
-    // Small delay to let the sheet finish opening
-    Utilities.sleep(500);
-    loadVendorData(vendorIdx);
-    ss.toast(`Loaded from URL: ${pendingVendor}`, '🔗 Deep Link', 3);
+    // Store the index so the user can load it with a refresh
+    // (onOpen can't access Gmail due to simple trigger restrictions)
+    props.setProperty('aiden_current_index', String(vendorIdx));
+
+    // Activate the A(I)DEN sheet
+    const aidenSheet = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+    if (aidenSheet) {
+      ss.setActiveSheet(aidenSheet);
+      aidenSheet.getRange('A3').activate();
+    }
+
+    // Highlight the row in List sheet
+    const listRow = vendorIdx + 1;
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CURRENT);
+
+    ss.toast(`Found: ${pendingVendor}\n\nClick "Quick Refresh" to load vendor data.`, '🔗 Deep Link', 5);
   } else {
     SpreadsheetApp.getUi().alert(
       '🔗 Vendor Not Found',
