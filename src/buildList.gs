@@ -218,17 +218,22 @@ function buildListWithGmailAndNotes() {
   for (const r of all) {
     const nameLower = r.name.toLowerCase();
     if (inboxSet.has(nameLower)) {
+      r.tranche = '📥 Inbox';
       inboxZone.push(r);
     } else if (chatSet.has(nameLower)) {
+      r.tranche = '💬 Chat';
       chatZone.push(r);
     } else if (matchesMonthlyReturns(nameLower)) {
       // Partial match for Monthly Returns - vendor list name or task vendor name may vary slightly
       // Monthly Returns takes priority over Hot
+      r.tranche = '📊 Monthly Returns';
       monthlyReturnsZone.push(r);
       console.log(`Monthly Returns match: "${r.name}" matched`);
     } else if (hotSet.has(nameLower)) {
+      r.tranche = '🔥 Hot';
       hotZone.push(r);
     } else {
+      r.tranche = 'Normal';
       normalZone.push(r);
     }
   }
@@ -250,9 +255,9 @@ function buildListWithGmailAndNotes() {
   }
 
   // Write headers
-  shOut.getRange(1, 1, 1, 8).setValues([[
+  shOut.getRange(1, 1, 1, 9).setValues([[
     'Vendor', 'TTL , USD', 'Source', 'Status', 'Notes',
-    'Gmail Link', 'no snoozing', 'processed?'
+    'Gmail Link', 'no snoozing', 'processed?', 'Tranche'
   ]]).setFontWeight('bold').setBackground('#e8f0fe');
 
   if (finalList.length > 0) {
@@ -289,10 +294,10 @@ function buildListWithGmailAndNotes() {
       const gmailAll = `https://mail.google.com/mail/u/0/#search/label%3A00.received+AND+label%3Azzzvendors-${vendorSlug}+-label%3A03.noInbox`;
       const gmailNoSnooze = `https://mail.google.com/mail/u/0/#search/label%3A00.received+AND+label%3Azzzvendors-${vendorSlug}+-is%3Asnoozed+-label%3A03.noInbox`;
 
-      return [gmailAll, gmailNoSnooze, false];
+      return [gmailAll, gmailNoSnooze, false, v.tranche || 'Normal'];
     });
 
-    shOut.getRange(2, 6, gmailData.length, 3).setValues(gmailData);
+    shOut.getRange(2, 6, gmailData.length, 4).setValues(gmailData);
   }
 
   // Auto-resize columns
@@ -300,13 +305,16 @@ function buildListWithGmailAndNotes() {
   shOut.setColumnWidth(6, 100);
   shOut.setColumnWidth(7, 100);
   shOut.setColumnWidth(8, 100);
+  shOut.autoResizeColumn(9);  // Tranche column
 
   console.log('=== BUILD LIST WITH GMAIL & NOTES END ===');
 
   const counts = {
     '📥 Inbox': inboxZone.length,
-    '🔥 Hot': hotZone.length,
+    '💬 Chat': chatZone.length,
     '📊 Monthly Returns': monthlyReturnsZone.length,
+    '🔥 Hot': hotZone.length,
+    'Normal': normalZone.length,
     'Total': finalList.length
   };
 
