@@ -230,6 +230,7 @@ function onOpen() {
     .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
+    .addItem('📧 Open Gmail Search (00.received)', 'battleStationOpenGmailReceived')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addToUi();
 
@@ -6106,6 +6107,38 @@ function battleStationOpenGmail() {
   }
 
   const html = `<html><body><script>window.open('${simpleLink}', '_blank');google.script.host.close();</script></body></html>`;
+  const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
+  SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
+}
+
+/**
+ * Open Gmail search using the full URL from column F (with 00.received filter)
+ */
+function battleStationOpenGmailReceived() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+
+  if (!gmailLink || gmailLink.toString().indexOf('#search') === -1) {
+    SpreadsheetApp.getUi().alert('No valid Gmail search link found.');
+    return;
+  }
+
+  const html = `<html><body><script>window.open('${gmailLink}', '_blank');google.script.host.close();</script></body></html>`;
   const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
   SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
 }
