@@ -273,6 +273,7 @@ function onOpen() {
     .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
     .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
     .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
+    .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
     .addItem('✍️ Custom Response...', 'emailResponseCustom')
     .addSeparator()
     .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
@@ -11037,6 +11038,15 @@ CONTEXT AWARENESS:
     systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "${responseType}":\n${settings.typeInstructions[responseType]}`;
   }
 
+  // Built-in instructions for specific response types
+  if (responseType === 'Check Affiliate') {
+    systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "Check Affiliate":
+- Look at the date of the last email in the thread. If it's been more than a few weeks, START by apologizing for the delay in getting back to them.
+- Explain that we're changing our model at Profitise to be more traffic-based rather than host-and-post based.
+- Ask if they're able to do web traffic to our O&O (owned and operated) lander, since that's what we're prioritizing at the moment.
+- Keep it brief and friendly - we're checking in to see if they can work with our new model.`;
+  }
+
   // Add context about whether this is a follow-up or reply
   let contextNote = '';
   if (lastSenderIsMe) {
@@ -12094,6 +12104,10 @@ function emailResponsePaymentFollowUp() {
 
 function emailResponseGeneralFollowUp() {
   generateEmailResponse_('General Follow Up');
+}
+
+function emailResponseCheckAffiliate() {
+  generateEmailResponse_('Check Affiliate');
 }
 
 function emailResponseCustom() {
