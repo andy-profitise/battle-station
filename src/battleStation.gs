@@ -287,6 +287,7 @@ function onOpen() {
     .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
     .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
     .addItem('📤 Send to Aden', 'sendToAden')
+    .addItem('📥 Archive Email', 'archiveSelectedEmail')
     .addToUi();
 
   // Chat OCR menu - find vendors from chat screenshots/text
@@ -8229,6 +8230,32 @@ function sendToAdenExecute(subject, senderEmail, context) {
   GmailApp.sendEmail(recipient, emailSubject, body);
 
   SpreadsheetApp.getActive().toast(`Sent to Aden: "${subject}"`, '📤 Sent', 3);
+}
+
+/**
+ * Archive the currently selected email thread
+ */
+function archiveSelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    emailData.thread.moveToArchive();
+    ss.toast(`Archived: "${emailData.subject}"`, '📥 Archived', 3);
+
+    // Trigger a quick refresh to update the email list
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
 }
 
 /**
