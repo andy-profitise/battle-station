@@ -7652,9 +7652,9 @@ function generateVendorLabelChecksum_(gmailLink) {
  * - Manual override: has 03.overdue/manual label (always overdue regardless of other conditions)
  * - Auto: REQUIRES 01.priority/1 label + any waiting label + business hours threshold
  *
- * For waiting/customer: 16 business hours
- * For waiting/me (I sent last): 16 hours * (consecutive replies from me/Aden)
- *   - 1 reply = 16 hours, 2 replies = 32 hours, 3 replies = 48 hours, etc.
+ * For waiting/customer: exponential backoff based on how many times we've followed up
+ *   - 1 follow-up = 16 hours, 2 = 32 hours, 3 = 48 hours, etc.
+ * For waiting/me or waiting/phonexa: 16 business hours (standard)
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
@@ -7675,17 +7675,17 @@ function isEmailOverdue_(email) {
   const businessHours = getBusinessHoursElapsed_(emailDate);
   const baseHours = BS_CFG.OVERDUE_BUSINESS_HOURS;  // 16
 
-  // Check for waiting/customer or waiting/phonexa - standard 16 hour threshold
-  if (email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/phonexa')) {
-    return businessHours > baseHours;
+  // Check for waiting/customer - exponential backoff based on consecutive follow-ups from us
+  if (email.labels.includes('02.waiting/customer')) {
+    // Count how many times we've pinged them (consecutive messages from me/Aden)
+    const consecutiveFollowUps = countConsecutiveRepliesFromUs_(email.threadId);
+    const threshold = baseHours * consecutiveFollowUps;  // 16, 32, 48, 64, etc.
+    return businessHours > threshold;
   }
 
-  // Check for waiting/me - exponential backoff based on consecutive replies
-  if (email.labels.includes('02.waiting/me')) {
-    // Count consecutive replies from me/Aden to calculate threshold
-    const consecutiveReplies = countConsecutiveRepliesFromUs_(email.threadId);
-    const threshold = baseHours * consecutiveReplies;  // 16, 32, 48, 64, etc.
-    return businessHours > threshold;
+  // Check for waiting/me or waiting/phonexa - standard 16 hour threshold
+  if (email.labels.includes('02.waiting/me') || email.labels.includes('02.waiting/phonexa')) {
+    return businessHours > baseHours;
   }
 
   return false;
