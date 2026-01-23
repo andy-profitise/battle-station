@@ -7650,7 +7650,11 @@ function generateVendorLabelChecksum_(gmailLink) {
 /**
  * Check if an email is overdue:
  * - Manual override: has 03.overdue/manual label (always overdue regardless of other conditions)
- * - Auto: REQUIRES 01.priority/1 label + any waiting label + >16 business hours
+ * - Auto: REQUIRES 01.priority/1 label + any waiting label + business hours threshold
+ *
+ * For waiting/customer: 16 business hours
+ * For waiting/me (I sent last): 16 hours * (consecutive replies from me/Aden)
+ *   - 1 reply = 16 hours, 2 replies = 32 hours, 3 replies = 48 hours, etc.
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
@@ -7668,16 +7672,59 @@ function isEmailOverdue_(email) {
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
 
-  // Check for any waiting label - 16 business hours
-  const isWaiting = email.labels.includes('02.waiting/customer') ||
-                    email.labels.includes('02.waiting/me') ||
-                    email.labels.includes('02.waiting/phonexa');
-  if (isWaiting) {
-    const businessHours = getBusinessHoursElapsed_(emailDate);
-    if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
+  const businessHours = getBusinessHoursElapsed_(emailDate);
+  const baseHours = BS_CFG.OVERDUE_BUSINESS_HOURS;  // 16
+
+  // Check for waiting/customer or waiting/phonexa - standard 16 hour threshold
+  if (email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/phonexa')) {
+    return businessHours > baseHours;
+  }
+
+  // Check for waiting/me - exponential backoff based on consecutive replies
+  if (email.labels.includes('02.waiting/me')) {
+    // Count consecutive replies from me/Aden to calculate threshold
+    const consecutiveReplies = countConsecutiveRepliesFromUs_(email.threadId);
+    const threshold = baseHours * consecutiveReplies;  // 16, 32, 48, 64, etc.
+    return businessHours > threshold;
   }
 
   return false;
+}
+
+/**
+ * Count consecutive messages from me or Aden at the end of a thread
+ * Used to calculate exponential backoff for overdue threshold
+ */
+function countConsecutiveRepliesFromUs_(threadId) {
+  if (!threadId) return 1;
+
+  try {
+    const thread = GmailApp.getThreadById(threadId);
+    if (!thread) return 1;
+
+    const messages = thread.getMessages();
+    if (!messages || messages.length === 0) return 1;
+
+    const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+    const adenEmail = 'aden@profitise.com';
+
+    let consecutiveCount = 0;
+
+    // Count from the end backwards
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const sender = messages[i].getFrom().toLowerCase();
+      if (sender.includes(myEmail) || sender.includes(adenEmail)) {
+        consecutiveCount++;
+      } else {
+        break;  // Stop at first message not from us
+      }
+    }
+
+    return Math.max(1, consecutiveCount);  // At least 1
+  } catch (e) {
+    Logger.log(`Error counting consecutive replies for thread ${threadId}: ${e.message}`);
+    return 1;  // Default to 1 on error
+  }
 }
 
 /**
