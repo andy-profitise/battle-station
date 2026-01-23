@@ -12173,8 +12173,26 @@ function genericUrlResponse() {
 
     ss.toast('Fetching email thread...', '📧 Reading Email', 2);
 
-    // Step 3: Get the thread
-    const thread = GmailApp.getThreadById(threadId);
+    // Step 3: Get the thread using Gmail API (handles URL-style thread IDs)
+    let thread;
+    let actualThreadId = threadId;
+
+    try {
+      // First try the Gmail Advanced Service which handles URL-style IDs
+      const threadData = Gmail.Users.Threads.get('me', threadId, { format: 'metadata' });
+      actualThreadId = threadData.id;
+      thread = GmailApp.getThreadById(actualThreadId);
+    } catch (apiError) {
+      // Fallback to direct GmailApp (in case it's already a valid ID)
+      try {
+        thread = GmailApp.getThreadById(threadId);
+        actualThreadId = thread.getId();
+      } catch (e) {
+        ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.\n\nDetails: ' + apiError.message, ui.ButtonSet.OK);
+        return;
+      }
+    }
+
     if (!thread) {
       ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.', ui.ButtonSet.OK);
       return;
@@ -12220,7 +12238,7 @@ function genericUrlResponse() {
 
     // Step 7: Store context for revision/draft creation
     const revisionContext = {
-      threadId: threadId,
+      threadId: actualThreadId,
       responseType: 'Generic URL Response',
       originalDirections: directions,
       previousResponse: responseBody
@@ -12228,7 +12246,7 @@ function genericUrlResponse() {
     PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
 
     // Step 8: Show preview dialog
-    showDraftPreviewDialog_(responseBody, threadId);
+    showDraftPreviewDialog_(responseBody, actualThreadId);
 
   } catch (e) {
     ui.alert('Error', e.message, ui.ButtonSet.OK);
