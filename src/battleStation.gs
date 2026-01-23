@@ -12243,24 +12243,22 @@ function extractThreadIdFromGmailUrl_(url) {
   if (!url) return null;
 
   // Common Gmail URL patterns:
-  // https://mail.google.com/mail/u/0/#inbox/18d5a3b2c4e5f6g7
-  // https://mail.google.com/mail/u/0/#sent/18d5a3b2c4e5f6g7
-  // https://mail.google.com/mail/u/0/#label/SomeLabel/18d5a3b2c4e5f6g7
-  // https://mail.google.com/mail/u/0/#search/query/18d5a3b2c4e5f6g7
-  // https://mail.google.com/mail/u/0/#all/18d5a3b2c4e5f6g7
+  // https://mail.google.com/mail/u/0/#inbox/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#sent/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#label/SomeLabel/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#search/query/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
 
-  // Try to extract the thread ID (typically a hex string at the end)
+  // Thread IDs are alphanumeric (not just hex) - typically 20+ chars
   const patterns = [
-    /#(?:inbox|sent|all|starred|drafts|spam|trash)\/([a-f0-9]+)$/i,
-    /#label\/[^\/]+\/([a-f0-9]+)$/i,
-    /#search\/[^\/]+\/([a-f0-9]+)$/i,
-    /#[^\/]+\/([a-f0-9]+)$/i,  // Generic fallback
-    /\/([a-f0-9]{16,})(?:\?|$)/i  // Thread ID in path
+    /#(?:inbox|sent|all|starred|drafts|spam|trash)\/([A-Za-z0-9_-]+)$/,
+    /#label\/[^\/]+\/([A-Za-z0-9_-]+)$/,
+    /#search\/[^\/]+\/([A-Za-z0-9_-]+)$/,
+    /#[^\/]+\/([A-Za-z0-9_-]+)$/,  // Generic fallback
   ];
 
   for (const pattern of patterns) {
     const match = url.match(pattern);
-    if (match && match[1]) {
+    if (match && match[1] && match[1].length >= 10) {
       return match[1];
     }
   }
