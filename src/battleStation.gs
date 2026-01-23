@@ -275,6 +275,7 @@ function onOpen() {
     .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
     .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
     .addItem('✍️ Custom Response...', 'emailResponseCustom')
+    .addItem('🔗 Generic URL Response...', 'genericUrlResponse')
     .addSeparator()
     .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
     .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
@@ -12135,6 +12136,136 @@ function emailResponseGeneralFollowUp() {
 
 function emailResponseCheckAffiliate() {
   generateEmailResponse_('Check Affiliate');
+}
+
+/**
+ * Generic URL Response - respond to any Gmail thread via URL
+ * Prompts for Gmail URL, reads the thread, then generates a response
+ */
+function genericUrlResponse() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Step 1: Get the Gmail URL
+    const urlResult = ui.prompt(
+      '🔗 Generic URL Response',
+      'Paste the Gmail conversation URL:',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (urlResult.getSelectedButton() !== ui.Button.OK) {
+      return; // User cancelled
+    }
+
+    const gmailUrl = urlResult.getResponseText().trim();
+    if (!gmailUrl) {
+      ui.alert('Error', 'Please provide a Gmail URL.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Step 2: Extract thread ID from URL
+    const threadId = extractThreadIdFromGmailUrl_(gmailUrl);
+    if (!threadId) {
+      ui.alert('Error', 'Could not extract thread ID from URL.\n\nExpected format:\nhttps://mail.google.com/mail/u/0/#inbox/THREAD_ID', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast('Fetching email thread...', '📧 Reading Email', 2);
+
+    // Step 3: Get the thread
+    const thread = GmailApp.getThreadById(threadId);
+    if (!thread) {
+      ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.', ui.ButtonSet.OK);
+      return;
+    }
+
+    const subject = thread.getFirstMessageSubject();
+
+    // Step 4: Read the thread content
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+    // Step 5: Show the thread summary and ask for directions
+    const messages = thread.getMessages();
+    const lastMessage = messages[messages.length - 1];
+    const lastSender = lastMessage.getFrom();
+    const lastDate = lastMessage.getDate();
+
+    const directionsResult = ui.prompt(
+      '📧 Generic URL Response',
+      `Thread: "${subject}"\nLast message from: ${lastSender}\nDate: ${lastDate.toLocaleDateString()}\n\nWhat kind of response do you want to send?\n(e.g., "follow up on pricing", "schedule a call", "ask for status update")`,
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (directionsResult.getSelectedButton() !== ui.Button.OK) {
+      return; // User cancelled
+    }
+
+    const directions = directionsResult.getResponseText().trim();
+    if (!directions) {
+      ui.alert('Error', 'Please provide directions for the response.', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Step 6: Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      subject,
+      'Generic URL Response',
+      directions,
+      lastSenderIsMe
+    );
+
+    // Step 7: Store context for revision/draft creation
+    const revisionContext = {
+      threadId: threadId,
+      responseType: 'Generic URL Response',
+      originalDirections: directions,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Step 8: Show preview dialog
+    showDraftPreviewDialog_(responseBody, threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Extract thread ID from various Gmail URL formats
+ * Supports: inbox, sent, label, search, thread URLs
+ */
+function extractThreadIdFromGmailUrl_(url) {
+  if (!url) return null;
+
+  // Common Gmail URL patterns:
+  // https://mail.google.com/mail/u/0/#inbox/18d5a3b2c4e5f6g7
+  // https://mail.google.com/mail/u/0/#sent/18d5a3b2c4e5f6g7
+  // https://mail.google.com/mail/u/0/#label/SomeLabel/18d5a3b2c4e5f6g7
+  // https://mail.google.com/mail/u/0/#search/query/18d5a3b2c4e5f6g7
+  // https://mail.google.com/mail/u/0/#all/18d5a3b2c4e5f6g7
+
+  // Try to extract the thread ID (typically a hex string at the end)
+  const patterns = [
+    /#(?:inbox|sent|all|starred|drafts|spam|trash)\/([a-f0-9]+)$/i,
+    /#label\/[^\/]+\/([a-f0-9]+)$/i,
+    /#search\/[^\/]+\/([a-f0-9]+)$/i,
+    /#[^\/]+\/([a-f0-9]+)$/i,  // Generic fallback
+    /\/([a-f0-9]{16,})(?:\?|$)/i  // Thread ID in path
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
 }
 
 function emailResponseCustom() {
