@@ -281,7 +281,6 @@ function onOpen() {
     .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
     .addSeparator()
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
     .addSeparator()
@@ -301,6 +300,7 @@ function onOpen() {
   // Tasks menu - update monday.com task statuses
   ui.createMenu('📋 Tasks')
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addToUi();
 
   // Check for pending vendor from URL deep link
