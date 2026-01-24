@@ -281,7 +281,6 @@ function onOpen() {
     .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
     .addSeparator()
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
     .addSeparator()
@@ -301,6 +300,7 @@ function onOpen() {
   // Tasks menu - update monday.com task statuses
   ui.createMenu('📋 Tasks')
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addToUi();
 
   // Check for pending vendor from URL deep link
@@ -12332,18 +12332,74 @@ function extractThreadIdFromGmailUrl_(url) {
 }
 
 function emailResponseCustom() {
+  const ss = SpreadsheetApp.getActive();
   const ui = SpreadsheetApp.getUi();
-  const result = ui.prompt(
-    '✍️ Custom Response Type',
-    'Enter the type of response you want to generate:',
-    ui.ButtonSet.OK_CANCEL
-  );
 
-  if (result.getSelectedButton() === ui.Button.OK) {
-    const customType = result.getResponseText().trim();
-    if (customType) {
-      generateEmailResponse_(customType);
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return;
+      }
     }
+
+    // Single combined prompt for custom response
+    const result = ui.prompt(
+      '✍️ Custom Response',
+      'What do you want to say or accomplish with this response?\n\n(e.g., "follow up on pricing we discussed", "ask when they can hop on a call", "check if they got the contract")',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (result.getSelectedButton() !== ui.Button.OK) {
+      return;
+    }
+
+    const customDirections = result.getResponseText().trim();
+    if (!customDirections) {
+      return;
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread
+    const emailData = getSelectedEmailThread_();
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+
+    // Get full thread content and context
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude - use directions as both type and extra directions
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Custom Response',
+      customDirections,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision or draft creation
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Custom Response',
+      originalDirections: customDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
   }
 }
 
