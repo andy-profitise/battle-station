@@ -250,6 +250,7 @@ function onOpen() {
     .addSeparator()
     .addItem('🎯 Manage Goals', 'battleStationManageGoals')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
+    .addItem('🔌 Set Claude Proxy (Max Sub)', 'battleStationSetClaudeProxy')
     .addToUi();
 
   // Refresh menu - refresh current vendor view
@@ -7341,10 +7342,21 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
 }
 
 /**
- * Call Claude API
+ * Call Claude API — supports direct Anthropic API or claude-max-api-proxy
+ * Proxy mode auto-detected from Script Properties (CLAUDE_PROXY_URL)
  */
 function callClaudeAPI_(prompt, apiKey, options) {
   options = options || {};
+
+  // Check for proxy configuration first
+  const props = PropertiesService.getScriptProperties();
+  const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
+
+  if (proxyUrl) {
+    return callClaudeViaProxy_(prompt, proxyUrl, props, options);
+  }
+
+  // Direct Anthropic API
   const url = 'https://api.anthropic.com/v1/messages';
 
   const payload = {
@@ -7355,7 +7367,7 @@ function callClaudeAPI_(prompt, apiKey, options) {
   if (options.system) {
     payload.system = options.system;
   }
-  
+
   const fetchOptions = {
     method: 'post',
     contentType: 'application/json',
@@ -7371,21 +7383,87 @@ function callClaudeAPI_(prompt, apiKey, options) {
     const response = UrlFetchApp.fetch(url, fetchOptions);
     const responseCode = response.getResponseCode();
     const responseText = response.getContentText();
-    
+
     if (responseCode !== 200) {
       return { error: `API returned ${responseCode}: ${responseText}` };
     }
-    
+
     const result = JSON.parse(responseText);
-    
+
     if (result.content && result.content.length > 0) {
       return { content: result.content[0].text };
     }
-    
+
     return { error: 'No content in response' };
-    
+
   } catch (e) {
     return { error: e.message };
+  }
+}
+
+/**
+ * Call Claude via claude-max-api-proxy (OpenAI-compatible format)
+ * Uses Max subscription instead of per-token API billing
+ */
+function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
+  // Map Anthropic model names to proxy short names
+  const modelMap = {
+    'claude-sonnet-4-20250514': 'claude-sonnet-4',
+    'claude-opus-4-20250514': 'claude-opus-4',
+    'claude-haiku-4-20250514': 'claude-haiku-4'
+  };
+  const requestedModel = options.model || 'claude-sonnet-4-20250514';
+  const model = modelMap[requestedModel] || requestedModel;
+
+  // Build OpenAI-compatible messages array
+  const messages = [];
+  if (options.system) {
+    messages.push({ role: 'system', content: options.system });
+  }
+  messages.push({ role: 'user', content: prompt });
+
+  const payload = {
+    model: model,
+    messages: messages,
+    max_tokens: options.maxTokens || 2000
+  };
+
+  const headers = { 'Content-Type': 'application/json' };
+
+  // Add basic auth if configured
+  const proxyAuth = props.getProperty('CLAUDE_PROXY_AUTH');
+  if (proxyAuth) {
+    headers['Authorization'] = 'Basic ' + Utilities.base64Encode(proxyAuth);
+  }
+
+  const fetchOptions = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: headers,
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (responseCode !== 200) {
+      return { error: `Proxy returned ${responseCode}: ${responseText}` };
+    }
+
+    const result = JSON.parse(responseText);
+
+    // OpenAI format: { choices: [{ message: { content: "..." } }] }
+    if (result.choices && result.choices.length > 0 && result.choices[0].message) {
+      return { content: result.choices[0].message.content };
+    }
+
+    return { error: 'No content in proxy response' };
+
+  } catch (e) {
+    return { error: `Proxy error: ${e.message}` };
   }
 }
 
@@ -10861,15 +10939,21 @@ function writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyer
 }
 
 /************************************************************
- * CLAUDE API KEY MANAGEMENT
- * Store and retrieve API key from Script Properties
+ * CLAUDE API / PROXY CONFIGURATION
+ * Supports direct Anthropic API key OR claude-max-api-proxy
  ************************************************************/
 
 /**
- * Get Claude API key - checks Script Properties first, falls back to BS_CFG
+ * Get Claude API key - checks proxy first, then Script Properties, then BS_CFG
+ * Returns 'PROXY_MODE' if proxy is configured, API key string, or null
  */
 function getClaudeApiKey_() {
   const props = PropertiesService.getScriptProperties();
+
+  // Proxy takes priority — no API key needed
+  const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
+  if (proxyUrl) return 'PROXY_MODE';
+
   const storedKey = props.getProperty('CLAUDE_API_KEY');
   if (storedKey && storedKey.length > 10) return storedKey;
   if (BS_CFG.CLAUDE_API_KEY && BS_CFG.CLAUDE_API_KEY !== 'YOUR_ANTHROPIC_API_KEY_HERE') {
@@ -10883,12 +10967,13 @@ function getClaudeApiKey_() {
  */
 function battleStationSetClaudeApiKey() {
   const ui = SpreadsheetApp.getUi();
-  const currentKey = getClaudeApiKey_();
+  const props = PropertiesService.getScriptProperties();
+  const currentKey = props.getProperty('CLAUDE_API_KEY');
   const masked = currentKey ? '***' + currentKey.slice(-8) : '(not set)';
 
   const response = ui.prompt(
     '⚙️ Set Claude API Key',
-    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):`,
+    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):\n\n(Or use "Set Claude Proxy" for Max subscription proxy)`,
     ui.ButtonSet.OK_CANCEL
   );
 
@@ -10900,8 +10985,64 @@ function battleStationSetClaudeApiKey() {
     return;
   }
 
-  PropertiesService.getScriptProperties().setProperty('CLAUDE_API_KEY', newKey);
+  props.setProperty('CLAUDE_API_KEY', newKey);
   SpreadsheetApp.getActive().toast('Claude API key saved!', '✅ Success', 3);
+}
+
+/**
+ * Set Claude proxy URL for claude-max-api-proxy (uses Max subscription)
+ * Stores proxy URL and optional basic auth credentials in Script Properties
+ */
+function battleStationSetClaudeProxy() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const currentUrl = props.getProperty('CLAUDE_PROXY_URL') || '(not set)';
+  const currentAuth = props.getProperty('CLAUDE_PROXY_AUTH');
+  const authStatus = currentAuth ? '(configured)' : '(none)';
+
+  const urlResponse = ui.prompt(
+    '🔌 Set Claude Proxy URL',
+    `Current: ${currentUrl}\nAuth: ${authStatus}\n\nEnter your claude-max-api-proxy URL:\n(e.g., https://your-vps.com)\n\nLeave blank and click OK to clear proxy settings.`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (urlResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const newUrl = urlResponse.getResponseText().trim();
+
+  // Clear proxy if blank
+  if (!newUrl) {
+    props.deleteProperty('CLAUDE_PROXY_URL');
+    props.deleteProperty('CLAUDE_PROXY_AUTH');
+    SpreadsheetApp.getActive().toast('Proxy settings cleared. Will use API key instead.', '✅ Cleared', 3);
+    return;
+  }
+
+  // Validate URL
+  if (!newUrl.startsWith('http://') && !newUrl.startsWith('https://')) {
+    ui.alert('Invalid URL. Must start with http:// or https://');
+    return;
+  }
+
+  props.setProperty('CLAUDE_PROXY_URL', newUrl.replace(/\/+$/, '')); // strip trailing slash
+
+  // Ask for basic auth
+  const authResponse = ui.prompt(
+    '🔐 Proxy Authentication',
+    'Enter basic auth credentials (user:password).\n\nLeave blank if your proxy has no authentication.\n\n⚠️ Strongly recommended to set auth to prevent unauthorized access!',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (authResponse.getSelectedButton() === ui.Button.OK) {
+    const auth = authResponse.getResponseText().trim();
+    if (auth) {
+      props.setProperty('CLAUDE_PROXY_AUTH', auth);
+    } else {
+      props.deleteProperty('CLAUDE_PROXY_AUTH');
+    }
+  }
+
+  SpreadsheetApp.getActive().toast('Claude proxy configured! AI features will use your Max subscription.', '✅ Proxy Set', 3);
 }
 
 /************************************************************
@@ -10928,55 +11069,101 @@ function battleStationSmartBriefing() {
     return;
   }
 
-  ss.toast('Scanning vendor emails for Smart Briefing...', '🧠 Thinking', 10);
+  ss.toast('Scanning label:00.received for Smart Briefing...', '🧠 Thinking', 10);
 
-  const allVendors = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  // Single Gmail search — find ALL threads in 00.received
+  const receivedThreads = GmailApp.search('label:00.received', 0, 200);
+  Logger.log(`[Smart Briefing] Found ${receivedThreads.length} threads in 00.received`);
+
+  // Group threads by vendor label (zzzVendors/*)
+  const vendorThreads = {};  // vendorLabel -> { threads: [], vendorLabel: string }
+  for (const thread of receivedThreads) {
+    const labels = thread.getLabels().map(l => l.getName());
+    const vendorLabelObj = labels.find(l => l.toLowerCase().startsWith('zzzvendors/'));
+    if (!vendorLabelObj) continue;
+    const vendorLabel = vendorLabelObj;
+    if (!vendorThreads[vendorLabel]) {
+      vendorThreads[vendorLabel] = { threads: [], labels: [] };
+    }
+    vendorThreads[vendorLabel].threads.push(thread);
+    vendorThreads[vendorLabel].labels.push(labels);
+  }
+
+  Logger.log(`[Smart Briefing] Grouped into ${Object.keys(vendorThreads).length} vendors`);
+
+  // Build List sheet lookup: vendor name -> { status, notes }
+  const allVendorRows = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const listLookup = {};  // lowercase vendor name -> { vendor, status, notes, gmailLink }
+  for (let i = 0; i < allVendorRows.length; i++) {
+    const name = allVendorRows[i][BS_CFG.L_VENDOR];
+    if (name) {
+      listLookup[name.toString().toLowerCase().trim()] = {
+        vendor: name,
+        status: allVendorRows[i][BS_CFG.L_STATUS] || '(unknown)',
+        notes: (allVendorRows[i][BS_CFG.L_NOTES] || '').substring(0, 200)
+      };
+    }
+  }
+
+  // Build vendor summaries from grouped threads
   const vendorSummaries = [];
-  const maxVendors = 25;
+  const vendorKeys = Object.keys(vendorThreads);
 
-  for (let i = 0; i < Math.min(allVendors.length, maxVendors); i++) {
-    const vendor = allVendors[i][BS_CFG.L_VENDOR];
-    const status = allVendors[i][BS_CFG.L_STATUS];
-    const notes = allVendors[i][BS_CFG.L_NOTES];
-    const listRow = i + 2;
+  for (let vi = 0; vi < vendorKeys.length; vi++) {
+    const vendorLabel = vendorKeys[vi];
+    const group = vendorThreads[vendorLabel];
 
-    if (!vendor) continue;
+    // Convert label "zzzVendors/Some Name" to a display name for matching
+    const labelName = vendorLabel.replace(/^zzzVendors\//i, '').trim();
 
-    try {
-      const emails = getEmailsForVendor_(vendor, listRow);
-      const unsnoozed = emails.filter(e => !e.isSnoozed);
-      const overdue = emails.filter(e => isEmailOverdue_(e));
-
-      if (unsnoozed.length === 0 && !overdue.length) continue;
-
-      // Get latest email content for context
-      let latestContent = '';
-      if (unsnoozed.length > 0 && unsnoozed[0].threadId) {
-        try {
-          const thread = GmailApp.getThreadById(unsnoozed[0].threadId);
-          if (thread) {
-            const msgs = thread.getMessages();
-            latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
-          }
-        } catch (e) { /* skip if thread fetch fails */ }
+    // Find matching vendor in List sheet (try exact match, then fuzzy)
+    let listInfo = listLookup[labelName.toLowerCase()];
+    if (!listInfo) {
+      // Try matching by checking if list vendor name appears in the label or vice versa
+      for (const key of Object.keys(listLookup)) {
+        if (key.includes(labelName.toLowerCase()) || labelName.toLowerCase().includes(key)) {
+          listInfo = listLookup[key];
+          break;
+        }
       }
-
-      vendorSummaries.push({
-        vendor: vendor,
-        status: status || '(unknown)',
-        notes: (notes || '').substring(0, 200),
-        emailCount: unsnoozed.length,
-        overdueCount: overdue.length,
-        latestSubject: unsnoozed[0] ? unsnoozed[0].subject : '',
-        latestLabels: unsnoozed[0] ? unsnoozed[0].labels : '',
-        latestContent: latestContent
-      });
-    } catch (e) {
-      Logger.log(`Smart Briefing: Error scanning ${vendor}: ${e.message}`);
     }
 
-    if (i % 5 === 0) {
-      ss.toast(`Scanned ${i + 1} of ${Math.min(allVendors.length, maxVendors)} vendors...`, '🧠 Scanning', 5);
+    const vendorName = listInfo ? listInfo.vendor : labelName;
+    const emailCount = group.threads.length;
+
+    // Check for overdue/priority labels
+    let overdueCount = 0;
+    for (const threadLabels of group.labels) {
+      const hasOverdue = threadLabels.some(l => l === BS_CFG.MANUAL_OVERDUE_LABEL);
+      const hasPriority = threadLabels.some(l => l === '01.priority/1');
+      if (hasOverdue || hasPriority) overdueCount++;
+    }
+
+    // Get latest thread content for context
+    let latestSubject = '';
+    let latestLabels = '';
+    let latestContent = '';
+    try {
+      const latestThread = group.threads[0];
+      latestSubject = latestThread.getFirstMessageSubject();
+      latestLabels = group.labels[0].join(', ');
+      const msgs = latestThread.getMessages();
+      latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
+    } catch (e) { /* skip if thread fetch fails */ }
+
+    vendorSummaries.push({
+      vendor: vendorName,
+      status: listInfo ? listInfo.status : '(unknown)',
+      notes: listInfo ? listInfo.notes : '',
+      emailCount: emailCount,
+      overdueCount: overdueCount,
+      latestSubject: latestSubject,
+      latestLabels: latestLabels,
+      latestContent: latestContent
+    });
+
+    if (vi % 5 === 0) {
+      ss.toast(`Processing ${vi + 1} of ${vendorKeys.length} vendors...`, '🧠 Scanning', 5);
     }
   }
 
@@ -11005,7 +11192,7 @@ Content preview: ${v.latestContent}`
 
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
 
-Here's a snapshot of Andy's ${vendorSummaries.length} most active vendor communications:
+Here's a snapshot of all ${vendorSummaries.length} vendors with emails in 00.received (active inbox):
 ${vendorText}
 ${goalsContext}
 
@@ -11970,34 +12157,16 @@ ${threadContent}
 
   userPrompt += `Draft the email body only (no subject line).`;
 
-  const payload = {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1024,
-    messages: [
-      { role: 'user', content: userPrompt }
-    ],
+  const result = callClaudeAPI_(userPrompt, claudeApiKey, {
+    maxTokens: 1024,
     system: systemPrompt
-  };
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      'x-api-key': claudeApiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  const response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', options);
-  const result = JSON.parse(response.getContentText());
+  });
 
   if (result.error) {
-    throw new Error(`Claude API error: ${result.error.message}`);
+    throw new Error(`Claude API error: ${result.error}`);
   }
 
-  return result.content[0].text;
+  return result.content;
 }
 
 /**
