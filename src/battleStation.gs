@@ -5,6 +5,7 @@
  *
  * Features:
  * - Navigate through vendors sequentially via menu
+ * - FAST MODE: Email-focused loading, skips Box/GDrive/Airtable/Calendar
  * - View vendor details, notes, status, contacts
  * - See all related emails and monday.com tasks (live search)
  * - View helpful links from monday.com
@@ -13,8 +14,13 @@
  * - Email contacts directly from A(I)DEN
  * - Analyze emails with Claude AI (inline links)
  * - Snooze vendors until a specific date (skipped unless checksum changes)
+ * - 🧠 Smart Briefing: AI-powered cross-vendor priority advisor
+ * - 📝 Auto-summarize: Claude summarizes vendor state to notes
+ * - ✉️ Draft Reply: Claude-powered email reply drafting
+ * - 📧 Email Rules: Automatic actions on inbound emails
+ * - ⚙️ Claude API key management via Script Properties
  *
- * UPDATED: Added Email Contacts dialog with Claude AI assistance
+ * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
  * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
  ************************************************************/
 
@@ -228,10 +234,22 @@ function onOpen() {
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
     .addSeparator()
+    .addItem('🧠 Smart Briefing (What to do next)', 'battleStationSmartBriefing')
+    .addItem('💡 Generate Insights (This Vendor)', 'battleStationGenerateInsights')
+    .addItem('🎯 Goal-Aligned Insights (All Vendors)', 'battleStationGoalInsights')
+    .addItem('📝 Summarize & Update Notes (Claude)', 'battleStationSummarizeToNotes')
+    .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
+    .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('📧 Open Gmail Search (00.received)', 'battleStationOpenGmailReceived')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
+    .addSeparator()
+    .addItem('📧 Manage Email Rules', 'battleStationManageEmailRules')
+    .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
+    .addSeparator()
+    .addItem('🎯 Manage Goals', 'battleStationManageGoals')
+    .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
     .addToUi();
 
   // Refresh menu - refresh current vendor view
@@ -257,9 +275,10 @@ function onOpen() {
     .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
     .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
     .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
+    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
     .addSeparator()
-    .addItem('▶ Next Vendor', 'battleStationNext')
-    .addItem('◀ Previous Vendor', 'battleStationPrevious')
+    .addItem('▶ Next Vendor (Fast)', 'battleStationNext')
+    .addItem('◀ Previous Vendor (Fast)', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
     .addSeparator()
     .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
@@ -722,9 +741,12 @@ function loadVendorData(vendorIndex, options) {
   options = options || {};
   const useCache = options.useCache !== undefined ? options.useCache : false;
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
+  const loadMode = options.loadMode || 'full';
+  const isFastMode = loadMode === 'fast';
   const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
   const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
   // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
+
 
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
@@ -782,7 +804,7 @@ function loadVendorData(vendorIndex, options) {
 
   // Title - full width, modern blue header with subtle shadow effect
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(`⚡ A(I)DEN`)
+    .setValue(isFastMode ? `⚡ A(I)DEN [FAST]` : `⚡ A(I)DEN`)
     .setFontSize(16).setFontWeight('bold')
     .setBackground(BS_CFG.COLOR_HEADER)
     .setFontColor('white')
@@ -1094,16 +1116,25 @@ function loadVendorData(vendorIndex, options) {
     currentRow++;
   }
   
+  // Default values for sections that may be skipped in fast mode
+  let meetings = [];
+  let totalMeetingCount = 0;
+  let helpfulLinks = [];
+  let contractsData = { hasContracts: false, contractCount: 0, contracts: [] };
+  let contractsMatchedOn = '';
+  let boxDocs = [];
+  let gDriveFiles = [];
+  let gDriveFolderFound = false;
+  let gDriveFolderUrl = null;
+  let gDriveMatchedOn = '';
+
+  if (!isFastMode) {
   // Track row where Upcoming Meetings starts (for Box Documents alignment)
   const upcomingMeetingsStartRow = currentRow;
-  
+
   // CALENDAR MEETINGS SECTION
   // Extract contact emails to search for in calendar events
   const contactEmails = (contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
-
-  let meetings = [];
-  let totalMeetingCount = 0;
-
   // Skip Calendar in turbo mode (not essential for checksum updates)
   if (turboMode) {
     Logger.log('Skipping Calendar search in turbo mode');
@@ -1187,7 +1218,6 @@ function loadVendorData(vendorIndex, options) {
   
   // HELPFUL LINKS SECTION (right side - aligned with VENDOR INFO at top)
   // Skip Helpful Links in turbo mode for speed - will load in real-time when viewing vendors
-  let helpfulLinks = [];
   if (turboMode) {
     Logger.log('Skipping Helpful Links in turbo mode');
   } else {
@@ -1198,6 +1228,7 @@ function loadVendorData(vendorIndex, options) {
   // Generate L2M Reporting link if we have a Phonexa link
   const l2mLink = getL2MReportingLink_(contactData.phonexaLink, source);
   const totalLinksCount = helpfulLinks.length + 1; // +1 for L2M row (always shown)
+
 
   const helpfulLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.HELPFUL_LINKS_BOARD_ID}`;
   bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
@@ -1282,8 +1313,8 @@ function loadVendorData(vendorIndex, options) {
   
   // CONTRACTS SECTION (right side - aligned with CONTACTS)
   ss.toast('Checking contracts...', '📋 Loading', 2);
-  let contractsData = getVendorContracts_(vendor);
-  let contractsMatchedOn = contractsData.hasContracts ? vendor : '';
+  contractsData = getVendorContracts_(vendor);
+  contractsMatchedOn = contractsData.hasContracts ? vendor : '';
   
   // If no contracts found, try Other Name(s)
   if (!contractsData.hasContracts && contactData.otherName) {
@@ -1412,7 +1443,7 @@ function loadVendorData(vendorIndex, options) {
   contractsRow++; // Add spacing
   
   // BOX DOCUMENTS SECTION (right side - aligned with Upcoming Meetings)
-  let boxDocs = [];
+  boxDocs = [];
   let boxRow = upcomingMeetingsStartRow;
 
   // Skip Box entirely in turbo mode for speed - it will load in real-time when viewing vendors
@@ -1752,11 +1783,6 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow = Math.max(rightColumnRow, boxRow);
   
   // Fetch Google Drive files now, but display section later (aligned with EMAILS)
-  let gDriveFiles = [];
-  let gDriveFolderFound = false;
-  let gDriveFolderUrl = null;
-  let gDriveMatchedOn = '';
-
   // Skip Google Drive in turbo mode for speed - will load in real-time when viewing vendors
   if (turboMode) {
     Logger.log('Skipping Google Drive in turbo mode');
@@ -1834,8 +1860,23 @@ function loadVendorData(vendorIndex, options) {
     }
   }
   
+  } // end if (!isFastMode) - Calendar, Helpful Links, Contracts, Box, GDrive fetch
+
+  // In fast mode, show compact right-side message
+  if (isFastMode) {
+    bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
+      .setValue('⚡ Fast Mode — Use 🔄 Refresh for Box, GDrive, Airtable, Calendar')
+      .setBackground('#f5f5f5')
+      .setFontStyle('italic')
+      .setFontColor('#888888')
+      .setFontSize(9)
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle');
+    rightColumnRow++;
+  }
+
   // ========== CONTINUE LEFT SIDE ==========
-  
+
   // Notes section
   bsSh.getRange(currentRow, 1, 1, 4).merge()
     .setValue('📝 NOTES')
@@ -1868,6 +1909,7 @@ function loadVendorData(vendorIndex, options) {
   // Track row where Emails starts (for Google Drive alignment)
   const emailsStartRow = currentRow;
   
+  if (!isFastMode) {
   // GOOGLE DRIVE FOLDER SECTION (right side - starts after Box section OR aligned with Emails, whichever is later)
   let gDriveRow = Math.max(emailsStartRow, rightColumnRow);
   
@@ -1951,7 +1993,6 @@ function loadVendorData(vendorIndex, options) {
   
   // Update rightColumnRow to track furthest row used on right side
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
-
   // CRYSTAL BALL SECTION (right side - below Google Drive)
   // Skip Crystal Ball in turbo mode - redundant with Gmail search
   let crystalBall = { items: [], snoozed: [], summary: null, error: null };
@@ -2022,6 +2063,7 @@ function loadVendorData(vendorIndex, options) {
 
   // Update rightColumnRow
   rightColumnRow = Math.max(rightColumnRow, crystalRow);
+  } // end if (!isFastMode) - right side panel render
 
   // EMAILS SECTION
   ss.toast('Searching Gmail...', '📧 Loading', 2);
@@ -2237,20 +2279,21 @@ function loadVendorData(vendorIndex, options) {
   
   
   // Use the greater of currentRow or rightColumnRow for final row count
-  const finalRow = Math.max(currentRow, rightColumnRow);
-  
-  // Style the divider column (column 5) - black background from row 3 to end
-  if (finalRow > 2) {
+  const finalRow = isFastMode ? currentRow : Math.max(currentRow, rightColumnRow);
+
+  // Style the divider column (column 5) - black background from row 3 to end (skip in fast mode)
+  if (!isFastMode && finalRow > 2) {
     bsSh.getRange(3, 5, finalRow - 2, 1)
       .setBackground('#000000')
       .setValue('');
   }
-  
+
   if (finalRow > 5) {
     bsSh.autoResizeRows(5, finalRow - 5);
   }
-  
-  // Generate and compare checksum to detect changes
+
+  // Generate and compare checksum to detect changes (skip full checksum in fast mode)
+  if (!isFastMode) {
   try {
     // Generate module sub-checksums
     const newModuleChecksums = generateModuleChecksums_(
@@ -2258,25 +2301,25 @@ function loadVendorData(vendorIndex, options) {
       contactData.states || '', contractsData.contracts || [], helpfulLinks || [],
       meetings || [], boxDocs || [], gDriveFiles || [], contacts || []
     );
-    
+
     // Generate email sub-checksum (for backward compatibility and early exit)
     const newEmailChecksum = newModuleChecksums.emails;
-    
+
     // Get previously stored checksums
     const storedData = getStoredChecksum_(vendor);
     Logger.log(`Stored data for ${vendor}: ${storedData ? JSON.stringify({checksum: storedData.checksum, hasModules: !!storedData.moduleChecksums}) : 'null'}`);
-    
+
     // Generate full checksum
     const newChecksum = generateVendorChecksum_(
       vendor, emails, tasks, contactData.notes || '', contactData.liveStatus || '',
       contactData.states || '', contractsData.contracts || [], helpfulLinks || [],
       meetings || [], boxDocs || [], gDriveFiles || []
     );
-    
+
     Logger.log(`Checksum comparison for ${vendor}: stored=${storedData?.checksum} (type: ${typeof storedData?.checksum}), new=${newChecksum} (type: ${typeof newChecksum})`);
     const isUnchanged = !forceChanged && storedData && String(storedData.checksum) === String(newChecksum);
     Logger.log(`Is unchanged: ${isUnchanged}${forceChanged ? ' (forceChanged=true)' : ''}`);
-    
+
     // Determine which modules changed (only if stored version matches to avoid false positives)
     const changedModules = [];
     const storedModuleVersion = storedData?.moduleChecksums?._version || 0;
@@ -2294,7 +2337,7 @@ function loadVendorData(vendorIndex, options) {
       if (stored.gDriveFiles !== newModuleChecksums.gDriveFiles) changedModules.push('gDriveFiles');
       if (stored.contacts !== newModuleChecksums.contacts) changedModules.push('contacts');
     }
-    
+
     // If we stopped due to overdue emails, make sure emails is in changedModules
     if (changeType === 'overdue emails' && !changedModules.includes('emails')) {
       changedModules.push('emails');
@@ -2324,15 +2367,15 @@ function loadVendorData(vendorIndex, options) {
         'status': '📊 VENDOR INFO',
         'states': '📊 VENDOR INFO'
       };
-      
+
       // Find and update headers for changed modules
       const dataRange = bsSh.getDataRange();
       const values = dataRange.getValues();
-      
+
       for (const moduleName of changedModules) {
         const searchPattern = moduleHeaderMap[moduleName];
         if (!searchPattern) continue;
-        
+
         for (let row = 0; row < values.length; row++) {
           const cellValue = String(values[row][0] || '');
           if (cellValue.includes(searchPattern) && !cellValue.includes('🔄')) {
@@ -2346,7 +2389,7 @@ function loadVendorData(vendorIndex, options) {
     } else if (!storedData) {
       Logger.log(`First view for ${vendor} - no previous checksums`);
     }
-    
+
     // Create email summary data for change tracking
     const emailData = (emails || []).map(e => ({
       subject: (e.subject || '').substring(0, 60),
@@ -2537,8 +2580,10 @@ function loadVendorData(vendorIndex, options) {
       Logger.log(`Error checking OCR vendor: ${e.message}`);
     }
   }
+  } // end if (!isFastMode) - checksum generation
 
-  ss.toast(`Loaded vendor ${vendorIndex} of ${totalVendors}`, '✅ Ready', 2);
+  const modeLabel = isFastMode ? '⚡ Fast' : '✅ Ready';
+  ss.toast(`Loaded vendor ${vendorIndex} of ${totalVendors}`, modeLabel, 2);
 }
 
 /**
@@ -5272,10 +5317,10 @@ function battleStationNext() {
   const currentIndex = getCurrentVendorIndex_();
   
   if (!currentIndex) {
-    loadVendorData(1);
+    loadVendorData(1, { loadMode: 'fast' });
     return;
   }
-  
+
   const totalVendors = listSh.getLastRow() - 1;
 
   // Wrap around to first vendor if at the end
@@ -5293,7 +5338,7 @@ function battleStationNext() {
   listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
   
   ss.toast(`Marked "${vendor}" as reviewed`, '▶️ Next', 2);
-  loadVendorData(currentIndex + 1);
+  loadVendorData(currentIndex + 1, { loadMode: 'fast' });
 }
 
 /**
@@ -5312,18 +5357,18 @@ function battleStationPrevious() {
   }
 
   const currentIndex = getCurrentVendorIndex_();
-  
+
   if (!currentIndex) {
-    loadVendorData(1);
+    loadVendorData(1, { loadMode: 'fast' });
     return;
   }
-  
+
   if (currentIndex <= 1) {
     SpreadsheetApp.getActive().toast('Already at the first vendor!', '⚠️ Start of List', 3);
     return;
   }
-  
-  loadVendorData(currentIndex - 1);
+
+  loadVendorData(currentIndex - 1, { loadMode: 'fast' });
 }
 
 /**
@@ -7018,10 +7063,10 @@ function battleStationAnalyzeEmails() {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   
-  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
-  
-  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
-    SpreadsheetApp.getUi().alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+  const claudeApiKey = getClaudeApiKey_();
+
+  if (!claudeApiKey) {
+    SpreadsheetApp.getUi().alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
     return;
   }
   
@@ -7298,14 +7343,18 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
 /**
  * Call Claude API
  */
-function callClaudeAPI_(prompt, apiKey) {
+function callClaudeAPI_(prompt, apiKey, options) {
+  options = options || {};
   const url = 'https://api.anthropic.com/v1/messages';
-  
+
   const payload = {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 2000,
+    model: options.model || 'claude-sonnet-4-20250514',
+    max_tokens: options.maxTokens || 2000,
     messages: [{ role: 'user', content: prompt }]
   };
+  if (options.system) {
+    payload.system = options.system;
+  }
   
   const options = {
     method: 'post',
@@ -7441,7 +7490,7 @@ function battleStationGoTo() {
     // If it's a number, treat it as a row number (row 2 = first vendor)
     if (!isNaN(rowNum) && rowNum >= minRow && rowNum <= maxRow) {
       const vendorIndex = rowNum - 1;  // Convert row to index (row 2 = index 1)
-      loadVendorData(vendorIndex);
+      loadVendorData(vendorIndex, { loadMode: 'fast' });
       return;
     }
 
@@ -7460,7 +7509,7 @@ function battleStationGoTo() {
     if (matches.length === 0) {
       ui.alert(`No vendors found matching "${input}"`);
     } else if (matches.length === 1) {
-      loadVendorData(matches[0].index);
+      loadVendorData(matches[0].index, { loadMode: 'fast' });
     } else {
       // Multiple matches - show list with row numbers
       let matchList = matches.slice(0, 15).map(m => `Row ${m.row}: ${m.name}`).join('\n');
@@ -7477,7 +7526,7 @@ function battleStationGoTo() {
       if (pickResponse.getSelectedButton() === ui.Button.OK) {
         const pickRow = parseInt(pickResponse.getResponseText());
         if (!isNaN(pickRow) && pickRow >= minRow && pickRow <= maxRow) {
-          loadVendorData(pickRow - 1);  // Convert row to index
+          loadVendorData(pickRow - 1, { loadMode: 'fast' });  // Convert row to index
         }
       }
     }
@@ -10809,6 +10858,786 @@ function writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyer
   }
   
   ss.toast(`Results written to "${sheetName}" sheet`, '✅ Done', 3);
+}
+
+/************************************************************
+ * CLAUDE API KEY MANAGEMENT
+ * Store and retrieve API key from Script Properties
+ ************************************************************/
+
+/**
+ * Get Claude API key - checks Script Properties first, falls back to BS_CFG
+ */
+function getClaudeApiKey_() {
+  const props = PropertiesService.getScriptProperties();
+  const storedKey = props.getProperty('CLAUDE_API_KEY');
+  if (storedKey && storedKey.length > 10) return storedKey;
+  if (BS_CFG.CLAUDE_API_KEY && BS_CFG.CLAUDE_API_KEY !== 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    return BS_CFG.CLAUDE_API_KEY;
+  }
+  return null;
+}
+
+/**
+ * Set Claude API key via dialog prompt - stores in Script Properties
+ */
+function battleStationSetClaudeApiKey() {
+  const ui = SpreadsheetApp.getUi();
+  const currentKey = getClaudeApiKey_();
+  const masked = currentKey ? '***' + currentKey.slice(-8) : '(not set)';
+
+  const response = ui.prompt(
+    '⚙️ Set Claude API Key',
+    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const newKey = response.getResponseText().trim();
+  if (!newKey || newKey.length < 20) {
+    ui.alert('Invalid API key. Key must be at least 20 characters.');
+    return;
+  }
+
+  PropertiesService.getScriptProperties().setProperty('CLAUDE_API_KEY', newKey);
+  SpreadsheetApp.getActive().toast('Claude API key saved!', '✅ Success', 3);
+}
+
+/************************************************************
+ * SMART BRIEFING - AI-powered vendor priority advisor
+ * Scans across all vendors and recommends actions
+ ************************************************************/
+
+/**
+ * Smart Briefing - Claude analyzes all active vendors and tells you what to do
+ */
+function battleStationSmartBriefing() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  if (!listSh) {
+    ui.alert('List sheet not found.');
+    return;
+  }
+
+  ss.toast('Scanning vendor emails for Smart Briefing...', '🧠 Thinking', 10);
+
+  const allVendors = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const vendorSummaries = [];
+  const maxVendors = 25;
+
+  for (let i = 0; i < Math.min(allVendors.length, maxVendors); i++) {
+    const vendor = allVendors[i][BS_CFG.L_VENDOR];
+    const status = allVendors[i][BS_CFG.L_STATUS];
+    const notes = allVendors[i][BS_CFG.L_NOTES];
+    const listRow = i + 2;
+
+    if (!vendor) continue;
+
+    try {
+      const emails = getEmailsForVendor_(vendor, listRow);
+      const unsnoozed = emails.filter(e => !e.isSnoozed);
+      const overdue = emails.filter(e => isEmailOverdue_(e));
+
+      if (unsnoozed.length === 0 && !overdue.length) continue;
+
+      // Get latest email content for context
+      let latestContent = '';
+      if (unsnoozed.length > 0 && unsnoozed[0].threadId) {
+        try {
+          const thread = GmailApp.getThreadById(unsnoozed[0].threadId);
+          if (thread) {
+            const msgs = thread.getMessages();
+            latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
+          }
+        } catch (e) { /* skip if thread fetch fails */ }
+      }
+
+      vendorSummaries.push({
+        vendor: vendor,
+        status: status || '(unknown)',
+        notes: (notes || '').substring(0, 200),
+        emailCount: unsnoozed.length,
+        overdueCount: overdue.length,
+        latestSubject: unsnoozed[0] ? unsnoozed[0].subject : '',
+        latestLabels: unsnoozed[0] ? unsnoozed[0].labels : '',
+        latestContent: latestContent
+      });
+    } catch (e) {
+      Logger.log(`Smart Briefing: Error scanning ${vendor}: ${e.message}`);
+    }
+
+    if (i % 5 === 0) {
+      ss.toast(`Scanned ${i + 1} of ${Math.min(allVendors.length, maxVendors)} vendors...`, '🧠 Scanning', 5);
+    }
+  }
+
+  if (vendorSummaries.length === 0) {
+    ui.alert('No active vendor communications found to analyze.');
+    return;
+  }
+
+  ss.toast(`Analyzing ${vendorSummaries.length} vendors with Claude...`, '🧠 Processing', 15);
+
+  const vendorText = vendorSummaries.map((v, i) =>
+    `\n--- VENDOR ${i + 1}: ${v.vendor} ---
+Status: ${v.status}
+Notes: ${v.notes || '(none)'}
+Active emails: ${v.emailCount}, Overdue: ${v.overdueCount}
+Latest email subject: ${v.latestSubject}
+Latest labels: ${v.latestLabels}
+Content preview: ${v.latestContent}`
+  ).join('\n');
+
+  // Build a name lookup for matching Claude's output back to exact vendor names
+  const vendorNameList = vendorSummaries.map(v => v.vendor);
+
+  // Include goals for context-aware prioritization
+  const goalsContext = getGoalsContext_();
+
+  const prompt = `You are A(I)DEN, an AI strategic advisor for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
+
+Here's a snapshot of Andy's ${vendorSummaries.length} most active vendor communications:
+${vendorText}
+${goalsContext}
+
+Provide a SMART BRIEFING with specific, actionable recommendations:
+
+## 🔥 URGENT — Do Right Now
+[List 3-5 specific actions for overdue or time-sensitive items. Name the vendor and what to do.]
+
+## 📋 HIGH PRIORITY — Today
+[List 3-5 important follow-ups with specific vendor names and actions.]
+
+## 💡 OPPORTUNITIES
+[2-3 things Andy could proactively do to improve business outcomes or relationships.]
+
+## ⚠️ RISKS
+[2-3 vendors or situations that need attention before they become problems.]
+
+Be specific: name the vendor, state the action, explain why. Keep it concise and actionable.
+
+IMPORTANT: At the very end of your response, include a section exactly like this:
+
+## PRIORITY_ORDER
+[List EVERY vendor name from above, one per line, in the exact order Andy should work through them. Most urgent first. Use the EXACT vendor names as provided. No numbers, no dashes, just the vendor name on each line.]`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    const rawContent = response.content;
+
+    // Parse the PRIORITY_ORDER section from the response
+    const priorityNames = parsePriorityOrder_(rawContent, vendorNameList);
+
+    // Reorder the List sheet to match the priority order
+    if (priorityNames.length > 0) {
+      reorderListByPriority_(listSh, priorityNames);
+      ss.toast(`List reordered: ${priorityNames.length} priority vendors at top`, '🧠 Reordered', 3);
+    }
+
+    // Strip PRIORITY_ORDER section from display content
+    let displayContent = rawContent.replace(/## PRIORITY_ORDER[\s\S]*$/, '').trim();
+
+    let content = displayContent
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #4a86e8; margin-top: 0; }
+        h3 { color: #4a86e8; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #4a86e8; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .reorder-note { background: #e8f0fe; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
+      </style>
+      <h2>🧠 Smart Briefing</h2>
+      <p class="meta">Analyzed ${vendorSummaries.length} vendors | ${new Date().toLocaleString()}</p>
+      ${priorityNames.length > 0 ? '<div class="reorder-note">✅ List has been reordered — hit <strong>Next Vendor</strong> to work through them in priority order.</div>' : ''}
+      <div>${content}</div>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(650);
+    ui.showModalDialog(html, '🧠 Smart Briefing — What to do next');
+
+    // Load vendor #1 so user can start traversing
+    if (priorityNames.length > 0) {
+      loadVendorData(1, { loadMode: 'fast' });
+    }
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Parse PRIORITY_ORDER section from Claude's response
+ * Matches vendor names against the known list (fuzzy)
+ */
+function parsePriorityOrder_(responseText, knownVendors) {
+  const prioritySection = responseText.match(/## PRIORITY_ORDER\s*\n([\s\S]*?)$/);
+  if (!prioritySection) return [];
+
+  const lines = prioritySection[1].split('\n')
+    .map(l => l.replace(/^[\d.\-*•]+\s*/, '').trim()) // Strip numbering/bullets
+    .filter(l => l.length > 0);
+
+  // Build lowercase lookup for known vendors
+  const vendorLookup = {};
+  for (const v of knownVendors) {
+    vendorLookup[v.toLowerCase()] = v;
+  }
+
+  const matched = [];
+  const seen = new Set();
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    // Exact match first
+    if (vendorLookup[lower] && !seen.has(lower)) {
+      matched.push(vendorLookup[lower]);
+      seen.add(lower);
+      continue;
+    }
+    // Fuzzy: check if any known vendor is contained in the line
+    for (const known of knownVendors) {
+      const knownLower = known.toLowerCase();
+      if (!seen.has(knownLower) && (lower.includes(knownLower) || knownLower.includes(lower))) {
+        matched.push(known);
+        seen.add(knownLower);
+        break;
+      }
+    }
+  }
+
+  Logger.log(`Smart Briefing: Parsed ${matched.length} priority vendors from ${lines.length} lines`);
+  return matched;
+}
+
+/**
+ * Reorder the List sheet so priority vendors appear at the top
+ * Non-priority vendors keep their existing relative order below
+ */
+function reorderListByPriority_(listSh, priorityNames) {
+  const lastRow = listSh.getLastRow();
+  if (lastRow <= 1) return;
+
+  const numCols = listSh.getLastColumn();
+  const dataRange = listSh.getRange(2, 1, lastRow - 1, numCols);
+  const allData = dataRange.getValues();
+  const allBgs = dataRange.getBackgrounds();
+
+  // Build priority lookup: vendor name -> priority index
+  const priorityMap = {};
+  for (let i = 0; i < priorityNames.length; i++) {
+    priorityMap[priorityNames[i].toLowerCase()] = i;
+  }
+
+  // Split into priority rows and non-priority rows
+  const priorityRows = new Array(priorityNames.length).fill(null);
+  const priorityBgs = new Array(priorityNames.length).fill(null);
+  const otherRows = [];
+  const otherBgs = [];
+
+  for (let i = 0; i < allData.length; i++) {
+    const vendorName = String(allData[i][0] || '').toLowerCase();
+    const pIdx = priorityMap[vendorName];
+    if (pIdx !== undefined && priorityRows[pIdx] === null) {
+      priorityRows[pIdx] = allData[i];
+      priorityBgs[pIdx] = allBgs[i];
+    } else {
+      otherRows.push(allData[i]);
+      otherBgs.push(allBgs[i]);
+    }
+  }
+
+  // Remove any nulls (vendors in priority list but not found in sheet)
+  const finalRows = [];
+  const finalBgs = [];
+  for (let i = 0; i < priorityRows.length; i++) {
+    if (priorityRows[i]) {
+      finalRows.push(priorityRows[i]);
+      finalBgs.push(priorityBgs[i]);
+    }
+  }
+
+  // Combine: priority vendors first, then the rest
+  const combined = finalRows.concat(otherRows);
+  const combinedBgs = finalBgs.concat(otherBgs);
+
+  // Write back
+  dataRange.setValues(combined);
+  dataRange.setBackgrounds(combinedBgs);
+
+  // Highlight priority vendors with a subtle indicator
+  if (finalRows.length > 0) {
+    listSh.getRange(2, 1, finalRows.length, numCols).setBackground('#e8f0fe');
+  }
+
+  Logger.log(`List reordered: ${finalRows.length} priority vendors moved to top, ${otherRows.length} others below`);
+}
+
+/************************************************************
+ * AUTO-SUMMARIZE TO NOTES
+ * Claude summarizes current vendor state and appends to monday.com notes
+ ************************************************************/
+
+/**
+ * Summarize current vendor activity with Claude and update monday.com notes
+ */
+function battleStationSummarizeToNotes() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  if (!listSh || !bsSh) {
+    ui.alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const currentNotes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
+  const status = String(listSh.getRange(listRow, BS_CFG.L_STATUS + 1).getValue() || '');
+
+  ss.toast(`Analyzing ${vendor}...`, '📝 Summarizing', 5);
+
+  // Get emails for context
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 5)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latestMsg = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nLatest: ${latestMsg.getPlainBody().substring(0, 500)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  const prompt = `You are summarizing vendor activity for a relationship manager's notes at Profitise (lead generation).
+
+Vendor: ${vendor}
+Status: ${status}
+Current notes: ${currentNotes || '(none)'}
+
+Recent unsnoozed emails (${unsnoozed.length} threads):
+${emailContext || '(no emails)'}
+
+Write a 2-3 sentence summary of what's currently happening with this vendor. Focus on:
+- What actions are pending or needed
+- Any outstanding issues or requests
+- The general state of the relationship
+
+Keep it concise and factual. Do NOT repeat information already in the existing notes.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 500 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    const summary = response.content.trim();
+
+    // Append summary to existing notes
+    const updatedNotes = currentNotes
+      ? `${currentNotes}\n\n${summary}`
+      : summary;
+
+    // Update the List sheet
+    listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(updatedNotes);
+
+    // Update monday.com
+    const result = updateMondayComNotesForVendor_(vendor, updatedNotes, listRow);
+
+    if (result.success) {
+      ss.toast(`Notes updated for ${vendor}`, '✅ Summary Added', 3);
+
+      // Update the notes cell on the Battle Station sheet
+      for (let i = 5; i < 50; i++) {
+        const label = String(bsSh.getRange(i, 1).getValue() || '');
+        if (label.indexOf('📝 NOTES') !== -1) {
+          bsSh.getRange(i + 1, 1).setValue(updatedNotes);
+          break;
+        }
+      }
+    } else {
+      ss.toast(`List updated but monday.com sync failed: ${result.error}`, '⚠️ Partial', 5);
+    }
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/************************************************************
+ * EMAIL RULES ENGINE
+ * Automatic actions based on inbound email patterns
+ ************************************************************/
+
+/**
+ * Get or create the Email Rules sheet for configuring automation
+ */
+function getEmailRulesSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('BS_Email_Rules');
+
+  if (!sh) {
+    sh = ss.insertSheet('BS_Email_Rules');
+    // Headers
+    sh.getRange(1, 1, 1, 8).setValues([[
+      'Rule Name', 'Sender Pattern', 'Subject Pattern', 'Label Pattern',
+      'Action', 'Action Value', 'Enabled', 'Last Triggered'
+    ]]);
+    sh.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#e8f0fe');
+
+    // Example rules
+    sh.getRange(2, 1, 4, 8).setValues([
+      ['Auto-label invoices', '*@billing*', '*invoice*', '', 'add_label', '04.accounting-invoices', 'TRUE', ''],
+      ['Flag contract requests', '', '*contract*,*agreement*,*MSA*', '', 'add_label', '01.priority/1', 'TRUE', ''],
+      ['Auto-snooze newsletters', '*@newsletter*,*@marketing*', '', '', 'snooze', '3', 'TRUE', ''],
+      ['Notify on urgent', '', '*urgent*,*ASAP*,*immediately*', '', 'notify', 'andy@profitise.com', 'TRUE', '']
+    ]);
+
+    // Formatting
+    sh.setColumnWidth(1, 180);
+    sh.setColumnWidth(2, 200);
+    sh.setColumnWidth(3, 200);
+    sh.setColumnWidth(4, 150);
+    sh.setColumnWidth(5, 120);
+    sh.setColumnWidth(6, 200);
+    sh.setColumnWidth(7, 80);
+    sh.setColumnWidth(8, 150);
+
+    // Add instructions row at top
+    sh.insertRowBefore(1);
+    sh.getRange(1, 1, 1, 8).merge()
+      .setValue('📧 EMAIL RULES — Patterns use * as wildcard, comma-separate multiple patterns. Actions: add_label, snooze (days), notify (email), flag, auto_reply_draft')
+      .setBackground('#fff2cc')
+      .setFontStyle('italic')
+      .setWrap(true);
+    sh.setRowHeight(1, 40);
+  }
+
+  return sh;
+}
+
+/**
+ * Open/create the Email Rules configuration sheet
+ */
+function battleStationManageEmailRules() {
+  const sh = getEmailRulesSheet_();
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  SpreadsheetApp.getActive().toast('Edit rules in this sheet, then run "Process Email Rules" to apply them.', '📧 Email Rules', 5);
+}
+
+/**
+ * Process email rules against recent inbound emails
+ */
+function battleStationProcessEmailRules() {
+  const ss = SpreadsheetApp.getActive();
+  const rulesSh = getEmailRulesSheet_();
+
+  const rulesData = rulesSh.getDataRange().getValues();
+  const rules = [];
+
+  // Parse rules (skip header rows)
+  for (let i = 2; i < rulesData.length; i++) {
+    const enabled = String(rulesData[i][6]).toUpperCase();
+    if (enabled !== 'TRUE') continue;
+
+    rules.push({
+      row: i + 1,
+      name: rulesData[i][0],
+      senderPatterns: parsePatterns_(rulesData[i][1]),
+      subjectPatterns: parsePatterns_(rulesData[i][2]),
+      labelPatterns: parsePatterns_(rulesData[i][3]),
+      action: String(rulesData[i][4]).toLowerCase().trim(),
+      actionValue: String(rulesData[i][5]).trim(),
+    });
+  }
+
+  if (rules.length === 0) {
+    ss.toast('No enabled rules found.', '⚠️ No Rules', 3);
+    return;
+  }
+
+  ss.toast(`Processing ${rules.length} rules against recent emails...`, '📧 Processing', 10);
+
+  // Get threads from the last 24 hours in the vendor inbox
+  const threads = GmailApp.search('label:00.received newer_than:1d', 0, 50);
+  let matchCount = 0;
+  const actions = [];
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    const latest = messages[messages.length - 1];
+    const sender = latest.getFrom();
+    const subject = thread.getFirstMessageSubject();
+    const labels = thread.getLabels().map(l => l.getName()).join(',');
+
+    for (const rule of rules) {
+      if (matchesPatterns_(sender, rule.senderPatterns) ||
+          matchesPatterns_(subject, rule.subjectPatterns) ||
+          matchesPatterns_(labels, rule.labelPatterns)) {
+
+        matchCount++;
+        actions.push({ rule: rule, thread: thread, subject: subject });
+
+        try {
+          switch (rule.action) {
+            case 'add_label':
+              const label = GmailApp.getUserLabelByName(rule.actionValue);
+              if (label) {
+                thread.addLabel(label);
+                Logger.log(`Rule "${rule.name}": Added label "${rule.actionValue}" to "${subject}"`);
+              }
+              break;
+
+            case 'snooze':
+              // Move to snooze by removing from inbox
+              const days = parseInt(rule.actionValue) || 3;
+              const snoozeLabel = GmailApp.getUserLabelByName('03.noInbox');
+              if (snoozeLabel) {
+                thread.addLabel(snoozeLabel);
+                GmailApp.moveThreadToArchive(thread);
+                Logger.log(`Rule "${rule.name}": Snoozed "${subject}" for ${days} days`);
+              }
+              break;
+
+            case 'notify':
+              GmailApp.sendEmail(
+                rule.actionValue,
+                `[Battle Station Alert] ${rule.name}: ${subject}`,
+                `Email rule "${rule.name}" triggered.\n\nSubject: ${subject}\nFrom: ${sender}\n\nView in Gmail to take action.`
+              );
+              Logger.log(`Rule "${rule.name}": Sent notification for "${subject}"`);
+              break;
+
+            case 'flag':
+              // Find vendor and flag it
+              const vendorName = findVendorForEmail_(sender, subject);
+              if (vendorName) {
+                setVendorFlag_(vendorName, true);
+                Logger.log(`Rule "${rule.name}": Flagged vendor "${vendorName}" for "${subject}"`);
+              }
+              break;
+
+            case 'auto_reply_draft':
+              // Create a draft reply using Claude
+              const apiKey = getClaudeApiKey_();
+              if (apiKey) {
+                const body = latest.getPlainBody().substring(0, 1000);
+                const replyPrompt = `Draft a brief, professional reply to this email. Context: You are Andy at Profitise, a lead gen company. Rule: "${rule.name}". Value: "${rule.actionValue}"\n\nFrom: ${sender}\nSubject: ${subject}\nBody: ${body}\n\nWrite ONLY the reply body (no subject, no greeting headers). Keep it under 3 sentences.`;
+                const aiResponse = callClaudeAPI_(replyPrompt, apiKey, { maxTokens: 300 });
+                if (!aiResponse.error) {
+                  thread.createDraftReply(aiResponse.content);
+                  Logger.log(`Rule "${rule.name}": Created draft reply for "${subject}"`);
+                }
+              }
+              break;
+          }
+
+          // Update last triggered timestamp
+          rulesSh.getRange(rule.row, 8).setValue(new Date());
+
+        } catch (e) {
+          Logger.log(`Rule "${rule.name}" error: ${e.message}`);
+        }
+
+        break; // Only apply first matching rule per thread
+      }
+    }
+  }
+
+  ss.toast(`Processed ${threads.length} emails, ${matchCount} rule matches`, '✅ Rules Applied', 5);
+
+  if (actions.length > 0) {
+    const summary = actions.map(a => `• ${a.rule.name}: "${a.subject}"`).join('\n');
+    Logger.log(`Email Rules Summary:\n${summary}`);
+  }
+}
+
+/**
+ * Parse comma-separated wildcard patterns
+ */
+function parsePatterns_(patternStr) {
+  if (!patternStr) return [];
+  return String(patternStr).split(',').map(p => p.trim().toLowerCase()).filter(p => p.length > 0);
+}
+
+/**
+ * Check if a string matches any of the wildcard patterns
+ */
+function matchesPatterns_(text, patterns) {
+  if (!patterns || patterns.length === 0) return false;
+  const lowerText = String(text || '').toLowerCase();
+
+  for (const pattern of patterns) {
+    if (!pattern) continue;
+
+    // Convert wildcard pattern to regex
+    const regexStr = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // Escape special regex chars
+      .replace(/\*/g, '.*'); // Convert * to .*
+
+    try {
+      if (new RegExp(regexStr).test(lowerText)) return true;
+    } catch (e) {
+      // Fallback: simple includes check
+      const cleanPattern = pattern.replace(/\*/g, '');
+      if (cleanPattern && lowerText.includes(cleanPattern)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Try to find which vendor an email belongs to based on sender/subject
+ */
+function findVendorForEmail_(sender, subject) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return null;
+
+  const data = listSh.getDataRange().getValues();
+  const searchText = (sender + ' ' + subject).toLowerCase();
+
+  for (let i = 1; i < data.length; i++) {
+    const vendorName = String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase();
+    if (vendorName && searchText.includes(vendorName)) {
+      return data[i][BS_CFG.L_VENDOR];
+    }
+  }
+  return null;
+}
+
+/************************************************************
+ * CLAUDE-POWERED EMAIL REPLY DRAFTING
+ * Smart reply drafting for the current vendor's emails
+ ************************************************************/
+
+/**
+ * Draft a reply to the most recent unsnoozed email using Claude
+ */
+function battleStationDraftReply() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const notes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
+
+  ss.toast(`Finding emails for ${vendor}...`, '✉️ Drafting', 3);
+
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+
+  if (unsnoozed.length === 0) {
+    ui.alert('No unsnoozed emails found for this vendor.');
+    return;
+  }
+
+  // Get the most recent unsnoozed email thread
+  const targetEmail = unsnoozed[0];
+  let threadContent = '';
+  let thread = null;
+
+  try {
+    thread = GmailApp.getThreadById(targetEmail.threadId);
+    if (thread) {
+      const messages = thread.getMessages();
+      for (const msg of messages.slice(-3)) {
+        threadContent += `\nFrom: ${msg.getFrom()}\nDate: ${msg.getDate()}\n${msg.getPlainBody().substring(0, 1000)}\n---`;
+      }
+    }
+  } catch (e) {
+    threadContent = `Subject: ${targetEmail.subject}\n(Could not fetch thread content)`;
+  }
+
+  ss.toast('Generating reply with Claude...', '🤖 Drafting', 5);
+
+  const prompt = `You are drafting an email reply for Andy Worford at Profitise (a lead generation company in Home Services and Solar).
+
+Vendor: ${vendor}
+Notes about this vendor: ${notes || '(none)'}
+
+Email thread:
+${threadContent}
+
+Write a professional, concise reply. Be helpful and move the conversation forward. Sign off as "Andy Worford, Profitise".
+
+Write ONLY the email body. No meta-commentary.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 800 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    // Create a Gmail draft reply
+    if (thread) {
+      thread.createDraftReply(response.content);
+      ss.toast(`Draft reply created for "${targetEmail.subject}"`, '✅ Draft Ready', 3);
+      ui.alert(`✓ Draft reply created!\n\nSubject: Re: ${targetEmail.subject}\n\nCheck your Gmail drafts to review and send.`);
+    } else {
+      ui.alert(`Reply generated but couldn't create draft.\n\nCopy this reply:\n\n${response.content}`);
+    }
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
 }
 
 /************************************************************
@@ -15353,4 +16182,386 @@ function setAllActiveTasksToStatus_(newStatus) {
   // Hard refresh to capture the changes
   Utilities.sleep(1000);
   battleStationHardRefresh();
+}
+
+/************************************************************
+ * GOALS TRACKING
+ * Short/Medium/Long-term goals for alignment across sessions
+ ************************************************************/
+
+/**
+ * Get or create the Goals sheet
+ */
+function getGoalsSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('BS_Goals');
+
+  if (!sh) {
+    sh = ss.insertSheet('BS_Goals');
+
+    // Instructions row
+    sh.getRange(1, 1, 1, 5).merge()
+      .setValue('🎯 GOALS — Short/Medium/Long-term goals that A(I)DEN uses for context when generating insights and briefings')
+      .setBackground('#e8f0fe')
+      .setFontWeight('bold')
+      .setWrap(true);
+    sh.setRowHeight(1, 36);
+
+    // Headers
+    sh.getRange(2, 1, 1, 5).setValues([[
+      'Goal', 'Timeframe', 'Priority', 'Status', 'Notes'
+    ]]);
+    sh.getRange(2, 1, 1, 5).setFontWeight('bold').setBackground('#f3f3f3');
+
+    // Example goals
+    sh.getRange(3, 1, 8, 5).setValues([
+      ['Run Weekly Report every Friday afternoon', 'Short (Weekly)', 'High', 'Recurring', 'Needs to be done by EOD Friday'],
+      ['Identify buyers who will buy inbound calls', 'Medium (1-3 months)', 'High', 'In Progress', 'Cross-reference with Phonexa data'],
+      ['Grow Home Services vertical revenue 20%', 'Long (6+ months)', 'High', 'In Progress', ''],
+      ['Onboard 5 new Solar affiliates', 'Medium (1-3 months)', 'Medium', 'Not Started', ''],
+      ['Reduce vendor churn rate', 'Long (6+ months)', 'High', 'In Progress', 'Focus on communication cadence'],
+      ['Clean up stale monday.com tasks', 'Short (This Week)', 'Low', 'Not Started', 'Archive done tasks older than 30 days'],
+      ['Set up automated invoice tracking', 'Medium (1-3 months)', 'Medium', 'Not Started', 'Connect Airtable contracts to accounting'],
+      ['Build vendor scorecards', 'Long (6+ months)', 'Medium', 'Not Started', 'TTL, response time, contract compliance']
+    ]);
+
+    // Formatting
+    sh.setColumnWidth(1, 350);
+    sh.setColumnWidth(2, 160);
+    sh.setColumnWidth(3, 100);
+    sh.setColumnWidth(4, 120);
+    sh.setColumnWidth(5, 300);
+
+    // Color code timeframes
+    for (let i = 3; i <= 10; i++) {
+      const timeframe = String(sh.getRange(i, 2).getValue());
+      if (timeframe.startsWith('Short')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#e8f5e9'); // Green for short
+      } else if (timeframe.startsWith('Medium')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#fff3e0'); // Orange for medium
+      } else if (timeframe.startsWith('Long')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#e3f2fd'); // Blue for long
+      }
+    }
+
+    // Add data validation for Timeframe
+    const timeframeRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Short (This Week)', 'Short (Weekly)', 'Medium (1-3 months)', 'Long (6+ months)'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 2, 50, 1).setDataValidation(timeframeRule);
+
+    // Add data validation for Priority
+    const priorityRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['High', 'Medium', 'Low'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 3, 50, 1).setDataValidation(priorityRule);
+
+    // Add data validation for Status
+    const statusRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Not Started', 'In Progress', 'Recurring', 'Done', 'Blocked'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 4, 50, 1).setDataValidation(statusRule);
+  }
+
+  return sh;
+}
+
+/**
+ * Open the Goals sheet for editing
+ */
+function battleStationManageGoals() {
+  const sh = getGoalsSheet_();
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  SpreadsheetApp.getActive().toast('Edit your goals here. A(I)DEN uses these for context in Smart Briefing and Insights.', '🎯 Goals', 5);
+}
+
+/**
+ * Read goals as context text for Claude prompts
+ */
+function getGoalsContext_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('BS_Goals');
+  if (!sh) return '';
+
+  const data = sh.getDataRange().getValues();
+  if (data.length <= 2) return ''; // Only headers
+
+  const goals = [];
+  for (let i = 2; i < data.length; i++) {
+    const goal = data[i][0];
+    const timeframe = data[i][1];
+    const priority = data[i][2];
+    const status = data[i][3];
+    const notes = data[i][4];
+    if (!goal) continue;
+
+    goals.push(`- [${priority}] [${timeframe}] ${goal} (${status})${notes ? ' — ' + notes : ''}`);
+  }
+
+  if (goals.length === 0) return '';
+  return `\n\nAndy's current goals:\n${goals.join('\n')}`;
+}
+
+/************************************************************
+ * INSIGHTS GENERATOR
+ * OpenClaw-style deep analysis and creative idea generation
+ ************************************************************/
+
+/**
+ * Generate strategic insights for the current vendor using Claude
+ * Goes beyond Crystal Ball — suggests creative plays, cross-sell opportunities,
+ * relationship strategies, and actions aligned with goals
+ */
+function battleStationGenerateInsights() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+
+  ss.toast(`Generating insights for ${vendor}...`, '💡 Thinking', 10);
+
+  // Gather rich context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for deeper analysis
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 8)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nFrom: ${latest.getFrom()}\nContent: ${latest.getPlainBody().substring(0, 800)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // Get tasks
+  let tasks = [];
+  try {
+    tasks = getTasksForVendor_(vendor, listRow);
+  } catch (e) { /* skip if fails */ }
+  const taskContext = tasks.slice(0, 10).map(t =>
+    `- ${t.subject} [${t.status}] (${t.project})`
+  ).join('\n');
+
+  // Get goals for alignment
+  const goalsContext = getGoalsContext_();
+
+  const prompt = `You are A(I)DEN, an AI strategic advisor for Andy Worford at Profitise, a lead generation company in Home Services and Solar verticals.
+
+Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, opportunities, and plays that Andy might not see just from reading emails.
+
+## Vendor Profile
+Name: ${vendor}
+Type: ${source}
+Status: ${status}
+TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
+Live Verticals: ${contactData.liveVerticals || '(none)'}
+Other Verticals: ${contactData.otherVerticals || '(none)'}
+Live Modalities: ${contactData.liveModalities || '(none)'}
+States: ${contactData.states || '(none)'}
+Notes: ${notes || '(none)'}
+
+## Contacts (${contactData.contacts.length})
+${contactData.contacts.slice(0, 5).map(c => `- ${c.name} (${c.contactType}, ${c.status}) ${c.email || ''}`).join('\n')}
+
+## Recent Emails (${unsnoozed.length} active, ${overdue.length} overdue)
+${emailContext || '(no emails)'}
+
+## Active Tasks
+${taskContext || '(no tasks)'}
+${goalsContext}
+
+Generate insights in these categories:
+
+## 💡 STRATEGIC INSIGHTS
+[3-5 non-obvious observations about this vendor relationship. What patterns do you see? What's the trajectory? What signals are in the emails?]
+
+## 🚀 GROWTH PLAYS
+[2-3 specific actions to grow revenue or deepen the relationship. Be creative — cross-sell to new verticals? Expand to new states? Increase volume?]
+
+## ⚠️ WATCH OUT FOR
+[1-2 risks or warning signs. Is the vendor going cold? Are there red flags in the communication?]
+
+## 🎯 GOAL ALIGNMENT
+[How does this vendor connect to Andy's goals? What actions on this vendor move the needle on the bigger picture?]
+
+## ✅ NEXT BEST ACTION
+[The single most impactful thing Andy should do RIGHT NOW with this vendor. Be specific.]
+
+Be bold, be creative, be specific. Reference actual email content and data points.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #2e7d32; margin-top: 0; }
+        h3 { color: #2e7d32; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #4caf50; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 12px; }
+        .vendor-card { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
+        .vendor-card strong { color: #2e7d32; }
+      </style>
+      <h2>💡 Insights: ${vendor}</h2>
+      <div class="vendor-card">
+        <strong>${source}</strong> | ${status} | TTL: $${Number(ttlUsd).toLocaleString()} | ${unsnoozed.length} active emails, ${overdue.length} overdue
+      </div>
+      <p class="meta">${new Date().toLocaleString()}</p>
+      <div>${content}</div>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
+    ui.showModalDialog(html, `💡 A(I)DEN Insights: ${vendor}`);
+    ss.toast('Insights ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Generate cross-vendor insights aligned with goals (batch mode)
+ * Like Smart Briefing but focused on strategic opportunities, not just urgency
+ */
+function battleStationGoalInsights() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const goalsContext = getGoalsContext_();
+  if (!goalsContext) {
+    const create = ui.alert('No Goals Found', 'You haven\'t set up any goals yet.\n\nWould you like to open the Goals sheet now?', ui.ButtonSet.YES_NO);
+    if (create === ui.Button.YES) {
+      battleStationManageGoals();
+    }
+    return;
+  }
+
+  ss.toast('Scanning vendors against your goals...', '🎯 Analyzing', 10);
+
+  const allVendors = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const vendorSnapshots = [];
+
+  for (let i = 0; i < Math.min(allVendors.length, 30); i++) {
+    const vendor = allVendors[i][BS_CFG.L_VENDOR];
+    const ttl = allVendors[i][BS_CFG.L_TTL_USD] || 0;
+    const source = allVendors[i][BS_CFG.L_SOURCE] || '';
+    const status = allVendors[i][BS_CFG.L_STATUS] || '';
+    const notes = allVendors[i][BS_CFG.L_NOTES] || '';
+
+    if (!vendor) continue;
+
+    vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`);
+  }
+
+  ss.toast(`Generating goal-aligned insights for ${vendorSnapshots.length} vendors...`, '🎯 Processing', 15);
+
+  const prompt = `You are A(I)DEN, a strategic AI advisor for Andy Worford at Profitise (lead generation, Home Services and Solar).
+
+Here are Andy's vendors (${vendorSnapshots.length}):
+${vendorSnapshots.join('\n')}
+${goalsContext}
+
+Based on Andy's GOALS and his vendor portfolio, provide a GOAL-ALIGNED INSIGHT REPORT:
+
+## 🎯 GOAL PROGRESS CHECK
+[For each of Andy's active goals: What's the status? Which vendors are relevant? What's the next action?]
+
+## 💡 STRATEGIC OPPORTUNITIES
+[3-5 creative plays that connect specific vendors to specific goals. Be specific: "Vendor X could help with Goal Y by doing Z."]
+
+## 📊 THIS WEEK'S FOCUS
+[Given the goals and vendor landscape, what should Andy prioritize THIS WEEK? Give 3-5 concrete actions with vendor names.]
+
+## 🔮 30-DAY OUTLOOK
+[Where will things be in 30 days if Andy executes well? What risks could derail progress?]
+
+Be specific, reference actual vendor names and goals, and give actionable recommendations.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #e65100; margin-top: 0; }
+        h3 { color: #e65100; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #ff9800; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+      </style>
+      <h2>🎯 Goal-Aligned Insights</h2>
+      <p class="meta">Analyzed ${vendorSnapshots.length} vendors against your goals | ${new Date().toLocaleString()}</p>
+      <div>${content}</div>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
+    ui.showModalDialog(html, '🎯 A(I)DEN — Goal-Aligned Insights');
+    ss.toast('Goal insights ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
 }
