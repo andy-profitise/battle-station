@@ -3319,9 +3319,25 @@ function getTasksForVendor_(vendor, listRow) {
     return [];
   }
 
-  // Filter tasks by vendor name (case-insensitive contains)
+  // Filter tasks by vendor name: check task name AND linked board relations (Buyers/Affiliates columns)
   const searchTerm = vendor.toLowerCase();
-  const matchingItems = allTasks.filter(task => task.nameLower.includes(searchTerm));
+  const matchingItems = allTasks.filter(task => {
+    // Match on task name
+    if (task.nameLower.includes(searchTerm)) return true;
+
+    // Match on linked items in any board relation column (Buyers, Affiliates, etc.)
+    const colVals = task.columnValues || {};
+    for (const colId of Object.keys(colVals)) {
+      const col = colVals[colId];
+      if (col && col.linked_items && col.linked_items.length > 0) {
+        for (const linked of col.linked_items) {
+          if (linked.name && linked.name.toLowerCase().includes(searchTerm)) return true;
+        }
+      }
+    }
+
+    return false;
+  });
 
   Logger.log(`Found ${matchingItems.length} tasks matching vendor (from ${allTasks.length} cached tasks)`);
 
