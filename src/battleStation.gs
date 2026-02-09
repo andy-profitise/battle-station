@@ -235,6 +235,8 @@ function onOpen() {
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
     .addSeparator()
     .addItem('🧠 Smart Briefing (What to do next)', 'battleStationSmartBriefing')
+    .addItem('💡 Generate Insights (This Vendor)', 'battleStationGenerateInsights')
+    .addItem('🎯 Goal-Aligned Insights (All Vendors)', 'battleStationGoalInsights')
     .addItem('📝 Summarize & Update Notes (Claude)', 'battleStationSummarizeToNotes')
     .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
     .addSeparator()
@@ -246,6 +248,7 @@ function onOpen() {
     .addItem('📧 Manage Email Rules', 'battleStationManageEmailRules')
     .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
     .addSeparator()
+    .addItem('🎯 Manage Goals', 'battleStationManageGoals')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
     .addToUi();
 
@@ -10997,10 +11000,14 @@ Content preview: ${v.latestContent}`
   // Build a name lookup for matching Claude's output back to exact vendor names
   const vendorNameList = vendorSummaries.map(v => v.vendor);
 
-  const prompt = `You are an AI assistant for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
+  // Include goals for context-aware prioritization
+  const goalsContext = getGoalsContext_();
+
+  const prompt = `You are A(I)DEN, an AI strategic advisor for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
 
 Here's a snapshot of Andy's ${vendorSummaries.length} most active vendor communications:
 ${vendorText}
+${goalsContext}
 
 Provide a SMART BRIEFING with specific, actionable recommendations:
 
@@ -16175,4 +16182,386 @@ function setAllActiveTasksToStatus_(newStatus) {
   // Hard refresh to capture the changes
   Utilities.sleep(1000);
   battleStationHardRefresh();
+}
+
+/************************************************************
+ * GOALS TRACKING
+ * Short/Medium/Long-term goals for alignment across sessions
+ ************************************************************/
+
+/**
+ * Get or create the Goals sheet
+ */
+function getGoalsSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('BS_Goals');
+
+  if (!sh) {
+    sh = ss.insertSheet('BS_Goals');
+
+    // Instructions row
+    sh.getRange(1, 1, 1, 5).merge()
+      .setValue('🎯 GOALS — Short/Medium/Long-term goals that A(I)DEN uses for context when generating insights and briefings')
+      .setBackground('#e8f0fe')
+      .setFontWeight('bold')
+      .setWrap(true);
+    sh.setRowHeight(1, 36);
+
+    // Headers
+    sh.getRange(2, 1, 1, 5).setValues([[
+      'Goal', 'Timeframe', 'Priority', 'Status', 'Notes'
+    ]]);
+    sh.getRange(2, 1, 1, 5).setFontWeight('bold').setBackground('#f3f3f3');
+
+    // Example goals
+    sh.getRange(3, 1, 8, 5).setValues([
+      ['Run Weekly Report every Friday afternoon', 'Short (Weekly)', 'High', 'Recurring', 'Needs to be done by EOD Friday'],
+      ['Identify buyers who will buy inbound calls', 'Medium (1-3 months)', 'High', 'In Progress', 'Cross-reference with Phonexa data'],
+      ['Grow Home Services vertical revenue 20%', 'Long (6+ months)', 'High', 'In Progress', ''],
+      ['Onboard 5 new Solar affiliates', 'Medium (1-3 months)', 'Medium', 'Not Started', ''],
+      ['Reduce vendor churn rate', 'Long (6+ months)', 'High', 'In Progress', 'Focus on communication cadence'],
+      ['Clean up stale monday.com tasks', 'Short (This Week)', 'Low', 'Not Started', 'Archive done tasks older than 30 days'],
+      ['Set up automated invoice tracking', 'Medium (1-3 months)', 'Medium', 'Not Started', 'Connect Airtable contracts to accounting'],
+      ['Build vendor scorecards', 'Long (6+ months)', 'Medium', 'Not Started', 'TTL, response time, contract compliance']
+    ]);
+
+    // Formatting
+    sh.setColumnWidth(1, 350);
+    sh.setColumnWidth(2, 160);
+    sh.setColumnWidth(3, 100);
+    sh.setColumnWidth(4, 120);
+    sh.setColumnWidth(5, 300);
+
+    // Color code timeframes
+    for (let i = 3; i <= 10; i++) {
+      const timeframe = String(sh.getRange(i, 2).getValue());
+      if (timeframe.startsWith('Short')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#e8f5e9'); // Green for short
+      } else if (timeframe.startsWith('Medium')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#fff3e0'); // Orange for medium
+      } else if (timeframe.startsWith('Long')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#e3f2fd'); // Blue for long
+      }
+    }
+
+    // Add data validation for Timeframe
+    const timeframeRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Short (This Week)', 'Short (Weekly)', 'Medium (1-3 months)', 'Long (6+ months)'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 2, 50, 1).setDataValidation(timeframeRule);
+
+    // Add data validation for Priority
+    const priorityRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['High', 'Medium', 'Low'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 3, 50, 1).setDataValidation(priorityRule);
+
+    // Add data validation for Status
+    const statusRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Not Started', 'In Progress', 'Recurring', 'Done', 'Blocked'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 4, 50, 1).setDataValidation(statusRule);
+  }
+
+  return sh;
+}
+
+/**
+ * Open the Goals sheet for editing
+ */
+function battleStationManageGoals() {
+  const sh = getGoalsSheet_();
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  SpreadsheetApp.getActive().toast('Edit your goals here. A(I)DEN uses these for context in Smart Briefing and Insights.', '🎯 Goals', 5);
+}
+
+/**
+ * Read goals as context text for Claude prompts
+ */
+function getGoalsContext_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('BS_Goals');
+  if (!sh) return '';
+
+  const data = sh.getDataRange().getValues();
+  if (data.length <= 2) return ''; // Only headers
+
+  const goals = [];
+  for (let i = 2; i < data.length; i++) {
+    const goal = data[i][0];
+    const timeframe = data[i][1];
+    const priority = data[i][2];
+    const status = data[i][3];
+    const notes = data[i][4];
+    if (!goal) continue;
+
+    goals.push(`- [${priority}] [${timeframe}] ${goal} (${status})${notes ? ' — ' + notes : ''}`);
+  }
+
+  if (goals.length === 0) return '';
+  return `\n\nAndy's current goals:\n${goals.join('\n')}`;
+}
+
+/************************************************************
+ * INSIGHTS GENERATOR
+ * OpenClaw-style deep analysis and creative idea generation
+ ************************************************************/
+
+/**
+ * Generate strategic insights for the current vendor using Claude
+ * Goes beyond Crystal Ball — suggests creative plays, cross-sell opportunities,
+ * relationship strategies, and actions aligned with goals
+ */
+function battleStationGenerateInsights() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+
+  ss.toast(`Generating insights for ${vendor}...`, '💡 Thinking', 10);
+
+  // Gather rich context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for deeper analysis
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 8)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nFrom: ${latest.getFrom()}\nContent: ${latest.getPlainBody().substring(0, 800)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // Get tasks
+  let tasks = [];
+  try {
+    tasks = getTasksForVendor_(vendor, listRow);
+  } catch (e) { /* skip if fails */ }
+  const taskContext = tasks.slice(0, 10).map(t =>
+    `- ${t.subject} [${t.status}] (${t.project})`
+  ).join('\n');
+
+  // Get goals for alignment
+  const goalsContext = getGoalsContext_();
+
+  const prompt = `You are A(I)DEN, an AI strategic advisor for Andy Worford at Profitise, a lead generation company in Home Services and Solar verticals.
+
+Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, opportunities, and plays that Andy might not see just from reading emails.
+
+## Vendor Profile
+Name: ${vendor}
+Type: ${source}
+Status: ${status}
+TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
+Live Verticals: ${contactData.liveVerticals || '(none)'}
+Other Verticals: ${contactData.otherVerticals || '(none)'}
+Live Modalities: ${contactData.liveModalities || '(none)'}
+States: ${contactData.states || '(none)'}
+Notes: ${notes || '(none)'}
+
+## Contacts (${contactData.contacts.length})
+${contactData.contacts.slice(0, 5).map(c => `- ${c.name} (${c.contactType}, ${c.status}) ${c.email || ''}`).join('\n')}
+
+## Recent Emails (${unsnoozed.length} active, ${overdue.length} overdue)
+${emailContext || '(no emails)'}
+
+## Active Tasks
+${taskContext || '(no tasks)'}
+${goalsContext}
+
+Generate insights in these categories:
+
+## 💡 STRATEGIC INSIGHTS
+[3-5 non-obvious observations about this vendor relationship. What patterns do you see? What's the trajectory? What signals are in the emails?]
+
+## 🚀 GROWTH PLAYS
+[2-3 specific actions to grow revenue or deepen the relationship. Be creative — cross-sell to new verticals? Expand to new states? Increase volume?]
+
+## ⚠️ WATCH OUT FOR
+[1-2 risks or warning signs. Is the vendor going cold? Are there red flags in the communication?]
+
+## 🎯 GOAL ALIGNMENT
+[How does this vendor connect to Andy's goals? What actions on this vendor move the needle on the bigger picture?]
+
+## ✅ NEXT BEST ACTION
+[The single most impactful thing Andy should do RIGHT NOW with this vendor. Be specific.]
+
+Be bold, be creative, be specific. Reference actual email content and data points.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #2e7d32; margin-top: 0; }
+        h3 { color: #2e7d32; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #4caf50; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 12px; }
+        .vendor-card { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
+        .vendor-card strong { color: #2e7d32; }
+      </style>
+      <h2>💡 Insights: ${vendor}</h2>
+      <div class="vendor-card">
+        <strong>${source}</strong> | ${status} | TTL: $${Number(ttlUsd).toLocaleString()} | ${unsnoozed.length} active emails, ${overdue.length} overdue
+      </div>
+      <p class="meta">${new Date().toLocaleString()}</p>
+      <div>${content}</div>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
+    ui.showModalDialog(html, `💡 A(I)DEN Insights: ${vendor}`);
+    ss.toast('Insights ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Generate cross-vendor insights aligned with goals (batch mode)
+ * Like Smart Briefing but focused on strategic opportunities, not just urgency
+ */
+function battleStationGoalInsights() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const goalsContext = getGoalsContext_();
+  if (!goalsContext) {
+    const create = ui.alert('No Goals Found', 'You haven\'t set up any goals yet.\n\nWould you like to open the Goals sheet now?', ui.ButtonSet.YES_NO);
+    if (create === ui.Button.YES) {
+      battleStationManageGoals();
+    }
+    return;
+  }
+
+  ss.toast('Scanning vendors against your goals...', '🎯 Analyzing', 10);
+
+  const allVendors = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const vendorSnapshots = [];
+
+  for (let i = 0; i < Math.min(allVendors.length, 30); i++) {
+    const vendor = allVendors[i][BS_CFG.L_VENDOR];
+    const ttl = allVendors[i][BS_CFG.L_TTL_USD] || 0;
+    const source = allVendors[i][BS_CFG.L_SOURCE] || '';
+    const status = allVendors[i][BS_CFG.L_STATUS] || '';
+    const notes = allVendors[i][BS_CFG.L_NOTES] || '';
+
+    if (!vendor) continue;
+
+    vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`);
+  }
+
+  ss.toast(`Generating goal-aligned insights for ${vendorSnapshots.length} vendors...`, '🎯 Processing', 15);
+
+  const prompt = `You are A(I)DEN, a strategic AI advisor for Andy Worford at Profitise (lead generation, Home Services and Solar).
+
+Here are Andy's vendors (${vendorSnapshots.length}):
+${vendorSnapshots.join('\n')}
+${goalsContext}
+
+Based on Andy's GOALS and his vendor portfolio, provide a GOAL-ALIGNED INSIGHT REPORT:
+
+## 🎯 GOAL PROGRESS CHECK
+[For each of Andy's active goals: What's the status? Which vendors are relevant? What's the next action?]
+
+## 💡 STRATEGIC OPPORTUNITIES
+[3-5 creative plays that connect specific vendors to specific goals. Be specific: "Vendor X could help with Goal Y by doing Z."]
+
+## 📊 THIS WEEK'S FOCUS
+[Given the goals and vendor landscape, what should Andy prioritize THIS WEEK? Give 3-5 concrete actions with vendor names.]
+
+## 🔮 30-DAY OUTLOOK
+[Where will things be in 30 days if Andy executes well? What risks could derail progress?]
+
+Be specific, reference actual vendor names and goals, and give actionable recommendations.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #e65100; margin-top: 0; }
+        h3 { color: #e65100; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #ff9800; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+      </style>
+      <h2>🎯 Goal-Aligned Insights</h2>
+      <p class="meta">Analyzed ${vendorSnapshots.length} vendors against your goals | ${new Date().toLocaleString()}</p>
+      <div>${content}</div>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
+    ui.showModalDialog(html, '🎯 A(I)DEN — Goal-Aligned Insights');
+    ss.toast('Goal insights ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
 }
