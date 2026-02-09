@@ -12171,12 +12171,16 @@ function getThreadContent_(thread) {
 /**
  * Show dialog for extra directions and get user input
  */
-function showDirectionsDialog_(responseType) {
+function showDirectionsDialog_(responseType, lastMsgSummary) {
   const ui = SpreadsheetApp.getUi();
+
+  const contextLine = lastMsgSummary
+    ? `${lastMsgSummary}\n\n---\nAdd any extra directions or context for the response:\n(Leave blank for default response)`
+    : 'Add any extra directions or context for the response:\n(Leave blank for default response)';
 
   const result = ui.prompt(
     `📧 ${responseType}`,
-    'Add any extra directions or context for the response:\n(Leave blank for default response)',
+    contextLine,
     ui.ButtonSet.OK_CANCEL
   );
 
@@ -12918,16 +12922,23 @@ function generateEmailResponse_(responseType) {
     // Get selected email thread
     const emailData = getSelectedEmailThread_();
 
-    // Show directions dialog
-    const extraDirections = showDirectionsDialog_(responseType);
+    // Read thread content BEFORE showing dialog so we can include a summary
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    // Get last message summary for the directions dialog
+    const msgs = emailData.thread.getMessages();
+    const lastMsg = msgs[msgs.length - 1];
+    const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+    const lastDate = lastMsg.getDate().toLocaleDateString();
+    const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+    const lastMsgSummary = `Last message from: ${lastFrom} (${lastDate})\n\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+
+    // Show directions dialog with email context
+    const extraDirections = showDirectionsDialog_(responseType, lastMsgSummary);
     if (extraDirections === null) {
       return; // User cancelled
     }
-
-    ss.toast('Reading email thread...', '📧 Email Response', 2);
-
-    // Get full thread content and context
-    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
 
     ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
 
@@ -13901,9 +13912,18 @@ function generateCannedResponse_(templateKey, templateName) {
     ss.toast('Checking for selected email...', '📨 Canned Response', 2);
     let emailData = null;
     let threadId = null;
+    let lastMessageSummary = '';
     try {
       emailData = getSelectedEmailThread_();
       threadId = emailData.threadId;
+
+      // Get last message summary for context
+      const msgs = emailData.thread.getMessages();
+      const lastMsg = msgs[msgs.length - 1];
+      const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+      const lastDate = lastMsg.getDate().toLocaleDateString();
+      const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+      lastMessageSummary = `From: ${lastFrom} (${lastDate})\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
     } catch (e) {
       // No email selected - will create fresh draft
       Logger.log('No email selected, will create fresh draft: ' + e.message);
@@ -13921,6 +13941,10 @@ function generateCannedResponse_(templateKey, templateName) {
     const replyInfo = threadId
       ? `<div class="info reply-info">📧 Replying to: <strong>${escapeHtml_(emailData.subject || 'Selected email')}</strong></div>`
       : '<div class="info new-info">📝 No email selected - will create a NEW draft</div>';
+
+    const lastMsgHtml = lastMessageSummary
+      ? `<div style="background:#f0f4ff;padding:10px;border-radius:6px;margin-bottom:12px;border-left:3px solid #1a73e8;font-size:12px;white-space:pre-wrap;max-height:150px;overflow-y:auto;color:#333;">${escapeHtml_(lastMessageSummary)}</div>`
+      : '';
 
     const html = `<!DOCTYPE html>
 <html>
@@ -13974,6 +13998,7 @@ function generateCannedResponse_(templateKey, templateName) {
   <div class="header">📨 ${escapeHtml_(templateName)}</div>
   <div class="info">Vendor: <strong>${escapeHtml_(vendor)}</strong></div>
   ${replyInfo}
+  ${lastMsgHtml}
 
   <label for="contactSelect">Select Contact (first name will be used):</label>
   <select id="contactSelect" onchange="updatePreview()">
