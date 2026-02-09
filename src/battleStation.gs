@@ -11206,7 +11206,11 @@ Content preview: ${v.latestContent}`
   // Include goals for context-aware prioritization
   const goalsContext = getGoalsContext_();
 
+  const todayStr = Utilities.formatDate(new Date(), 'America/Los_Angeles', 'EEEE, MMMM d, yyyy h:mm a');
+
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
+
+Current date/time: ${todayStr} (Pacific Time)
 
 Here's a snapshot of all ${vendorSummaries.length} vendors with emails in 00.received (active inbox):
 ${vendorText}
