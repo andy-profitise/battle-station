@@ -6481,6 +6481,9 @@ Latest labels: ${v.latestLabels}
 Content preview: ${v.latestContent}`
   ).join('\n');
 
+  // Build a name lookup for matching Claude's output back to exact vendor names
+  const vendorNameList = vendorSummaries.map(v => v.vendor);
+
   const prompt = `You are an AI assistant for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
 
 Here's a snapshot of Andy's ${vendorSummaries.length} most active vendor communications:
@@ -6500,7 +6503,12 @@ Provide a SMART BRIEFING with specific, actionable recommendations:
 ## ⚠️ RISKS
 [2-3 vendors or situations that need attention before they become problems.]
 
-Be specific: name the vendor, state the action, explain why. Keep it concise and actionable.`;
+Be specific: name the vendor, state the action, explain why. Keep it concise and actionable.
+
+IMPORTANT: At the very end of your response, include a section exactly like this:
+
+## PRIORITY_ORDER
+[List EVERY vendor name from above, one per line, in the exact order Andy should work through them. Most urgent first. Use the EXACT vendor names as provided. No numbers, no dashes, just the vendor name on each line.]`;
 
   try {
     const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
@@ -6510,7 +6518,21 @@ Be specific: name the vendor, state the action, explain why. Keep it concise and
       return;
     }
 
-    let content = response.content
+    const rawContent = response.content;
+
+    // Parse the PRIORITY_ORDER section from the response
+    const priorityNames = parsePriorityOrder_(rawContent, vendorNameList);
+
+    // Reorder the List sheet to match the priority order
+    if (priorityNames.length > 0) {
+      reorderListByPriority_(listSh, priorityNames);
+      ss.toast(`List reordered: ${priorityNames.length} priority vendors at top`, '🧠 Reordered', 3);
+    }
+
+    // Strip PRIORITY_ORDER section from display content
+    let displayContent = rawContent.replace(/## PRIORITY_ORDER[\s\S]*$/, '').trim();
+
+    let content = displayContent
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
@@ -6525,19 +6547,132 @@ Be specific: name the vendor, state the action, explain why. Keep it concise and
         h3 { color: #4a86e8; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #4a86e8; padding-bottom: 4px; }
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .reorder-note { background: #e8f0fe; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
       </style>
       <h2>🧠 Smart Briefing</h2>
       <p class="meta">Analyzed ${vendorSummaries.length} vendors | ${new Date().toLocaleString()}</p>
+      ${priorityNames.length > 0 ? '<div class="reorder-note">✅ List has been reordered — hit <strong>Next Vendor</strong> to work through them in priority order.</div>' : ''}
       <div>${content}</div>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(650);
     ui.showModalDialog(html, '🧠 Smart Briefing — What to do next');
-    ss.toast('Smart Briefing ready!', '✅ Done', 3);
+
+    // Load vendor #1 so user can start traversing
+    if (priorityNames.length > 0) {
+      loadVendorData(1, { loadMode: 'fast' });
+    }
 
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
   }
+}
+
+/**
+ * Parse PRIORITY_ORDER section from Claude's response
+ * Matches vendor names against the known list (fuzzy)
+ */
+function parsePriorityOrder_(responseText, knownVendors) {
+  const prioritySection = responseText.match(/## PRIORITY_ORDER\s*\n([\s\S]*?)$/);
+  if (!prioritySection) return [];
+
+  const lines = prioritySection[1].split('\n')
+    .map(l => l.replace(/^[\d.\-*•]+\s*/, '').trim()) // Strip numbering/bullets
+    .filter(l => l.length > 0);
+
+  // Build lowercase lookup for known vendors
+  const vendorLookup = {};
+  for (const v of knownVendors) {
+    vendorLookup[v.toLowerCase()] = v;
+  }
+
+  const matched = [];
+  const seen = new Set();
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    // Exact match first
+    if (vendorLookup[lower] && !seen.has(lower)) {
+      matched.push(vendorLookup[lower]);
+      seen.add(lower);
+      continue;
+    }
+    // Fuzzy: check if any known vendor is contained in the line
+    for (const known of knownVendors) {
+      const knownLower = known.toLowerCase();
+      if (!seen.has(knownLower) && (lower.includes(knownLower) || knownLower.includes(lower))) {
+        matched.push(known);
+        seen.add(knownLower);
+        break;
+      }
+    }
+  }
+
+  Logger.log(`Smart Briefing: Parsed ${matched.length} priority vendors from ${lines.length} lines`);
+  return matched;
+}
+
+/**
+ * Reorder the List sheet so priority vendors appear at the top
+ * Non-priority vendors keep their existing relative order below
+ */
+function reorderListByPriority_(listSh, priorityNames) {
+  const lastRow = listSh.getLastRow();
+  if (lastRow <= 1) return;
+
+  const numCols = listSh.getLastColumn();
+  const dataRange = listSh.getRange(2, 1, lastRow - 1, numCols);
+  const allData = dataRange.getValues();
+  const allBgs = dataRange.getBackgrounds();
+
+  // Build priority lookup: vendor name -> priority index
+  const priorityMap = {};
+  for (let i = 0; i < priorityNames.length; i++) {
+    priorityMap[priorityNames[i].toLowerCase()] = i;
+  }
+
+  // Split into priority rows and non-priority rows
+  const priorityRows = new Array(priorityNames.length).fill(null);
+  const priorityBgs = new Array(priorityNames.length).fill(null);
+  const otherRows = [];
+  const otherBgs = [];
+
+  for (let i = 0; i < allData.length; i++) {
+    const vendorName = String(allData[i][0] || '').toLowerCase();
+    const pIdx = priorityMap[vendorName];
+    if (pIdx !== undefined && priorityRows[pIdx] === null) {
+      priorityRows[pIdx] = allData[i];
+      priorityBgs[pIdx] = allBgs[i];
+    } else {
+      otherRows.push(allData[i]);
+      otherBgs.push(allBgs[i]);
+    }
+  }
+
+  // Remove any nulls (vendors in priority list but not found in sheet)
+  const finalRows = [];
+  const finalBgs = [];
+  for (let i = 0; i < priorityRows.length; i++) {
+    if (priorityRows[i]) {
+      finalRows.push(priorityRows[i]);
+      finalBgs.push(priorityBgs[i]);
+    }
+  }
+
+  // Combine: priority vendors first, then the rest
+  const combined = finalRows.concat(otherRows);
+  const combinedBgs = finalBgs.concat(otherBgs);
+
+  // Write back
+  dataRange.setValues(combined);
+  dataRange.setBackgrounds(combinedBgs);
+
+  // Highlight priority vendors with a subtle indicator
+  if (finalRows.length > 0) {
+    listSh.getRange(2, 1, finalRows.length, numCols).setBackground('#e8f0fe');
+  }
+
+  Logger.log(`List reordered: ${finalRows.length} priority vendors moved to top, ${otherRows.length} others below`);
 }
 
 /************************************************************
