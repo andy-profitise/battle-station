@@ -13348,8 +13348,23 @@ function genericUrlResponse() {
         thread = GmailApp.getThreadById(threadId);
         actualThreadId = thread.getId();
       } catch (e) {
-        ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.\n\nDetails: ' + apiError.message, ui.ButtonSet.OK);
-        return;
+        // Legacy Gmail thread IDs (Ktbx..., FMfcg...) from search URLs need conversion
+        // Use Gmail Advanced Service to search by rfc822msgid or list recent threads
+        try {
+          Logger.log(`[GenericURL] Trying legacy ID conversion for: ${threadId}`);
+          const response = Gmail.Users.Threads.list('me', { q: `rfc822msgid:${threadId}`, maxResults: 1 });
+          if (response.threads && response.threads.length > 0) {
+            actualThreadId = response.threads[0].id;
+            thread = GmailApp.getThreadById(actualThreadId);
+          }
+        } catch (e2) {
+          Logger.log(`[GenericURL] rfc822msgid search failed: ${e2.message}`);
+        }
+
+        if (!thread) {
+          ui.alert('Error', 'Could not find email thread.\n\nTip: Open the email in Gmail first, then copy the URL from the inbox or label view (not search results).\n\nDetails: ' + apiError.message, ui.ButtonSet.OK);
+          return;
+        }
       }
     }
 
