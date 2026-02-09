@@ -249,6 +249,7 @@ function onOpen() {
     .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
     .addSeparator()
     .addItem('🎯 Manage Goals', 'battleStationManageGoals')
+    .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
     .addItem('🔌 Set Claude Proxy (Max Sub)', 'battleStationSetClaudeProxy')
     .addToUi();
@@ -11061,6 +11062,42 @@ function battleStationSetClaudeProxy() {
   SpreadsheetApp.getActive().toast('Claude proxy configured! AI features will use your Max subscription.', '✅ Proxy Set', 3);
 }
 
+/**
+ * Set persistent AI instructions — facts and context injected into all Claude prompts
+ */
+function battleStationSetAiInstructions() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const current = props.getProperty('AI_INSTRUCTIONS') || '';
+
+  const response = ui.prompt(
+    '📋 AI Instructions',
+    `These facts/instructions are included in every Claude prompt (summaries, briefings, insights, etc.).\n\nCurrent:\n${current || '(none set)'}\n\nEnter your instructions (one per line):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const instructions = response.getResponseText().trim();
+  if (instructions) {
+    props.setProperty('AI_INSTRUCTIONS', instructions);
+    SpreadsheetApp.getActive().toast('AI instructions saved!', '✅ Saved', 3);
+  } else {
+    props.deleteProperty('AI_INSTRUCTIONS');
+    SpreadsheetApp.getActive().toast('AI instructions cleared.', '✅ Cleared', 3);
+  }
+}
+
+/**
+ * Get AI instructions for injection into Claude prompts
+ * Returns formatted string or empty string if none set
+ */
+function getAiInstructions_() {
+  const instructions = PropertiesService.getScriptProperties().getProperty('AI_INSTRUCTIONS');
+  if (!instructions) return '';
+  return `\n\nIMPORTANT CONTEXT FROM ANDY:\n${instructions}\n`;
+}
+
 /************************************************************
  * SMART BRIEFING - AI-powered vendor priority advisor
  * Scans across all vendors and recommends actions
@@ -11205,10 +11242,12 @@ Content preview: ${v.latestContent}`
 
   // Include goals for context-aware prioritization
   const goalsContext = getGoalsContext_();
+  const aiInstructions = getAiInstructions_();
 
   const todayStr = Utilities.formatDate(new Date(), 'America/Los_Angeles', 'EEEE, MMMM d, yyyy h:mm a');
 
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
+${aiInstructions}
 
 Current date/time: ${todayStr} (Pacific Time)
 
@@ -11458,8 +11497,10 @@ function battleStationSummarizeToNotes() {
     }
   }
 
-  const prompt = `You are writing vendor notes for Andy, a relationship manager at Profitise (lead generation).
+  const aiInstructions = getAiInstructions_();
 
+  const prompt = `You are writing vendor notes for Andy, a relationship manager at Profitise (lead generation).
+${aiInstructions}
 Vendor: ${vendor}
 Status: ${status}
 
@@ -16559,11 +16600,12 @@ function battleStationGenerateInsights() {
     `- ${t.subject} [${t.status}] (${t.project})`
   ).join('\n');
 
-  // Get goals for alignment
+  // Get goals and AI instructions for alignment
   const goalsContext = getGoalsContext_();
+  const aiInstructions = getAiInstructions_();
 
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy Worford at Profitise, a lead generation company in Home Services and Solar verticals.
-
+${aiInstructions}
 Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, opportunities, and plays that Andy might not see just from reading emails.
 
 ## Vendor Profile
@@ -16692,8 +16734,10 @@ function battleStationGoalInsights() {
 
   ss.toast(`Generating goal-aligned insights for ${vendorSnapshots.length} vendors...`, '🎯 Processing', 15);
 
-  const prompt = `You are A(I)DEN, a strategic AI advisor for Andy Worford at Profitise (lead generation, Home Services and Solar).
+  const aiInstructions = getAiInstructions_();
 
+  const prompt = `You are A(I)DEN, a strategic AI advisor for Andy Worford at Profitise (lead generation, Home Services and Solar).
+${aiInstructions}
 Here are Andy's vendors (${vendorSnapshots.length}):
 ${vendorSnapshots.join('\n')}
 ${goalsContext}
