@@ -10928,55 +10928,101 @@ function battleStationSmartBriefing() {
     return;
   }
 
-  ss.toast('Scanning vendor emails for Smart Briefing...', '🧠 Thinking', 10);
+  ss.toast('Scanning label:00.received for Smart Briefing...', '🧠 Thinking', 10);
 
-  const allVendors = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  // Single Gmail search — find ALL threads in 00.received
+  const receivedThreads = GmailApp.search('label:00.received', 0, 200);
+  Logger.log(`[Smart Briefing] Found ${receivedThreads.length} threads in 00.received`);
+
+  // Group threads by vendor label (zzzVendors/*)
+  const vendorThreads = {};  // vendorLabel -> { threads: [], vendorLabel: string }
+  for (const thread of receivedThreads) {
+    const labels = thread.getLabels().map(l => l.getName());
+    const vendorLabelObj = labels.find(l => l.toLowerCase().startsWith('zzzvendors/'));
+    if (!vendorLabelObj) continue;
+    const vendorLabel = vendorLabelObj;
+    if (!vendorThreads[vendorLabel]) {
+      vendorThreads[vendorLabel] = { threads: [], labels: [] };
+    }
+    vendorThreads[vendorLabel].threads.push(thread);
+    vendorThreads[vendorLabel].labels.push(labels);
+  }
+
+  Logger.log(`[Smart Briefing] Grouped into ${Object.keys(vendorThreads).length} vendors`);
+
+  // Build List sheet lookup: vendor name -> { status, notes }
+  const allVendorRows = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const listLookup = {};  // lowercase vendor name -> { vendor, status, notes, gmailLink }
+  for (let i = 0; i < allVendorRows.length; i++) {
+    const name = allVendorRows[i][BS_CFG.L_VENDOR];
+    if (name) {
+      listLookup[name.toString().toLowerCase().trim()] = {
+        vendor: name,
+        status: allVendorRows[i][BS_CFG.L_STATUS] || '(unknown)',
+        notes: (allVendorRows[i][BS_CFG.L_NOTES] || '').substring(0, 200)
+      };
+    }
+  }
+
+  // Build vendor summaries from grouped threads
   const vendorSummaries = [];
-  const maxVendors = 25;
+  const vendorKeys = Object.keys(vendorThreads);
 
-  for (let i = 0; i < Math.min(allVendors.length, maxVendors); i++) {
-    const vendor = allVendors[i][BS_CFG.L_VENDOR];
-    const status = allVendors[i][BS_CFG.L_STATUS];
-    const notes = allVendors[i][BS_CFG.L_NOTES];
-    const listRow = i + 2;
+  for (let vi = 0; vi < vendorKeys.length; vi++) {
+    const vendorLabel = vendorKeys[vi];
+    const group = vendorThreads[vendorLabel];
 
-    if (!vendor) continue;
+    // Convert label "zzzVendors/Some Name" to a display name for matching
+    const labelName = vendorLabel.replace(/^zzzVendors\//i, '').trim();
 
-    try {
-      const emails = getEmailsForVendor_(vendor, listRow);
-      const unsnoozed = emails.filter(e => !e.isSnoozed);
-      const overdue = emails.filter(e => isEmailOverdue_(e));
-
-      if (unsnoozed.length === 0 && !overdue.length) continue;
-
-      // Get latest email content for context
-      let latestContent = '';
-      if (unsnoozed.length > 0 && unsnoozed[0].threadId) {
-        try {
-          const thread = GmailApp.getThreadById(unsnoozed[0].threadId);
-          if (thread) {
-            const msgs = thread.getMessages();
-            latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
-          }
-        } catch (e) { /* skip if thread fetch fails */ }
+    // Find matching vendor in List sheet (try exact match, then fuzzy)
+    let listInfo = listLookup[labelName.toLowerCase()];
+    if (!listInfo) {
+      // Try matching by checking if list vendor name appears in the label or vice versa
+      for (const key of Object.keys(listLookup)) {
+        if (key.includes(labelName.toLowerCase()) || labelName.toLowerCase().includes(key)) {
+          listInfo = listLookup[key];
+          break;
+        }
       }
-
-      vendorSummaries.push({
-        vendor: vendor,
-        status: status || '(unknown)',
-        notes: (notes || '').substring(0, 200),
-        emailCount: unsnoozed.length,
-        overdueCount: overdue.length,
-        latestSubject: unsnoozed[0] ? unsnoozed[0].subject : '',
-        latestLabels: unsnoozed[0] ? unsnoozed[0].labels : '',
-        latestContent: latestContent
-      });
-    } catch (e) {
-      Logger.log(`Smart Briefing: Error scanning ${vendor}: ${e.message}`);
     }
 
-    if (i % 5 === 0) {
-      ss.toast(`Scanned ${i + 1} of ${Math.min(allVendors.length, maxVendors)} vendors...`, '🧠 Scanning', 5);
+    const vendorName = listInfo ? listInfo.vendor : labelName;
+    const emailCount = group.threads.length;
+
+    // Check for overdue/priority labels
+    let overdueCount = 0;
+    for (const threadLabels of group.labels) {
+      const hasOverdue = threadLabels.some(l => l === BS_CFG.MANUAL_OVERDUE_LABEL);
+      const hasPriority = threadLabels.some(l => l === '01.priority/1');
+      if (hasOverdue || hasPriority) overdueCount++;
+    }
+
+    // Get latest thread content for context
+    let latestSubject = '';
+    let latestLabels = '';
+    let latestContent = '';
+    try {
+      const latestThread = group.threads[0];
+      latestSubject = latestThread.getFirstMessageSubject();
+      latestLabels = group.labels[0].join(', ');
+      const msgs = latestThread.getMessages();
+      latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
+    } catch (e) { /* skip if thread fetch fails */ }
+
+    vendorSummaries.push({
+      vendor: vendorName,
+      status: listInfo ? listInfo.status : '(unknown)',
+      notes: listInfo ? listInfo.notes : '',
+      emailCount: emailCount,
+      overdueCount: overdueCount,
+      latestSubject: latestSubject,
+      latestLabels: latestLabels,
+      latestContent: latestContent
+    });
+
+    if (vi % 5 === 0) {
+      ss.toast(`Processing ${vi + 1} of ${vendorKeys.length} vendors...`, '🧠 Scanning', 5);
     }
   }
 
@@ -11005,7 +11051,7 @@ Content preview: ${v.latestContent}`
 
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy, a vendor relationship manager at Profitise (a lead generation company in Home Services and Solar verticals).
 
-Here's a snapshot of Andy's ${vendorSummaries.length} most active vendor communications:
+Here's a snapshot of all ${vendorSummaries.length} vendors with emails in 00.received (active inbox):
 ${vendorText}
 ${goalsContext}
 
