@@ -309,6 +309,7 @@ function onOpen() {
     .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
     .addItem('📤 Send to Aden', 'sendToAden')
     .addItem('📥 Archive Email', 'archiveSelectedEmail')
+    .addItem('⚰️ Bury Email', 'burySelectedEmail')
     .addToUi();
 
   // Chat OCR menu - find vendors from chat screenshots/text
@@ -8443,6 +8444,51 @@ function archiveSelectedEmail() {
     ss.toast(`Archived: "${emailData.subject}"`, '📥 Archived', 3);
 
     // Trigger a quick refresh to update the email list
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Bury selected email — removes all labels except zzzVendors sublabels
+ * Effectively removes the email from all processing labels (00.received, priority, snooze, etc.)
+ * while keeping it findable under the vendor's label
+ */
+function burySelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast(`Burying: "${emailData.subject}"...`, '⚰️ Bury', 2);
+
+    const thread = emailData.thread;
+    const labels = thread.getLabels();
+    let removedCount = 0;
+
+    for (const label of labels) {
+      const name = label.getName();
+      // Keep zzzVendors sublabels, remove everything else
+      if (!name.toLowerCase().startsWith('zzzvendors/')) {
+        thread.removeLabel(label);
+        removedCount++;
+        Logger.log(`[Bury] Removed label: ${name}`);
+      } else {
+        Logger.log(`[Bury] Kept label: ${name}`);
+      }
+    }
+
+    ss.toast(`Buried "${emailData.subject}" — removed ${removedCount} label${removedCount !== 1 ? 's' : ''}`, '⚰️ Done', 3);
+
+    Utilities.sleep(500);
     battleStationQuickRefreshUntilChanged();
 
   } catch (e) {
