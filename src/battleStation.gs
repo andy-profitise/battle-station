@@ -13462,10 +13462,26 @@ function emailResponseCustom() {
       }
     }
 
-    // Single combined prompt for custom response
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread and read it BEFORE showing dialog
+    const emailData = getSelectedEmailThread_();
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    // Get last message summary for context in the dialog
+    const msgs = emailData.thread.getMessages();
+    const lastMsg = msgs[msgs.length - 1];
+    const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+    const lastDate = lastMsg.getDate().toLocaleDateString();
+    const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+    const lastMsgSummary = `Last message from: ${lastFrom} (${lastDate})\n\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+
+    // Single combined prompt for custom response — with email context
     const result = ui.prompt(
       '✍️ Custom Response',
-      'What do you want to say or accomplish with this response?\n\n(e.g., "follow up on pricing we discussed", "ask when they can hop on a call", "check if they got the contract")',
+      `${lastMsgSummary}\n\n---\nWhat do you want to say or accomplish with this response?\n\n(e.g., "follow up on pricing we discussed", "ask when they can hop on a call", "check if they got the contract")`,
       ui.ButtonSet.OK_CANCEL
     );
 
@@ -13477,16 +13493,6 @@ function emailResponseCustom() {
     if (!customDirections) {
       return;
     }
-
-    ss.toast('Getting selected email...', '📧 Email Response', 2);
-
-    // Get selected email thread
-    const emailData = getSelectedEmailThread_();
-
-    ss.toast('Reading email thread...', '📧 Email Response', 2);
-
-    // Get full thread content and context
-    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
 
     ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
 
