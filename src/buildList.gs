@@ -1,3 +1,9 @@
+/************************************************************
+ * BUILD LIST - Vendor list builder with Gmail and monday.com integration
+ *
+ * Last Updated: 2026-01-07 1:15PM PST
+ ************************************************************/
+
 /***** CONFIG *****/
 const SHEET_BUYERS_L1M       = 'Buyers L1M';
 const SHEET_BUYERS_L6M       = 'Buyers L6M';
@@ -15,10 +21,10 @@ const TTL_HEADER_CANDIDATES    = ['TTL , USD', 'TTL, USD', 'TTL USD'];
 
 // monday.com special columns (0-based indexes)
 const ALIAS_COL_INDEX = 15;           // Column P (1-based 16) -> 0-based 15
-const BUYERS_STATUS_INDEX = 18;       // Column S (1-based 19) -> 0-based 18
-const AFFILIATES_STATUS_INDEX = 18;   // Column S (1-based 19) -> 0-based 18
-const BUYERS_NOTES_INDEX = 3;         // Column D (1-based 4) -> 0-based 3
-const AFFILIATES_NOTES_INDEX = 3;     // Column D (1-based 4) -> 0-based 3
+
+// Header names to search for (will auto-detect column index)
+const STATUS_HEADER_CANDIDATES = ['Group', 'Status', 'Group Title'];
+const NOTES_HEADER_CANDIDATES = ['Notes', 'Note', 'Comments'];
 
 // Status priority used when TTL = 0
 const STATUS_PRIORITY = [
@@ -52,6 +58,10 @@ function buildListWithGmailAndNotes() {
   const ss = SpreadsheetApp.getActive();
 
   console.log('=== BUILD LIST WITH GMAIL & NOTES START ===');
+
+  // Refresh batch caches since buildList usually means user is about to review vendors
+  console.log('Refreshing batch caches for vendor review...');
+  refreshBatchCaches_();
 
   // Get all vendors using existing buildVendorList logic
   const shBuyL1 = mustGetSheet_(ss, SHEET_BUYERS_L1M);
@@ -129,8 +139,8 @@ function buildListWithGmailAndNotes() {
 
   // Sort monday.com zero-TTL by status rank, then type, then alpha
   z_mon.sort((a, b) => {
-    const sA = STATUS_RANK[String(a.status || '').toLowerCase()] ?? STATUS_RANK['other'];
-    const sB = STATUS_RANK[String(b.status || '').toLowerCase()] ?? STATUS_RANK['other'];
+    const sA = getStatusRank_(a.status);
+    const sB = getStatusRank_(b.status);
     if (sA !== sB) return sA - sB;
     const rankA = (a.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
     const rankB = (b.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
@@ -160,25 +170,77 @@ function buildListWithGmailAndNotes() {
     r.notes = lookupNotes_(r.name, r.type, notesMaps);
   }
 
-  // HOT ZONE: Detect vendors with emails (label:00.received OR in inbox)
-  console.log('Detecting hot vendors...');
-  const hotVendorSet = getHotVendorsFromGmail_(all);
-  console.log('Hot vendors found:', hotVendorSet.size);
+  // PRIORITY ZONES: Detect vendors with emails or chat activity
+  // 1. INBOX (highest) - vendors with emails currently in inbox
+  // 2. CHAT - vendors detected via OCR from Teams/Telegram/WhatsApp
+  // 3. HOT - vendors with 00.received or recent sent emails
+  // 4. MONTHLY RETURNS - vendors with open Monthly Returns tasks
+  // 5. NORMAL - everything else
+  console.log('Detecting priority vendors...');
+  const { inboxSet, hotSet } = getHotVendorsFromGmail_(all);
+  console.log('Inbox vendors found:', inboxSet.size);
+  console.log('Hot vendors found:', hotSet.size);
 
+  // Get OCR-detected vendors (from chat platforms)
+  let chatSet = new Set();
+  try {
+    const ocrVendors = getOcrDetectedVendors();
+    chatSet = new Set(ocrVendors.keys());
+    console.log('Chat (OCR) vendors found:', chatSet.size);
+  } catch (e) {
+    console.log('Error getting OCR vendors:', e.message);
+  }
+
+  // Get vendors with open Monthly Returns tasks
+  const monthlyReturnsSet = getVendorsWithOpenMonthlyReturns_();
+  console.log('Monthly Returns vendors found:', monthlyReturnsSet.size);
+
+  const inboxZone = [];
+  const chatZone = [];
   const hotZone = [];
+  const monthlyReturnsZone = [];
   const normalZone = [];
 
+  // Convert monthlyReturnsSet to array for partial matching
+  const monthlyReturnsNames = Array.from(monthlyReturnsSet);
+
+  // Helper to check if vendor matches a Monthly Returns vendor (partial match with min length)
+  const matchesMonthlyReturns = (vendorLower) => {
+    if (monthlyReturnsSet.has(vendorLower)) return true;
+    // Partial match: require at least 6 chars to prevent false positives
+    const MIN_MATCH_LEN = 6;
+    return monthlyReturnsNames.some(mrName => {
+      if (mrName.length < MIN_MATCH_LEN && vendorLower.length < MIN_MATCH_LEN) return false;
+      return vendorLower.includes(mrName) || mrName.includes(vendorLower);
+    });
+  };
+
   for (const r of all) {
-    if (hotVendorSet.has(r.name.toLowerCase())) {
+    const nameLower = r.name.toLowerCase();
+    if (inboxSet.has(nameLower)) {
+      r.tranche = '📥 Inbox';
+      inboxZone.push(r);
+    } else if (chatSet.has(nameLower)) {
+      r.tranche = '💬 Chat';
+      chatZone.push(r);
+    } else if (matchesMonthlyReturns(nameLower)) {
+      // Partial match for Monthly Returns - vendor list name or task vendor name may vary slightly
+      // Monthly Returns takes priority over Hot
+      r.tranche = '📊 Monthly Returns';
+      monthlyReturnsZone.push(r);
+      console.log(`Monthly Returns match: "${r.name}" matched`);
+    } else if (hotSet.has(nameLower)) {
+      r.tranche = '🔥 Hot';
       hotZone.push(r);
     } else {
+      r.tranche = 'Normal';
       normalZone.push(r);
     }
   }
 
-  // HOT ZONE keeps same sort order as NORMAL ZONE (already sorted in `all`)
-  // Final list: Hot zone at top, then normal zone
-  const finalList = [...hotZone, ...normalZone];
+  // Final list: Inbox at top, then chat, monthly returns, hot, then normal zone
+  // Each zone keeps same sort order as `all` (already sorted)
+  const finalList = [...inboxZone, ...chatZone, ...monthlyReturnsZone, ...hotZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
 
@@ -193,9 +255,9 @@ function buildListWithGmailAndNotes() {
   }
 
   // Write headers
-  shOut.getRange(1, 1, 1, 8).setValues([[
+  shOut.getRange(1, 1, 1, 9).setValues([[
     'Vendor', 'TTL , USD', 'Source', 'Status', 'Notes',
-    'Gmail Link', 'no snoozing', 'processed?'
+    'Gmail Link', 'no snoozing', 'processed?', 'Tranche'
   ]]).setFontWeight('bold').setBackground('#e8f0fe');
 
   if (finalList.length > 0) {
@@ -223,19 +285,19 @@ function buildListWithGmailAndNotes() {
       if (gmailSublabelMap.has(vendorKey)) {
         vendorSlug = gmailSublabelMap.get(vendorKey);
       } else {
-        // Fallback: generate slug from vendor name (preserve hyphens)
+        // Fallback: generate slug from vendor name (preserve hyphens and periods)
         vendorSlug = v.name.toLowerCase()
-          .replace(/[^a-z0-9-]+/g, '-')
+          .replace(/[^a-z0-9.-]+/g, '-')
           .replace(/^-+|-+$/g, '');
       }
 
       const gmailAll = `https://mail.google.com/mail/u/0/#search/label%3A00.received+AND+label%3Azzzvendors-${vendorSlug}+-label%3A03.noInbox`;
       const gmailNoSnooze = `https://mail.google.com/mail/u/0/#search/label%3A00.received+AND+label%3Azzzvendors-${vendorSlug}+-is%3Asnoozed+-label%3A03.noInbox`;
 
-      return [gmailAll, gmailNoSnooze, false];
+      return [gmailAll, gmailNoSnooze, false, v.tranche || 'Normal'];
     });
 
-    shOut.getRange(2, 6, gmailData.length, 3).setValues(gmailData);
+    shOut.getRange(2, 6, gmailData.length, 4).setValues(gmailData);
   }
 
   // Auto-resize columns
@@ -243,14 +305,17 @@ function buildListWithGmailAndNotes() {
   shOut.setColumnWidth(6, 100);
   shOut.setColumnWidth(7, 100);
   shOut.setColumnWidth(8, 100);
+  shOut.autoResizeColumn(9);  // Tranche column
 
   console.log('=== BUILD LIST WITH GMAIL & NOTES END ===');
 
   const counts = {
-    '🔥 HOT (recent emails)': hotZone.length,
-    'Total vendors': finalList.length,
-    'With status': finalList.filter(v => v.status).length,
-    'With notes': finalList.filter(v => v.notes).length
+    '📥 Inbox': inboxZone.length,
+    '💬 Chat': chatZone.length,
+    '📊 Monthly Returns': monthlyReturnsZone.length,
+    '🔥 Hot': hotZone.length,
+    'Normal': normalZone.length,
+    'Total': finalList.length
   };
 
   console.log('Final counts:', counts);
@@ -260,6 +325,57 @@ function buildListWithGmailAndNotes() {
     '✅ List Built',
     8
   );
+}
+
+
+/** ========== MONTHLY RETURNS DETECTION ========== **/
+
+/**
+ * Get vendors with open Monthly Returns tasks
+ * Looks at monday.com tasks where Project = "Monthly Returns" and status is not "Done"
+ * Returns a Set of vendor names (lowercased) for matching
+ */
+function getVendorsWithOpenMonthlyReturns_() {
+  const vendorSet = new Set();
+
+  try {
+    // Get all tasks from cache (already filtered by group)
+    const allTasks = getAllMondayTasks_();
+
+    if (!allTasks || allTasks.length === 0) {
+      console.log('No monday.com tasks found for Monthly Returns check');
+      return vendorSet;
+    }
+
+    // Filter to Monthly Returns tasks that are not Done
+    const openMonthlyReturns = allTasks.filter(task => {
+      const project = (task.project || '').toLowerCase();
+      const status = (task.status || '').toLowerCase();
+      return project === 'monthly returns' && status !== 'done';
+    });
+
+    console.log(`Found ${openMonthlyReturns.length} open Monthly Returns tasks`);
+
+    // Extract vendor names from task names
+    // Format: "Monthly Returns (Month Year) - VendorName"
+    for (const task of openMonthlyReturns) {
+      const taskName = task.name || '';
+      const dashIndex = taskName.lastIndexOf(' - ');
+      if (dashIndex > 0) {
+        const vendorName = taskName.substring(dashIndex + 3).trim();
+        if (vendorName) {
+          vendorSet.add(vendorName.toLowerCase());
+          console.log(`  Monthly Returns vendor: ${vendorName}`);
+        }
+      }
+    }
+
+    console.log(`Extracted ${vendorSet.size} unique vendors with open Monthly Returns`);
+  } catch (e) {
+    console.log('Error getting Monthly Returns vendors:', e.message);
+  }
+
+  return vendorSet;
 }
 
 
@@ -278,7 +394,8 @@ function buildListWithGmailAndNotes() {
  * 2. Exact vendor name match in subject/sender/recipient
  */
 function getHotVendorsFromGmail_(allVendors) {
-  const hotSet = new Set();
+  const inboxSet = new Set();  // Highest priority - vendors with emails in inbox
+  const hotSet = new Set();    // Other hot vendors (00.received, recent sent)
 
   try {
     // Build vendor name lookup for fast matching
@@ -295,86 +412,91 @@ function getHotVendorsFromGmail_(allVendors) {
     let labelMatches = 0;
     let exactMatches = 0;
 
-    // SEARCH 1: Emails with label:00.received (no time restriction)
+    // SEARCH 1: Inbox emails (highest priority)
+    console.log('Searching inbox for vendor emails...');
+    const inboxThreads = GmailApp.search('label:inbox', 0, 200);
+    console.log(`Found ${inboxThreads.length} inbox threads`);
+
+    // SEARCH 2: Emails with label:00.received (hot but not inbox priority)
     console.log('Searching for emails with label:00.received...');
     const recentThreads = GmailApp.search('label:00.received', 0, 200);
     console.log(`Found ${recentThreads.length} threads with label:00.received`);
 
-    // SEARCH 2: All inbox emails (regardless of age)
-    console.log('Searching inbox for any vendor emails...');
-    const inboxThreads = GmailApp.search('in:inbox', 0, 200);
-    console.log(`Found ${inboxThreads.length} inbox threads`);
+    // SEARCH 3: Sent emails in last 188 hours (approx 7.8 days)
+    console.log('Searching for recently sent emails...');
+    const sentThreads = GmailApp.search('label:sent newer_than:188h', 0, 200);
+    console.log(`Found ${sentThreads.length} sent threads in last 188h`);
 
-    // Combine both searches (dedupe by thread ID)
+    // Track inbox thread IDs separately for priority detection
+    const inboxThreadIds = new Set(inboxThreads.map(t => t.getId()));
+
+    // Process inbox threads first (these get highest priority)
     const processedThreadIds = new Set();
-    const allThreads = [...recentThreads, ...inboxThreads];
+
+    // Helper function to match vendor from thread
+    const matchVendorFromThread = (thread) => {
+      const labels = thread.getLabels();
+      for (const label of labels) {
+        const labelName = label.getName();
+        if (labelName.startsWith('zzzVendors/')) {
+          const vendorNameFromLabel = labelName.substring('zzzVendors/'.length).toLowerCase();
+          if (vendorMap.has(vendorNameFromLabel)) {
+            return { vendor: vendorNameFromLabel, matchType: 'label' };
+          }
+          for (const vendor of vendorNames) {
+            if (vendorNameFromLabel.includes(vendor.nameLower) ||
+                vendor.nameLower.includes(vendorNameFromLabel)) {
+              return { vendor: vendor.nameLower, matchType: 'label-partial' };
+            }
+          }
+        }
+      }
+
+      // Try exact name match in subject/sender/recipient
+      const subject = thread.getFirstMessageSubject().toLowerCase();
+      const messages = thread.getMessages();
+      let emailText = subject;
+      if (messages.length > 0) {
+        const firstMsg = messages[0];
+        emailText += ' ' + firstMsg.getFrom().toLowerCase();
+        emailText += ' ' + firstMsg.getTo().toLowerCase();
+      }
+
+      for (const vendor of vendorNames) {
+        if (emailText.includes(vendor.nameLower)) {
+          return { vendor: vendor.nameLower, matchType: 'exact' };
+        }
+      }
+
+      return null;
+    };
+
+    // Combine all threads for processing
+    const allThreads = [...inboxThreads, ...recentThreads, ...sentThreads];
 
     for (const thread of allThreads) {
       try {
         const threadId = thread.getId();
-
-        // Skip if we've already processed this thread
         if (processedThreadIds.has(threadId)) continue;
         processedThreadIds.add(threadId);
 
-        let matched = false;
-
-        // METHOD 1 (BEST): Check for zzzVendors/<vendor_name> label
-        const labels = thread.getLabels();
-        for (const label of labels) {
-          const labelName = label.getName();
-
-          // Check if this is a vendor label (zzzVendors/<vendor_name>)
-          if (labelName.startsWith('zzzVendors/')) {
-            const vendorNameFromLabel = labelName.substring('zzzVendors/'.length).toLowerCase();
-
-            // Try exact match first
-            if (vendorMap.has(vendorNameFromLabel)) {
-              hotSet.add(vendorNameFromLabel);
-              labelMatches++;
-              console.log(`HOT: ${vendorMap.get(vendorNameFromLabel)} (label: ${labelName})`);
-              matched = true;
-              break;
+        const match = matchVendorFromThread(thread);
+        if (match) {
+          // If this thread is in inbox, add to inbox set (highest priority)
+          if (inboxThreadIds.has(threadId)) {
+            inboxSet.add(match.vendor);
+            console.log(`INBOX: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
+          } else {
+            // Only add to hotSet if not already in inboxSet
+            if (!inboxSet.has(match.vendor)) {
+              hotSet.add(match.vendor);
+              console.log(`HOT: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
             }
-
-            // Try partial match (label contains vendor name or vice versa)
-            for (const vendor of vendorNames) {
-              if (vendorNameFromLabel.includes(vendor.nameLower) ||
-                  vendor.nameLower.includes(vendorNameFromLabel)) {
-                hotSet.add(vendor.nameLower);
-                labelMatches++;
-                console.log(`HOT: ${vendor.name} (label partial match: ${labelName})`);
-                matched = true;
-                break;
-              }
-            }
-
-            if (matched) break;
           }
-        }
-
-        // If matched by label, skip other methods
-        if (matched) continue;
-
-        // METHOD 2: Exact name match in subject/sender/recipient
-        const subject = thread.getFirstMessageSubject().toLowerCase();
-        const messages = thread.getMessages();
-
-        let emailText = subject;
-        if (messages.length > 0) {
-          const firstMsg = messages[0];
-          emailText += ' ' + firstMsg.getFrom().toLowerCase();
-          emailText += ' ' + firstMsg.getTo().toLowerCase();
-        }
-
-        for (const vendor of vendorNames) {
-          // Try exact match only
-          if (emailText.includes(vendor.nameLower)) {
-            hotSet.add(vendor.nameLower);
+          if (match.matchType === 'label' || match.matchType === 'label-partial') {
+            labelMatches++;
+          } else {
             exactMatches++;
-            console.log(`HOT: ${vendor.name} (exact match in: "${subject.substring(0, 50)}...")`);
-            matched = true;
-            break;
           }
         }
       } catch (e) {
@@ -382,15 +504,15 @@ function getHotVendorsFromGmail_(allVendors) {
       }
     }
 
-    console.log(`Hot vendor detection summary: ${labelMatches} label matches, ${exactMatches} exact matches`);
+    console.log(`Vendor detection summary: ${labelMatches} label matches, ${exactMatches} exact matches`);
+    console.log(`Inbox vendors: ${inboxSet.size}, Hot vendors: ${hotSet.size}`);
     console.log(`Total unique threads processed: ${processedThreadIds.size}`);
 
   } catch (e) {
     console.log(`Error searching Gmail: ${e.message}`);
-    // Non-fatal - continue with empty hot set
   }
 
-  return hotSet;
+  return { inboxSet, hotSet };
 }
 
 
@@ -406,10 +528,14 @@ function buildStatusMaps_(shMonB, shMonA) {
 
   if (shMonB) {
     const buyersData = shMonB.getDataRange().getValues();
+    const headers = buyersData[0].map(h => String(h || '').trim().toLowerCase());
+    const statusIdx = findHeaderIndex_(headers, STATUS_HEADER_CANDIDATES);
+    console.log(`[Buyers] Status column index: ${statusIdx} (header: ${statusIdx >= 0 ? buyersData[0][statusIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < buyersData.length; i++) { // Skip header
       const row = buyersData[i];
       const vendor = normalizeName_(row[0]);
-      const status = BUYERS_STATUS_INDEX < row.length ? String(row[BUYERS_STATUS_INDEX] || '').trim() : '';
+      const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
       if (vendor) {
         buyersMap.set(vendor.toLowerCase(), status);
       }
@@ -418,10 +544,14 @@ function buildStatusMaps_(shMonB, shMonA) {
 
   if (shMonA) {
     const affiliatesData = shMonA.getDataRange().getValues();
+    const headers = affiliatesData[0].map(h => String(h || '').trim().toLowerCase());
+    const statusIdx = findHeaderIndex_(headers, STATUS_HEADER_CANDIDATES);
+    console.log(`[Affiliates] Status column index: ${statusIdx} (header: ${statusIdx >= 0 ? affiliatesData[0][statusIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < affiliatesData.length; i++) { // Skip header
       const row = affiliatesData[i];
       const vendor = normalizeName_(row[0]);
-      const status = AFFILIATES_STATUS_INDEX < row.length ? String(row[AFFILIATES_STATUS_INDEX] || '').trim() : '';
+      const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
       if (vendor) {
         affiliatesMap.set(vendor.toLowerCase(), status);
       }
@@ -441,10 +571,14 @@ function buildNotesMaps_(shMonB, shMonA) {
 
   if (shMonB) {
     const buyersData = shMonB.getDataRange().getValues();
+    const headers = buyersData[0].map(h => String(h || '').trim().toLowerCase());
+    const notesIdx = findHeaderIndex_(headers, NOTES_HEADER_CANDIDATES);
+    console.log(`[Buyers] Notes column index: ${notesIdx} (header: ${notesIdx >= 0 ? buyersData[0][notesIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < buyersData.length; i++) { // Skip header
       const row = buyersData[i];
       const vendor = normalizeName_(row[0]);
-      const notes = BUYERS_NOTES_INDEX < row.length ? String(row[BUYERS_NOTES_INDEX] || '').trim() : '';
+      const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
       if (vendor) {
         buyersMap.set(vendor.toLowerCase(), notes);
       }
@@ -453,10 +587,14 @@ function buildNotesMaps_(shMonB, shMonA) {
 
   if (shMonA) {
     const affiliatesData = shMonA.getDataRange().getValues();
+    const headers = affiliatesData[0].map(h => String(h || '').trim().toLowerCase());
+    const notesIdx = findHeaderIndex_(headers, NOTES_HEADER_CANDIDATES);
+    console.log(`[Affiliates] Notes column index: ${notesIdx} (header: ${notesIdx >= 0 ? affiliatesData[0][notesIdx] : 'NOT FOUND'})`);
+
     for (let i = 1; i < affiliatesData.length; i++) { // Skip header
       const row = affiliatesData[i];
       const vendor = normalizeName_(row[0]);
-      const notes = AFFILIATES_NOTES_INDEX < row.length ? String(row[AFFILIATES_NOTES_INDEX] || '').trim() : '';
+      const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
       if (vendor) {
         affiliatesMap.set(vendor.toLowerCase(), notes);
       }
@@ -468,23 +606,24 @@ function buildNotesMaps_(shMonB, shMonA) {
 
 /**
  * Lookup status for a vendor from the status maps
+ * Returns the raw Group/Status value (not normalized)
  */
 function lookupStatus_(name, type, statusMaps) {
   const key = name.toLowerCase();
   const isBuyer = (type || '').toLowerCase().startsWith('buyer');
 
   if (isBuyer && statusMaps.buyers.has(key)) {
-    return normalizeStatus_(statusMaps.buyers.get(key));
+    return statusMaps.buyers.get(key);
   }
   if (!isBuyer && statusMaps.affiliates.has(key)) {
-    return normalizeStatus_(statusMaps.affiliates.get(key));
+    return statusMaps.affiliates.get(key);
   }
   // Try the other map as fallback
   if (statusMaps.buyers.has(key)) {
-    return normalizeStatus_(statusMaps.buyers.get(key));
+    return statusMaps.buyers.get(key);
   }
   if (statusMaps.affiliates.has(key)) {
-    return normalizeStatus_(statusMaps.affiliates.get(key));
+    return statusMaps.affiliates.get(key);
   }
   return '';
 }
@@ -592,11 +731,15 @@ function readMetricSheet_(sh, type, sourceLabel, blacklist) {
 function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   console.log(`\n[${sourceLabel}] START READ`);
 
+  // DEBUG: Set a vendor name to trace through the entire process (case-insensitive)
+  const DEBUG_VENDOR = 'purity';  // Change this to trace a specific vendor
+
   // Get raw array data instead of objects for monday.com sheets
   const allValues = sh.getDataRange().getValues();
   if (allValues.length < 2) return []; // Need at least header + 1 row
 
   const headers = allValues[0].map(h => String(h || '').trim());
+  const headersLower = headers.map(h => h.toLowerCase());
   console.log(`[${sourceLabel}] Total rows:`, allValues.length - 1);
 
   // For monday.com exports: name is always in column A (index 0)
@@ -607,11 +750,11 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   );
   const typeIdx = headers.findIndex(h => eq_(h, 'Type'));
 
-  // Status is in column S (index 18) for both buyers and affiliates
-  const statusIdx = BUYERS_STATUS_INDEX; // Use same index for both (18)
-
-  // Notes is in column D (index 3) for both
-  const notesIdx = BUYERS_NOTES_INDEX; // Use same index for both (3)
+  // Auto-detect Status/Group and Notes columns by header name
+  const statusIdx = findHeaderIndex_(headersLower, STATUS_HEADER_CANDIDATES);
+  const notesIdx = findHeaderIndex_(headersLower, NOTES_HEADER_CANDIDATES);
+  console.log(`[${sourceLabel}] Status column: ${statusIdx >= 0 ? headers[statusIdx] : 'NOT FOUND'} (idx ${statusIdx})`);
+  console.log(`[${sourceLabel}] Notes column: ${notesIdx >= 0 ? headers[notesIdx] : 'NOT FOUND'} (idx ${notesIdx})`)
 
   const out = [];
   let skippedBlacklist = 0;
@@ -626,9 +769,15 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
     // Name is always in column A
     const rawName = row[nameIdx] || '';
     const name = normalizeName_(rawName);
+    const isDebugVendor = DEBUG_VENDOR && name.toLowerCase().includes(DEBUG_VENDOR.toLowerCase());
+
+    if (isDebugVendor) {
+      console.log(`\n🔍 DEBUG [${sourceLabel}] Found "${name}" (raw: "${rawName}") at row ${i + 1}`);
+    }
 
     if (!name) {
       skippedNoName++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: No name after normalization`);
       continue;
     }
 
@@ -636,11 +785,13 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
 
     if (blacklist.has(key)) {
       skippedBlacklist++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: In blacklist`);
       continue;
     }
 
     if (existingSet.has(key)) {
       skippedExisting++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: Already exists in L1M/L6M set`);
       continue;
     }
 
@@ -650,8 +801,13 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
       .map(s => normalizeName_(s).toLowerCase())
       .filter(Boolean);
 
+    if (isDebugVendor && aliases.length > 0) {
+      console.log(`  Aliases: ${aliases.join(', ')}`);
+    }
+
     if (aliases.some(a => existingSet.has(a) || blacklist.has(a))) {
       skippedAlias++;
+      if (isDebugVendor) console.log(`  ❌ SKIPPED: Alias matches existing/blacklist`);
       recordSkipReason_({ name, source: sourceLabel, reason: 'alias-duplicate' });
       continue;
     }
@@ -659,9 +815,13 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
     const ttl = (ttlIdx !== -1 && ttlIdx < row.length) ? toNumber_(row[ttlIdx]) : 0;
     const explicitType = (typeIdx !== -1 && typeIdx < row.length) ? String(row[typeIdx] || '').trim() : '';
     const finalType = explicitType || type;
-    const statusRaw = (statusIdx != null && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
-    const status = normalizeStatus_(statusRaw);
-    const notes = (notesIdx != null && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
+    // Use raw status value (Group name) instead of normalizing
+    const status = (statusIdx >= 0 && statusIdx < row.length) ? String(row[statusIdx] || '').trim() : '';
+    const notes = (notesIdx >= 0 && notesIdx < row.length) ? String(row[notesIdx] || '').trim() : '';
+
+    if (isDebugVendor) {
+      console.log(`  ✅ ADDED: name="${name}", ttl=${ttl}, type="${finalType}", status="${status}"`);
+    }
 
     out.push({ name, ttl, type: finalType, source: sourceLabel, status, notes });
     existingSet.add(key);
@@ -677,6 +837,22 @@ function readMondaySheet_(sh, type, sourceLabel, blacklist, existingSet) {
   console.log(`[${sourceLabel}] END READ\n`);
 
   return dedupeKeepMaxTTL_(out);
+}
+
+/** Get status rank for sorting (maps raw status to priority rank) */
+function getStatusRank_(rawStatus) {
+  const v = String(rawStatus || '').trim().toLowerCase();
+  if (!v) return STATUS_RANK['other'];
+
+  if (v.includes('live')) return STATUS_RANK['live'];
+  if (v.includes('onboard')) return STATUS_RANK['onboarding'];
+  if (v.includes('pause')) return STATUS_RANK['paused'];
+  if (v.includes('pre')) return STATUS_RANK['preonboarding'];
+  if (v.includes('early')) return STATUS_RANK['early talks'];
+  if (v.includes('top') && v.includes('500')) return STATUS_RANK['top 500 remodelers'];
+  if (v.includes('dead') || (v.includes('no') && v.includes('go')) || v.includes('closed')) return STATUS_RANK['dead'];
+
+  return STATUS_RANK['other'];
 }
 
 /** Normalize buyer or affiliate status to our buckets */
@@ -784,6 +960,16 @@ function firstExistingHeader_(columns, candidates, sheetName, purpose) {
 function findHeaderOptionalIndex_(columns, header) {
   const idx = columns.findIndex(col => eq_(col, header));
   return idx === -1 ? null : idx;
+}
+
+/** Find the first matching header index from a list of candidates (lowercased headers) */
+function findHeaderIndex_(headersLower, candidates) {
+  for (const candidate of candidates) {
+    const candidateLower = candidate.toLowerCase();
+    const idx = headersLower.findIndex(h => h === candidateLower || h.includes(candidateLower));
+    if (idx >= 0) return idx;
+  }
+  return -1;
 }
 
 /** Ensure a sheet exists, create if not */

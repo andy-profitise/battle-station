@@ -1,6 +1,8 @@
 /************************************************************
- * BATTLE STATION - One-by-one vendor review dashboard
- * 
+ * A(I)DEN - One-by-one vendor review dashboard
+ *
+ * Last Updated: 2026-01-09 10:30AM PST
+ *
  * Features:
  * - Navigate through vendors sequentially via menu
  * - FAST MODE: Email-focused loading, skips Box/GDrive/Airtable/Calendar
@@ -9,8 +11,9 @@
  * - View helpful links from monday.com
  * - Update monday.com notes directly
  * - Mark vendors as reviewed/complete
- * - Email contacts directly from Battle Station
+ * - Email contacts directly from A(I)DEN
  * - Analyze emails with Claude AI (inline links)
+ * - Snooze vendors until a specific date (skipped unless checksum changes)
  * - 🧠 Smart Briefing: AI-powered cross-vendor priority advisor
  * - 📝 Auto-summarize: Claude summarizes vendor state to notes
  * - ✉️ Draft Reply: Claude-powered email reply drafting
@@ -18,12 +21,16 @@
  * - ⚙️ Claude API key management via Script Properties
  *
  * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
+ * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
  ************************************************************/
 
 const BS_CFG = {
+  // Code version - displayed in UI to confirm deployment
+  CODE_VERSION: '2026-01-09 10:30AM PST',
+
   // Sheet names
   LIST_SHEET: 'List',
-  BATTLE_SHEET: 'Battle Station',
+  BATTLE_SHEET: 'A(I)DEN',
   GMAIL_OUTPUT_SHEET: 'Gmail Review Output',
   TASKS_SHEET: 'monday.com tasks',
   
@@ -37,12 +44,12 @@ const BS_CFG = {
   L_NO_SNOOZE: 6,
   L_PROCESSED: 7,
   
-  // Battle Station layout
+  // A(I)DEN layout
   HEADER_ROWS: 3,
   DATA_START_ROW: 5,
   
   // Modern Color Palette - sleeker, more professional look
-  COLOR_HEADER: '#1a73e8',        // Google Blue - main header
+  COLOR_HEADER: '#34a853',        // Google Green - main header
   COLOR_SUBHEADER: '#e8f0fe',     // Light blue - section headers
   COLOR_EMAIL: '#fef7e0',         // Warm cream - email section
   COLOR_TASK: '#e6f4ea',          // Fresh mint - tasks section
@@ -56,9 +63,9 @@ const BS_CFG = {
   COLOR_PHONEXA: '#ffe0b2',       // Peach - Phonexa waiting
   COLOR_OVERDUE: '#ffcdd2',       // Light red - overdue
 
-  // Row highlight colors for skip/traverse
-  COLOR_ROW_CHANGED: '#c8e6c9',   // Green - vendor has changes
-  COLOR_ROW_SKIPPED: '#fff9c4',   // Yellow - vendor unchanged
+  // Row highlight colors for List sheet
+  COLOR_ROW_CURRENT: '#b3e5fc',   // Light blue - currently viewing
+  COLOR_ROW_VIEWED: '#fff9c4',    // Yellow - already looked at
 
   // Section styling
   COLOR_SECTION_BG: '#fafafa',    // Light gray for section backgrounds
@@ -70,6 +77,8 @@ const BS_CFG = {
   
   // Overdue threshold: emails with "02.waiting/customer" or "02.waiting/me" older than this many business hours
   OVERDUE_BUSINESS_HOURS: 16,
+  // Manual overdue label - emails with this label are always treated as overdue
+  MANUAL_OVERDUE_LABEL: '03.overdue/manual',
 
   
   // API Keys
@@ -124,7 +133,10 @@ const BS_CFG = {
 
   // Add to BS_CFG:
   TASKS_PROJECT_COLUMN: 'board_relation_mkqbg3mb',
-  
+
+  // monday.com termColumns parameter for task links (required for search to work)
+  MONDAY_TERM_COLUMNS: '&termColumns=XQAAAAIHAQAAAAAAAABBKoMjDDqyANxrovq8XKyGwNnH_qlGnejuun9f58me3bIkQlIN-udrv_3l68n9913YtoUdByP1TEKuott7juTxyA1A3XyP-yDcTWiDbM6HgAGo7IMFxfsbtqtRlpMFCd04s-NQ9LohwAvGaQ0iWvLb0gXThsebqdG5Jz25EHNjYrlNuZuhw70owWm_wHFdnD9wnJLUCye1QGu-TMKeaokx96GXNU9OAZuVp3CRRre5SU____Xc3YA',
+
     // Large-Scale Projects ID to Name mapping
     PROJECT_MAP: {
       '9520665110': 'Home Services',
@@ -161,11 +173,16 @@ const BS_CFG = {
   AIRTABLE_API_TOKEN: 'pat9P76pQ7lJ8Cwoa.2a614804ad532a6e957e931e65f0e4f228928e9f2ce3d57b5d918dde832842db',
   AIRTABLE_BASE_ID: 'appc6xu9qLlOP5G5m',
   
+  // Contracts 2026
+  AIRTABLE_CONTRACTS_TABLE_2026: 'Contracts 2026',
+  AIRTABLE_CONTRACTS_TABLE_ID_2026: 'tblYszexANBGGnyki',
+  AIRTABLE_CONTRACTS_VIEW_ID_2026: 'viwfL5bDrEAvlmL7f',
+
   // Contracts 2025
   AIRTABLE_CONTRACTS_TABLE_2025: 'Contracts 2025',
   AIRTABLE_CONTRACTS_TABLE_ID_2025: 'tblREBd6zFUUZV5eU',
   AIRTABLE_CONTRACTS_VIEW_ID_2025: 'viw8X7acqwTJEUi1R',
-  
+
   // Contracts 2024
   AIRTABLE_CONTRACTS_TABLE_2024: 'Contracts 2024',
   AIRTABLE_CONTRACTS_TABLE_ID_2024: 'tblYn8yBux9xe6sO0',
@@ -189,7 +206,19 @@ const BS_CFG = {
   GDRIVE_VENDORS_FOLDER_ID: '1fZzQZ_srKJFZab73zE_6hqDLZrn7ud_C',
   
   // Max characters for notes display (truncate with "..." if longer)
-  MAX_NOTES_LENGTH: 400
+  MAX_NOTES_LENGTH: 400,
+
+  // Canned Response Attachments (Google Drive file IDs)
+  REFERRAL_CONTRACT_FILE_ID: '1ON0EZmKvDyvwUDYBFyVkmj8TzkCBl2UX',
+  INITIAL_CALL_FOLLOWUP_FILE_ID: '1T4N0Mia9icYrKH1B4rawu9qRBiqTgfrL',
+
+  // Canned Response Templates - Google Doc IDs
+  // Use <CONTACT_NAME> and <VENDOR_NAME> as placeholders in the docs
+  // To get the ID: https://docs.google.com/document/d/[THIS_IS_THE_ID]/edit
+  CANNED_RESPONSE_DOCS: {
+    REFERRAL_PROGRAM: '1tn3uQMvVR6ZItk1p0k-0-BclMJxbNBDzuh4jSt8PT9c',
+    INITIAL_CALL_FOLLOWUP: '1z2lUA4aDD1_zSq1gxX13pcrqlHMh80CmUvorfwLw5ws'
+  }
 };
 
 /**
@@ -197,8 +226,10 @@ const BS_CFG = {
  */
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('⚡ Battle Station')
-    .addItem('🔧 Setup Battle Station', 'setupBattleStation')
+
+  // Main A(I)DEN menu - setup, sync, actions
+  ui.createMenu('⚡ A(I)DEN')
+    .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
     .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
     .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
     .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
@@ -206,34 +237,288 @@ function onOpen() {
     .addItem('🧠 Smart Briefing (What to do next)', 'battleStationSmartBriefing')
     .addItem('📝 Summarize & Update Notes (Claude)', 'battleStationSummarizeToNotes')
     .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
-    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addSeparator()
-    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
-    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
-    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
-    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
-    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
-    .addItem('▶ Next Vendor (Fast)', 'battleStationNext')
-    .addItem('◀ Previous Vendor (Fast)', 'battleStationPrevious')
-    .addSeparator()
-    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
-    .addItem('🔄 Refresh (Full)', 'battleStationRefresh')
-    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
     .addSeparator()
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
-    .addItem('✓ Mark as Reviewed', 'battleStationMarkReviewed')
-    .addItem('⚑ Flag/Unflag Vendor', 'battleStationToggleFlag')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
-    .addItem('✉️ Email Contacts', 'battleStationEmailContacts')
+    .addItem('📧 Open Gmail Search (00.received)', 'battleStationOpenGmailReceived')
+    .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addSeparator()
     .addItem('📧 Manage Email Rules', 'battleStationManageEmailRules')
     .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
     .addSeparator()
-    .addItem('📷 OCR Vendor Upload', 'openVendorOcrUpload')
-    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
-    .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
     .addToUi();
+
+  // Refresh menu - refresh current vendor view
+  ui.createMenu('🔄 Refresh')
+    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
+    .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
+    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addItem('💥 Hardest Refresh (Reset All Caches)', 'battleStationHardestRefresh')
+    .addSeparator()
+    .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
+    .addToUi();
+
+  // Navigation menu - movement and traversal
+  ui.createMenu('🧭 Navigation')
+    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
+    .addItem('📥 Inbox Mode (Oldest First)', 'inboxModeNext')
+    .addSeparator()
+    .addItem('📬 Inbox Redirect Status', 'viewInboxRedirectStatus')
+    .addItem('❌ Clear Inbox Redirect', 'clearInboxRedirectState')
+    .addItem('🚀 Turbo Traverse (Batch)', 'turboTraverseAll')
+    .addItem('🌙 Schedule Turbo (Overnight)', 'scheduleTurboTraverse')
+    .addSeparator()
+    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
+    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
+    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
+    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
+    .addSeparator()
+    .addItem('▶ Next Vendor (Fast)', 'battleStationNext')
+    .addItem('◀ Previous Vendor (Fast)', 'battleStationPrevious')
+    .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addSeparator()
+    .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
+    .addItem('⚙️ Set Deep Link URL...', 'setDeepLinkBaseUrl')
+    .addToUi();
+
+  // Email Response Templates menu
+  ui.createMenu('📧 Email Responses')
+    .addItem('🔄 Cold Outreach - Follow Up', 'emailResponseColdFollowUp')
+    .addItem('📅 Schedule a Call', 'emailResponseScheduleCall')
+    .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
+    .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
+    .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
+    .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
+    .addItem('✍️ Custom Response...', 'emailResponseCustom')
+    .addItem('🔗 Generic URL Response...', 'genericUrlResponse')
+    .addSeparator()
+    .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
+    .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
+    .addSeparator()
+    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
+    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
+    .addSeparator()
+    .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
+    .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
+    .addItem('📤 Send to Aden', 'sendToAden')
+    .addItem('📥 Archive Email', 'archiveSelectedEmail')
+    .addToUi();
+
+  // Chat OCR menu - find vendors from chat screenshots/text
+  ui.createMenu('💬 Chat OCR')
+    .addItem('📷 Upload Image / Paste Text', 'openVendorOcrUpload')
+    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
+    .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
+    .addToUi();
+
+  // Tasks menu - update monday.com task statuses
+  ui.createMenu('📋 Tasks')
+    .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addToUi();
+
+  // Check for pending vendor from URL deep link
+  checkPendingVendorFromUrl_();
+}
+
+/**
+ * Web App entry point - handles deep links with vendor parameter
+ * Deploy as web app: Execute as "Me", Access "Anyone"
+ *
+ * URL format: https://script.google.com/macros/s/DEPLOYMENT_ID/exec?vendor=Vendor+Name
+ */
+function doGet(e) {
+  const vendor = e.parameter.vendor;
+
+  if (vendor) {
+    // Store the vendor name to load when sheet opens
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty('PENDING_VENDOR_URL', decodeURIComponent(vendor));
+    props.setProperty('PENDING_VENDOR_TIME', new Date().toISOString());
+
+    // Redirect to the Google Sheet's A(I)DEN tab
+    const ss = SpreadsheetApp.getActive();
+    const aidenSheet = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+    const sheetUrl = ss.getUrl();
+    const gid = aidenSheet ? aidenSheet.getSheetId() : '';
+    const fullUrl = gid ? `${sheetUrl}#gid=${gid}` : sheetUrl;
+
+    return HtmlService.createHtmlOutput(
+      `<html><head><meta http-equiv="refresh" content="0;url=${fullUrl}"></head>` +
+      `<body>Redirecting to ${vendor}...</body></html>`
+    );
+  }
+
+  return HtmlService.createHtmlOutput('Missing vendor parameter. Use ?vendor=Vendor+Name');
+}
+
+/**
+ * Check for pending vendor from URL deep link and navigate to it
+ * Called from onOpen
+ */
+function checkPendingVendorFromUrl_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingVendor = props.getProperty('PENDING_VENDOR_URL');
+  const pendingTime = props.getProperty('PENDING_VENDOR_TIME');
+
+  if (!pendingVendor || !pendingTime) return;
+
+  // Only process if the pending vendor was set within the last 30 seconds
+  const timeSince = Date.now() - new Date(pendingTime).getTime();
+  if (timeSince > 30000) {
+    // Too old, clear it
+    props.deleteProperty('PENDING_VENDOR_URL');
+    props.deleteProperty('PENDING_VENDOR_TIME');
+    return;
+  }
+
+  // Clear the pending vendor
+  props.deleteProperty('PENDING_VENDOR_URL');
+  props.deleteProperty('PENDING_VENDOR_TIME');
+
+  // Find and navigate to the vendor
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return;
+
+  const vendorIdx = findVendorIndexByName_(listSh, pendingVendor);
+
+  if (vendorIdx) {
+    // Store the index so the user can load it with a refresh
+    // (onOpen can't access Gmail due to simple trigger restrictions)
+    props.setProperty('aiden_current_index', String(vendorIdx));
+
+    // Activate the A(I)DEN sheet
+    const aidenSheet = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+    if (aidenSheet) {
+      ss.setActiveSheet(aidenSheet);
+      aidenSheet.getRange('A3').activate();
+    }
+
+    // Highlight the row in List sheet
+    const listRow = vendorIdx + 1;
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CURRENT);
+
+    ss.toast(`Found: ${pendingVendor}\n\nClick "Quick Refresh" to load vendor data.`, '🔗 Deep Link', 5);
+  } else {
+    SpreadsheetApp.getUi().alert(
+      '🔗 Vendor Not Found',
+      `Could not find vendor "${pendingVendor}" in the List.\n\nMake sure the vendor name matches exactly.`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Copy a deep link URL for the current vendor to clipboard
+ * User can share this URL to open directly to this vendor
+ */
+function copyVendorDeepLink() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('List sheet not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    SpreadsheetApp.getUi().alert('Could not determine vendor name.');
+    return;
+  }
+
+  // Build the deep link URL
+  const encodedVendor = encodeURIComponent(vendor);
+
+  // Try to get the web app URL from script properties (user can set this)
+  const props = PropertiesService.getScriptProperties();
+  let webAppUrl = props.getProperty('VENDOR_DEEP_LINK_BASE_URL');
+
+  if (!webAppUrl) {
+    // Default placeholder - user needs to set this once
+    webAppUrl = 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec';
+  }
+
+  const fullUrl = webAppUrl + '?vendor=' + encodedVendor;
+
+  // Escape for HTML attribute
+  const escapedVendor = vendor.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escapedUrl = fullUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+
+  const needsSetup = webAppUrl.includes('YOUR_DEPLOYMENT_ID');
+  const setupNote = needsSetup
+    ? '<p class="note">⚠️ First time setup: Run "Set Deep Link URL" from the Navigation menu after deploying as web app.</p>'
+    : '';
+
+  // Show dialog with the URL
+  const html = `
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .note { color: #d93025; font-size: 12px; margin-top: 15px; }
+        input { width: 100%; padding: 10px; font-size: 13px; box-sizing: border-box; }
+        button { margin-top: 15px; padding: 10px 20px; background: #34a853; color: white; border: none; border-radius: 4px; cursor: pointer; }
+      </style>
+    </head>
+    <body>
+      <h3>🔗 Vendor Deep Link</h3>
+      <p>URL for <strong>${escapedVendor}</strong>:</p>
+      <input type="text" id="url" value="${escapedUrl}" onclick="this.select()" readonly>
+      ${setupNote}
+      <button onclick="google.script.host.close()">Close</button>
+    </body>
+    </html>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(550)
+    .setHeight(220);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '🔗 Copy Vendor URL');
+}
+
+/**
+ * Set the base URL for vendor deep links (one-time setup)
+ */
+function setDeepLinkBaseUrl() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const currentUrl = props.getProperty('VENDOR_DEEP_LINK_BASE_URL') || '';
+
+  const response = ui.prompt(
+    '⚙️ Set Deep Link Base URL',
+    'Enter your web app deployment URL (without ?vendor= parameter):\n\nExample: https://script.google.com/macros/s/ABC123.../exec\n\nCurrent: ' + (currentUrl || '(not set)'),
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() === ui.Button.OK) {
+    let url = response.getResponseText().trim();
+
+    // Clean up the URL - remove any query params
+    if (url.includes('?')) {
+      url = url.split('?')[0];
+    }
+
+    if (url && url.includes('script.google.com')) {
+      props.setProperty('VENDOR_DEEP_LINK_BASE_URL', url);
+      ui.alert('✅ Deep link URL saved!\n\nYou can now use "Copy Vendor Deep Link" to get shareable URLs.');
+    } else if (url) {
+      ui.alert('⚠️ Invalid URL. Please enter a Google Apps Script web app URL.');
+    }
+  }
 }
 
 /************************************************************
@@ -411,7 +696,7 @@ function getCurrentVendorIndex_() {
 }
 
 /**
- * Create or reset the Battle Station sheet
+ * Create or reset the A(I)DEN sheet
  */
 function setupBattleStation() {
   const ss = SpreadsheetApp.getActive();
@@ -442,7 +727,7 @@ function setupBattleStation() {
   
   loadVendorData(1);
   
-  SpreadsheetApp.getUi().alert('Battle Station initialized!\n\nUse the ⚡ Battle Station menu to navigate:\n- ▶ Next Vendor\n- ◀ Previous Vendor\n- 💾 Update monday.com Notes\n- ✓ Mark as Reviewed\n- ✉️ Email Contacts\n- 🤖 Analyze Emails (Claude)');
+  SpreadsheetApp.getUi().alert('A(I)DEN initialized!\n\nUse the ⚡ A(I)DEN menu to navigate:\n- ▶ Next Vendor\n- ◀ Previous Vendor\n- 💾 Update monday.com Notes\n- ✓ Mark as Reviewed\n- ✉️ Email Contacts\n- 🤖 Analyze Emails (Claude)');
 }
 
 /**
@@ -455,21 +740,42 @@ function loadVendorData(vendorIndex, options) {
   const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
   const loadMode = options.loadMode || 'full';
   const isFastMode = loadMode === 'fast';
-  
+  const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
+  const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
+  // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
+
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
     throw new Error('Required sheets not found');
   }
-  
+
+  // Get previous vendor index before we update, so we can set its row to yellow (viewed)
+  const previousIndex = getCurrentVendorIndex_();
+
   const totalVendors = listSh.getLastRow() - 1;
-  
+
   if (vendorIndex < 1) vendorIndex = 1;
   if (vendorIndex > totalVendors) vendorIndex = totalVendors;
-  
+
   const listRow = vendorIndex + 1;
+
+  // Set previous vendor's row to yellow (viewed) when navigating away
+  if (previousIndex && previousIndex !== vendorIndex) {
+    const prevListRow = previousIndex + 1;
+    if (prevListRow > 1 && prevListRow <= totalVendors + 1) {
+      setListRowColor_(listSh, prevListRow, BS_CFG.COLOR_ROW_VIEWED);
+    }
+  }
+
+  // Highlight current vendor's row in blue (current)
+  Logger.log(`Setting row ${listRow} color to blue (current)`);
+  setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CURRENT);
+  SpreadsheetApp.flush();  // Force the color change to be applied immediately
+
   const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
   
   const vendor = vendorData[BS_CFG.L_VENDOR] || '';
@@ -495,7 +801,7 @@ function loadVendorData(vendorIndex, options) {
 
   // Title - full width, modern blue header with subtle shadow effect
   bsSh.getRange(currentRow, 1, 1, 9).merge()
-    .setValue(isFastMode ? `⚡ BATTLE STATION [FAST]` : `⚡ BATTLE STATION`)
+    .setValue(isFastMode ? `⚡ A(I)DEN [FAST]` : `⚡ A(I)DEN`)
     .setFontSize(16).setFontWeight('bold')
     .setBackground(BS_CFG.COLOR_HEADER)
     .setFontColor('white')
@@ -504,8 +810,16 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 40);
   currentRow++;
 
-  // Vendor name banner - prominent display (with flag if flagged)
-  const vendorDisplay = isVendorFlagged_(vendor) ? `${vendor} ⚑` : vendor;
+  // Vendor name banner - prominent display (with flag/snooze indicators)
+  let vendorDisplay = vendor;
+  if (isVendorFlagged_(vendor)) {
+    vendorDisplay += ' ⚑';
+  }
+  const snoozeDate = getVendorSnoozeDate_(vendor);
+  if (snoozeDate && snoozeDate > new Date()) {
+    const dateStr = Utilities.formatDate(snoozeDate, Session.getScriptTimeZone(), 'M/d');
+    vendorDisplay += ` 💤${dateStr}`;
+  }
   bsSh.getRange(currentRow, 1, 1, 9).merge()
     .setValue(vendorDisplay)
     .setFontSize(13).setFontWeight('bold')
@@ -516,8 +830,8 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 32);
   currentRow++;
 
-  // Navigation bar - cleaner, more modern
-  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶`;
+  // Navigation bar - cleaner, more modern - includes code version for deployment verification
+  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶                    v${BS_CFG.CODE_VERSION}`;
   bsSh.getRange(currentRow, 1, 1, 9).merge()
     .setValue(navText)
     .setFontSize(10)
@@ -553,6 +867,9 @@ function loadVendorData(vendorIndex, options) {
   const contactData = getVendorContacts_(vendor, listRow);
   const mondayNotes = contactData.notes || notes;
   const contacts = contactData.contacts;
+
+  // Cache original notes for auto-save detection on transition
+  cacheOriginalNotes_(mondayNotes || '');
   
   // Vendor details - build Phonexa link display
   let phonexaDisplay = '';
@@ -706,8 +1023,14 @@ function loadVendorData(vendorIndex, options) {
       return a.name.localeCompare(b.name);
     });
     
+    // Get last Contact Discovery run date for this vendor
+    const contactDiscoveryProps = PropertiesService.getScriptProperties();
+    const contactDiscoveryKey = `BS_CONTACT_DISCOVERY_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const lastDiscoveryDate = contactDiscoveryProps.getProperty(contactDiscoveryKey);
+    const discoveryDisplay = lastDiscoveryDate ? `  📅 Last scanned: ${lastDiscoveryDate}` : '';
+
     bsSh.getRange(currentRow, 1, 1, 4).merge()
-      .setValue(`👤 CONTACTS (${contacts.length})`)
+      .setValue(`👤 CONTACTS (${contacts.length})${discoveryDisplay}`)
       .setBackground('#f8f9fa')
       .setFontWeight('bold')
       .setFontSize(10)
@@ -807,12 +1130,17 @@ function loadVendorData(vendorIndex, options) {
   const upcomingMeetingsStartRow = currentRow;
 
   // CALENDAR MEETINGS SECTION
-  ss.toast('Checking calendar...', '📅 Loading', 2);
   // Extract contact emails to search for in calendar events
   const contactEmails = (contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
-  const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
-  meetings = meetingsResult.meetings || [];
-  totalMeetingCount = meetingsResult.totalCount || 0;
+  // Skip Calendar in turbo mode (not essential for checksum updates)
+  if (turboMode) {
+    Logger.log('Skipping Calendar search in turbo mode');
+  } else {
+    ss.toast('Checking calendar...', '📅 Loading', 2);
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    meetings = meetingsResult.meetings || [];
+    totalMeetingCount = meetingsResult.totalCount || 0;
+  }
   
   bsSh.getRange(currentRow, 1, 1, 4).merge()
     .setValue(`📅 UPCOMING MEETINGS (${meetings.length})`)
@@ -886,12 +1214,22 @@ function loadVendorData(vendorIndex, options) {
   // ========== RIGHT SIDE (Columns 5-8) ==========
   
   // HELPFUL LINKS SECTION (right side - aligned with VENDOR INFO at top)
-  ss.toast('Loading helpful links...', '🔗 Loading', 2);
-  helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
-  
+  // Skip Helpful Links in turbo mode for speed - will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Helpful Links in turbo mode');
+  } else {
+    ss.toast('Loading helpful links...', '🔗 Loading', 2);
+    helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
+  }
+
+  // Generate L2M Reporting link if we have a Phonexa link
+  const l2mLink = getL2MReportingLink_(contactData.phonexaLink, source);
+  const totalLinksCount = helpfulLinks.length + 1; // +1 for L2M row (always shown)
+
+
   const helpfulLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.HELPFUL_LINKS_BOARD_ID}`;
   bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
-    .setFormula(`=HYPERLINK("${helpfulLinksUrl}", "🔗 HELPFUL LINKS (${helpfulLinks.length})")`)
+    .setFormula(`=HYPERLINK("${helpfulLinksUrl}", "🔗 HELPFUL LINKS (${totalLinksCount})")`)
     .setBackground('#f8f9fa')
     .setFontWeight('bold')
     .setFontSize(10)
@@ -900,7 +1238,38 @@ function loadVendorData(vendorIndex, options) {
     .setVerticalAlignment('top');
   bsSh.setRowHeight(rightColumnRow, 24);
   rightColumnRow++;
-  
+
+  // Header row for links table
+  bsSh.getRange(rightColumnRow, 6).setValue('Description').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+  bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('Link').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+  rightColumnRow++;
+
+  // L2M Reporting link first (light grey background to distinguish from monday.com links)
+  const l2mBgColor = '#e8e8e8'; // Light grey
+  if (l2mLink) {
+    bsSh.getRange(rightColumnRow, 6).setValue(l2mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l2mBgColor);
+    bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+      .setFormula(`=HYPERLINK("${l2mLink.url}", "https://cp.profitise.com/p2/report/...")`)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top')
+      .setBackground(l2mBgColor);
+    rightColumnRow++;
+  } else {
+    // No Phonexa link - show warning with link to monday.com board
+    const encodedVendor = encodeURIComponent(vendor);
+    const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+    const mondayLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendor}`;
+    bsSh.getRange(rightColumnRow, 6).setValue('⚠️ NO PHONEXA LINK FOUND').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l2mBgColor).setFontColor('#b71c1c');
+    bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+      .setFormula(`=HYPERLINK("${mondayLink}", "Add in monday.com →")`)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top')
+      .setBackground(l2mBgColor);
+    rightColumnRow++;
+  }
+
   if (helpfulLinks.length === 0) {
     bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
       .setValue('No helpful links found')
@@ -910,15 +1279,11 @@ function loadVendorData(vendorIndex, options) {
       .setVerticalAlignment('top');
     bsSh.setRowHeight(rightColumnRow, 25);
     rightColumnRow++;
-  } else {
-    // Single column layout
-    bsSh.getRange(rightColumnRow, 6).setValue('Description').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
-    bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('Link').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
-    rightColumnRow++;
-    
+  } else if (helpfulLinks.length > 0) {
+    // monday.com links (no grey background - default white)
     for (const link of helpfulLinks.slice(0, 8)) {
       bsSh.getRange(rightColumnRow, 6).setValue(link.notes || '(no description)').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
-      
+
       if (link.url) {
         bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
           .setFormula(`=HYPERLINK("${link.url}", "${link.url.substring(0, 50)}${link.url.length > 50 ? '...' : ''}")`)
@@ -928,10 +1293,10 @@ function loadVendorData(vendorIndex, options) {
       } else {
         bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('(no URL)').setHorizontalAlignment('left').setVerticalAlignment('top');
       }
-      
+
       rightColumnRow++;
     }
-    
+
     if (helpfulLinks.length > 8) {
       bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
         .setValue(`... and ${helpfulLinks.length - 8} more links`)
@@ -982,7 +1347,7 @@ function loadVendorData(vendorIndex, options) {
   // Use helpfulLinksStartRow to align with Contacts section
   let contractsRow = helpfulLinksStartRow;
   
-  const airtableContractsUrl = 'https://airtable.com/appc6xu9qLlOP5G5m/tblREBd6zFUUZV5eU/viw8X7acqwTJEUi1R?blocks=hide';
+  const airtableContractsUrl = 'https://airtable.com/appc6xu9qLlOP5G5m/tblYszexANBGGnyki/viwfL5bDrEAvlmL7f?blocks=hide';
   // Escape quotes in matchedOn for use in formula
   const escapedMatchedOn = contractsMatchedOn ? contractsMatchedOn.replace(/"/g, '""') : '';
   const matchedDisplay = escapedMatchedOn && contractsMatchedOn !== vendor ? ` (matched ""${escapedMatchedOn}"")` : '';
@@ -1075,13 +1440,18 @@ function loadVendorData(vendorIndex, options) {
   contractsRow++; // Add spacing
   
   // BOX DOCUMENTS SECTION (right side - aligned with Upcoming Meetings)
-  ss.toast('Searching Box...', '📦 Loading', 2);
   boxDocs = [];
   let boxRow = upcomingMeetingsStartRow;
-  
+
+  // Skip Box entirely in turbo mode for speed - it will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Box search in turbo mode');
+  } else {
+  ss.toast('Searching Box...', '📦 Loading', 2);
+
   // Get blacklist from Settings sheet
   const boxBlacklist = getBoxBlacklist_();
-  
+
   // Check cache for Box docs if useCache is true
   let boxDocsFromCache = null;
   if (useCache) {
@@ -1091,13 +1461,14 @@ function loadVendorData(vendorIndex, options) {
       Logger.log(`Box docs loaded from cache: ${boxDocs.length} documents`);
     }
   }
-  
+
   // Only search Box if not loaded from cache
   if (!boxDocsFromCache) {
     try {
       // Check if Box is authorized before searching
       const boxService = getBoxService_();
       if (boxService.hasAccess()) {
+        // NORMAL MODE: Search Box API for each vendor
         // Search with primary vendor name
         const primaryDocs = searchBoxForVendor(vendor);
         Logger.log(`Box search for "${vendor}" found ${primaryDocs.length} results`);
@@ -1153,7 +1524,87 @@ function loadVendorData(vendorIndex, options) {
         }
         Logger.log(`Combined Box results: ${boxDocs.length} unique documents`);
       }
-      
+
+      // Filter out "Signing Log" documents (Box Sign creates these alongside the actual document)
+      const beforeSigningLogCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => !(doc.name || '').toLowerCase().includes('signing log'));
+      if (beforeSigningLogCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeSigningLogCount - boxDocs.length} Signing Log documents`);
+      }
+
+      // Dedupe documents with same name + folder + modified + matchedOn
+      // (Box API sometimes returns duplicates or same document with different IDs)
+      const seen = new Set();
+      const beforeDedupeCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => {
+        const key = `${doc.name || ''}|${doc.folderName || ''}|${doc.modifiedAt || ''}|${doc.matchedOn || ''}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+      if (beforeDedupeCount !== boxDocs.length) {
+        Logger.log(`Deduped Box results: ${beforeDedupeCount} -> ${boxDocs.length}`);
+      }
+
+      // Helper to strip file extension for comparison
+      const stripExtension = (name) => {
+        return (name || '').toLowerCase().replace(/\.(pdf|doc|docx|xlsx|xls|ppt|pptx)$/i, '');
+      };
+
+      // Helper to check if file is a PDF
+      const isPdf = (name) => (name || '').toLowerCase().endsWith('.pdf');
+
+      // Remove "My Sign Requests" documents if same document exists in another folder
+      // (My Sign Requests is a draft/pending folder, prefer the final version)
+      // Compare without extensions so "file.pdf" and "file.docx" are considered duplicates
+      const docNamesInOtherFolders = new Set();
+      for (const doc of boxDocs) {
+        const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
+        if (!folderPath.includes('my sign requests')) {
+          docNamesInOtherFolders.add(stripExtension(doc.name));
+        }
+      }
+      const beforeSignReqCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => {
+        const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
+        const docNameNoExt = stripExtension(doc.name);
+        // Keep if not in My Sign Requests, OR if no duplicate exists elsewhere
+        return !folderPath.includes('my sign requests') || !docNamesInOtherFolders.has(docNameNoExt);
+      });
+      if (beforeSignReqCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeSignReqCount - boxDocs.length} My Sign Requests duplicates`);
+      }
+
+      // Dedupe by base name (without extension), preferring PDF over DOC/DOCX
+      const seenBaseNames = new Map(); // baseName -> doc (prefer PDF)
+      for (const doc of boxDocs) {
+        const baseName = stripExtension(doc.name);
+        const existing = seenBaseNames.get(baseName);
+        if (!existing) {
+          seenBaseNames.set(baseName, doc);
+        } else {
+          // Prefer PDF over non-PDF
+          if (isPdf(doc.name) && !isPdf(existing.name)) {
+            seenBaseNames.set(baseName, doc);
+          }
+          // If both same type, keep the one in a better folder (Profitise > others)
+          else if (isPdf(doc.name) === isPdf(existing.name)) {
+            const docFolder = (doc.folderPath || '').toLowerCase();
+            const existingFolder = (existing.folderPath || '').toLowerCase();
+            if (docFolder.includes('profitise') && !existingFolder.includes('profitise')) {
+              seenBaseNames.set(baseName, doc);
+            }
+          }
+        }
+      }
+      const beforeExtDedupeCount = boxDocs.length;
+      boxDocs = [...seenBaseNames.values()];
+      if (beforeExtDedupeCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeExtDedupeCount - boxDocs.length} extension duplicates (preferring PDF)`);
+      }
+
       // Apply blacklist - remove files blacklisted for this vendor
       if (boxBlacklist[vendor]) {
         const blacklistedIds = boxBlacklist[vendor];
@@ -1204,10 +1655,10 @@ function loadVendorData(vendorIndex, options) {
         
         Logger.log(`Sorted Box results by modified DESC, then matched ASC, then document ASC`);
       }
-      
-      // Cache the Box results
-      setCachedData_('box', vendor, boxDocs);
-      
+
+          // Cache the Box results
+          setCachedData_('box', vendor, boxDocs);
+
     } else {
       Logger.log('Box not authorized - skipping Box search');
     }
@@ -1215,7 +1666,8 @@ function loadVendorData(vendorIndex, options) {
     Logger.log(`Box search error: ${e.message}`);
   }
   } // End of !boxDocsFromCache block
-  
+  } // End of else (not turbo mode)
+
   bsSh.getRange(boxRow, 6, 1, 4).merge()
     .setValue(`📦 BOX DOCUMENTS (${boxDocs.length})`)
     .setBackground('#f8f9fa')
@@ -1243,15 +1695,40 @@ function loadVendorData(vendorIndex, options) {
     bsSh.getRange(boxRow, 8).setValue('Modified').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
     bsSh.getRange(boxRow, 9).setValue('Matched').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
     boxRow++;
-    
+
+    // Check if there's a document in "Profitise > VENDOR_NAME" folder (the primary/final location)
+    // System folders to exclude from being considered "vendor folders"
+    const systemFolders = ['w-9', 'w9', 'new publishers', 'my sign', 'my signed', 'templates'];
+
+    // Helper to check if a folder path is a vendor-specific Profitise folder
+    const isProfitiseVendorFolder = (path) => {
+      const pathLower = (path || '').toLowerCase();
+      if (!pathLower.includes('profitise/')) return false;
+      // Check it's not a system folder
+      return !systemFolders.some(sys => pathLower.includes(sys));
+    };
+
+    // Find if any doc is in a Profitise vendor folder
+    const hasProfitiseVendorFolder = boxDocs.some(doc => isProfitiseVendorFolder(doc.folderPath));
+
     for (const doc of boxDocs.slice(0, 10)) {
-      // Document name - clickable link to Box
-      const docName = doc.name.length > 40 ? doc.name.substring(0, 37) + '...' : doc.name;
-      bsSh.getRange(boxRow, 6)
-        .setFormula(`=HYPERLINK("${doc.webUrl}", "${docName.replace(/"/g, '""')}")`)
-        .setFontColor('#1a73e8')
+      const folderPath = (doc.folderPath || '').toLowerCase();
+      const isInProfitiseVendorFolder = isProfitiseVendorFolder(doc.folderPath);
+      const isInW9Folder = folderPath.includes('w-9') || folderPath.includes('w9');
+      // Gray out if: there's a vendor folder doc AND this isn't in vendor folder AND this isn't W-9
+      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder && !isInW9Folder;
+
+      // Document name - clickable link to Box (no truncation - user controls column width)
+      const docCell = bsSh.getRange(boxRow, 6)
+        .setFormula(`=HYPERLINK("${doc.webUrl}", "${doc.name.replace(/"/g, '""')}")`)
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
+
+      if (shouldGrayOut) {
+        docCell.setFontColor('#999999');
+      } else {
+        docCell.setFontColor('#1a73e8');
+      }
       
       // Folder - show full path with underscores, clickable link to parent folder
       // folderPath is like "All Files/Profitise/Company Name" 
@@ -1264,34 +1741,28 @@ function loadVendorData(vendorIndex, options) {
         folderDisplayName = doc.parentFolder;
       }
       
-      // Truncate if too long but keep the path structure visible
-      if (folderDisplayName.length > 45) {
-        const parts = folderDisplayName.split(' > ');
-        if (parts.length > 2) {
-          folderDisplayName = parts[0] + ' > ... > ' + parts[parts.length - 1];
-        } else {
-          folderDisplayName = folderDisplayName.substring(0, 42) + '...';
-        }
-      }
-      
+      // No truncation - user controls column width
       const folderUrl = doc.parentFolderUrl || '';
+      const folderCell = bsSh.getRange(boxRow, 7);
       if (folderUrl) {
-        bsSh.getRange(boxRow, 7)
+        folderCell
           .setFormula(`=HYPERLINK("${folderUrl}", "${folderDisplayName.replace(/"/g, '""')}")`)
-          .setFontColor('#1a73e8')
           .setHorizontalAlignment('left')
           .setVerticalAlignment('top');
       } else {
-        bsSh.getRange(boxRow, 7).setValue(folderDisplayName).setHorizontalAlignment('left').setVerticalAlignment('top');
+        folderCell.setValue(folderDisplayName).setHorizontalAlignment('left').setVerticalAlignment('top');
       }
-      
+      folderCell.setFontColor(shouldGrayOut ? '#999999' : '#1a73e8');
+
       // Modified date
       const modDate = doc.modifiedAt ? Utilities.formatDate(new Date(doc.modifiedAt), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
-      bsSh.getRange(boxRow, 8).setValue(modDate).setHorizontalAlignment('left').setVerticalAlignment('top');
-      
+      const modCell = bsSh.getRange(boxRow, 8).setValue(modDate).setHorizontalAlignment('left').setVerticalAlignment('top');
+      if (shouldGrayOut) modCell.setFontColor('#999999');
+
       // Matched search term (in quotes)
       const matchedTerm = doc.matchedOn ? `"${doc.matchedOn}"` : '';
-      bsSh.getRange(boxRow, 9).setValue(matchedTerm).setFontStyle('italic').setFontColor('#666666').setHorizontalAlignment('left').setVerticalAlignment('top');
+      const matchCell = bsSh.getRange(boxRow, 9).setValue(matchedTerm).setFontStyle('italic').setHorizontalAlignment('left').setVerticalAlignment('top');
+      matchCell.setFontColor(shouldGrayOut ? '#999999' : '#666666');
       
       boxRow++;
     }
@@ -1309,79 +1780,80 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow = Math.max(rightColumnRow, boxRow);
   
   // Fetch Google Drive files now, but display section later (aligned with EMAILS)
-  ss.toast('Searching Google Drive...', '📁 Loading', 2);
-  gDriveFiles = [];
-  gDriveFolderFound = false;
-  gDriveFolderUrl = null;
-  gDriveMatchedOn = '';
-  
-  // Check cache for GDrive files if useCache is true
-  let gDriveFromCache = null;
-  if (useCache) {
-    gDriveFromCache = getCachedData_('gdrive', vendor);
-    if (gDriveFromCache) {
-      gDriveFiles = gDriveFromCache.files || [];
-      gDriveFolderFound = gDriveFromCache.folderFound || false;
-      gDriveFolderUrl = gDriveFromCache.folderUrl || null;
-      gDriveMatchedOn = gDriveFromCache.matchedOn || '';
-      Logger.log(`GDrive files loaded from cache: ${gDriveFiles.length} files`);
+  // Skip Google Drive in turbo mode for speed - will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Google Drive in turbo mode');
+  } else {
+    ss.toast('Searching Google Drive...', '📁 Loading', 2);
+
+    // Check cache for GDrive files if useCache is true
+    let gDriveFromCache = null;
+    if (useCache) {
+      gDriveFromCache = getCachedData_('gdrive', vendor);
+      if (gDriveFromCache) {
+        gDriveFiles = gDriveFromCache.files || [];
+        gDriveFolderFound = gDriveFromCache.folderFound || false;
+        gDriveFolderUrl = gDriveFromCache.folderUrl || null;
+        gDriveMatchedOn = gDriveFromCache.matchedOn || '';
+        Logger.log(`GDrive files loaded from cache: ${gDriveFiles.length} files`);
+      }
     }
-  }
-  
-  // Only search GDrive if not loaded from cache
-  if (!gDriveFromCache) {
-    try {
-      const result = getGDriveFilesForVendor_(vendor);
-      gDriveFiles = result.files || [];
-      gDriveFolderFound = result.folderFound || false;
-      gDriveFolderUrl = result.folderUrl || null;
-      if (gDriveFolderFound) gDriveMatchedOn = vendor;
-      
-      // Only try Other Name(s) if NO FOLDER was found (not just empty folder)
-      if (!gDriveFolderFound && contactData.otherName) {
-        // First try the full Other Name value (in case it's like "Profitise, LLC")
-        Logger.log(`No GDrive folder for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
-        const fullResult = getGDriveFilesForVendor_(contactData.otherName);
-        
-        if (fullResult.folderFound) {
-          gDriveFiles = fullResult.files || [];
-          gDriveFolderFound = true;
-          gDriveFolderUrl = fullResult.folderUrl || null;
-          gDriveMatchedOn = contactData.otherName;
-        } else if (contactData.otherName.includes(',')) {
-          // If full name found nothing, try splitting by comma for multiple values
-          const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
-          Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
-          
-          for (const altName of otherNames) {
-            // Skip generic terms that cause false positives
-            if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
-              Logger.log(`Skipping generic term: "${altName}"`);
-              continue;
-            }
-            Logger.log(`Searching GDrive for: "${altName}"`);
-            const altResult = getGDriveFilesForVendor_(altName);
-            if (altResult.folderFound) {
-              gDriveFiles = altResult.files || [];
-              gDriveFolderFound = true;
-              gDriveFolderUrl = altResult.folderUrl || null;
-              gDriveMatchedOn = altName;
-              break; // Found a folder, stop searching
+
+    // Only search GDrive if not loaded from cache
+    if (!gDriveFromCache) {
+      try {
+        const result = getGDriveFilesForVendor_(vendor);
+        gDriveFiles = result.files || [];
+        gDriveFolderFound = result.folderFound || false;
+        gDriveFolderUrl = result.folderUrl || null;
+        if (gDriveFolderFound) gDriveMatchedOn = vendor;
+
+        // Only try Other Name(s) if NO FOLDER was found (not just empty folder)
+        if (!gDriveFolderFound && contactData.otherName) {
+          // First try the full Other Name value (in case it's like "Profitise, LLC")
+          Logger.log(`No GDrive folder for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
+          const fullResult = getGDriveFilesForVendor_(contactData.otherName);
+
+          if (fullResult.folderFound) {
+            gDriveFiles = fullResult.files || [];
+            gDriveFolderFound = true;
+            gDriveFolderUrl = fullResult.folderUrl || null;
+            gDriveMatchedOn = contactData.otherName;
+          } else if (contactData.otherName.includes(',')) {
+            // If full name found nothing, try splitting by comma for multiple values
+            const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+            Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
+
+            for (const altName of otherNames) {
+              // Skip generic terms that cause false positives
+              if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
+                Logger.log(`Skipping generic term: "${altName}"`);
+                continue;
+              }
+              Logger.log(`Searching GDrive for: "${altName}"`);
+              const altResult = getGDriveFilesForVendor_(altName);
+              if (altResult.folderFound) {
+                gDriveFiles = altResult.files || [];
+                gDriveFolderFound = true;
+                gDriveFolderUrl = altResult.folderUrl || null;
+                gDriveMatchedOn = altName;
+                break; // Found a folder, stop searching
+              }
             }
           }
         }
+
+        // Cache the GDrive results
+        setCachedData_('gdrive', vendor, {
+          files: gDriveFiles,
+          folderFound: gDriveFolderFound,
+          folderUrl: gDriveFolderUrl,
+          matchedOn: gDriveMatchedOn
+        });
+
+      } catch (e) {
+        Logger.log(`Google Drive search error: ${e.message}`);
       }
-      
-      // Cache the GDrive results
-      setCachedData_('gdrive', vendor, {
-        files: gDriveFiles,
-        folderFound: gDriveFolderFound,
-        folderUrl: gDriveFolderUrl,
-        matchedOn: gDriveMatchedOn
-      });
-      
-    } catch (e) {
-      Logger.log(`Google Drive search error: ${e.message}`);
     }
   }
   
@@ -1485,10 +1957,9 @@ function loadVendorData(vendorIndex, options) {
     gDriveRow++;
     
     for (const file of gDriveFiles.slice(0, 10)) {
-      // File name - clickable link
-      const fileName = file.name.length > 40 ? file.name.substring(0, 37) + '...' : file.name;
+      // File name - clickable link (no truncation - user controls column width)
       bsSh.getRange(gDriveRow, 6)
-        .setFormula(`=HYPERLINK("${file.url}", "${fileName.replace(/"/g, '""')}")`)
+        .setFormula(`=HYPERLINK("${file.url}", "${file.name.replace(/"/g, '""')}")`)
         .setFontColor('#1a73e8')
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
@@ -1519,7 +1990,77 @@ function loadVendorData(vendorIndex, options) {
   
   // Update rightColumnRow to track furthest row used on right side
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
-  } // end if (!isFastMode) - GDrive render
+  // CRYSTAL BALL SECTION (right side - below Google Drive)
+  // Skip Crystal Ball in turbo mode - redundant with Gmail search
+  let crystalBall = { items: [], snoozed: [], summary: null, error: null };
+  if (turboMode) {
+    Logger.log('Skipping Crystal Ball in turbo mode');
+  } else {
+    ss.toast('Analyzing emails...', '🔮 Crystal Ball', 2);
+    crystalBall = getCrystalBallData_(vendor, listRow);
+  }
+
+  let crystalRow = rightColumnRow + 1;
+
+  // Crystal Ball header
+  const crystalCount = crystalBall.items.length + crystalBall.snoozed.length;
+  bsSh.getRange(crystalRow, 6, 1, 4).merge()
+    .setValue(`🔮 CRYSTAL BALL (${crystalCount} threads)`)
+    .setBackground('#e8f5e9')  // Light green
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#2e7d32')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(crystalRow, 24);
+  crystalRow++;
+
+  if (crystalBall.error) {
+    bsSh.getRange(crystalRow, 6, 1, 4).merge()
+      .setValue(`Error: ${crystalBall.error}`)
+      .setFontStyle('italic')
+      .setFontColor('#d32f2f')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left');
+    crystalRow++;
+  } else if (crystalBall.summary) {
+    // Display the AI-generated summary
+    const summaryLines = crystalBall.summary.split('\n').filter(l => l.trim());
+
+    for (const line of summaryLines.slice(0, 8)) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(line.trim())
+        .setFontSize(9)
+        .setBackground('#fafafa')
+        .setWrap(true)
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(crystalRow, 22);
+      crystalRow++;
+    }
+
+    if (summaryLines.length > 8) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(`... and ${summaryLines.length - 8} more items`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left');
+      crystalRow++;
+    }
+  } else {
+    bsSh.getRange(crystalRow, 6, 1, 4).merge()
+      .setValue('No outstanding items found')
+      .setFontStyle('italic')
+      .setFontColor('#666666')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left');
+    crystalRow++;
+  }
+
+  // Update rightColumnRow
+  rightColumnRow = Math.max(rightColumnRow, crystalRow);
+  } // end if (!isFastMode) - right side panel render
 
   // EMAILS SECTION
   ss.toast('Searching Gmail...', '📧 Loading', 2);
@@ -1549,16 +2090,16 @@ function loadVendorData(vendorIndex, options) {
     // Email headers
     bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 3).setValue('Count').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
     currentRow++;
-    
+
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
       const emailDateCell = bsSh.getRange(currentRow, 2);
       emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
       emailDateCell.setValue(email.date);
-      bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0'); // Force number format
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
       bsSh.getRange(currentRow, 4).setValue(email.labels);
       
       if (email.link) {
@@ -1643,10 +2184,13 @@ function loadVendorData(vendorIndex, options) {
   
   if (tasks.length === 0) {
     // Check if vendor is Live/Paused/Onboarding - should have tasks
+    // Note: "preonboarding" contains "onboarding" so we must exclude it explicitly
     const statusLower = (liveStatus || '').toLowerCase();
-    const needsTasksWarning = statusLower.includes('live') ||
+    const isPreonboarding = statusLower.includes('pre');
+    const needsTasksWarning = !isPreonboarding && (
+                               statusLower.includes('live') ||
                                statusLower.includes('onboarding') ||
-                               statusLower.includes('paused');
+                               statusLower.includes('paused'));
 
     if (needsTasksWarning) {
       // Show warning with link to Claude task generator
@@ -1656,7 +2200,7 @@ function loadVendorData(vendorIndex, options) {
         .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
         .setFontColor('#d32f2f')
         .setBackground('#ffebee')
-        .setHorizontalAlignment('center')
+        .setHorizontalAlignment('left')
         .setVerticalAlignment('middle');
       bsSh.setRowHeight(currentRow, 25);
       currentRow++;
@@ -1667,7 +2211,7 @@ function loadVendorData(vendorIndex, options) {
         .setFontStyle('italic')
         .setFontColor('#666666')
         .setBackground('#fafafa')
-        .setHorizontalAlignment('center')
+        .setHorizontalAlignment('left')
         .setVerticalAlignment('middle');
       bsSh.setRowHeight(currentRow, 22);
       currentRow++;
@@ -1676,7 +2220,7 @@ function loadVendorData(vendorIndex, options) {
         .setValue('No tasks found')
         .setFontStyle('italic')
         .setBackground('#fafafa')
-        .setHorizontalAlignment('center')
+        .setHorizontalAlignment('left')
         .setVerticalAlignment('middle');
       bsSh.setRowHeight(currentRow, 25);
       currentRow++;
@@ -1691,15 +2235,22 @@ function loadVendorData(vendorIndex, options) {
     for (const task of tasks) {
       // Task name - clickable link to Tasks board filtered by task name
       const encodedTask = encodeURIComponent(task.subject);
-      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}`;
+      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
       bsSh.getRange(currentRow, 1)
         .setFormula(`=HYPERLINK("${taskFilterLink}", "${task.subject.replace(/"/g, '""')}")`)
         .setWrap(true)
         .setFontColor('#1a73e8');
       
-      // Status - append date if present (e.g., "Waiting on Profitise - 2025-12-10")
-      // Status - append date if present (but not for Done tasks)
-      const statusDisplay = (task.taskDate && !task.isDone) ? `${task.status} - ${task.taskDate}` : task.status;
+      // Status display:
+      // - For Done tasks: show "Done - YYYY-MM-DD" (lastUpdated date)
+      // - For non-Done tasks with taskDate: show "Status - taskDate"
+      // - Otherwise: just show status
+      let statusDisplay = task.status;
+      if (task.isDone && task.lastUpdated) {
+        statusDisplay = `Done - ${task.lastUpdated}`;
+      } else if (task.taskDate && !task.isDone) {
+        statusDisplay = `${task.status} - ${task.taskDate}`;
+      }
       bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
       const taskDateCell = bsSh.getRange(currentRow, 3);
       taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
@@ -1711,6 +2262,9 @@ function loadVendorData(vendorIndex, options) {
         bsSh.getRange(currentRow, 1, 1, 4)
           .setFontLine('line-through')
           .setFontColor('#999999');
+      } else if (task.status && task.status.toLowerCase().includes('waiting on phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2');  // Red for waiting on phonexa
       } else if (task.status && task.status.toLowerCase().includes('waiting on client')) {
         bsSh.getRange(currentRow, 1, 1, 4)
           .setBackground('#fff2cc');  // Yellow for waiting on client
@@ -1763,9 +2317,10 @@ function loadVendorData(vendorIndex, options) {
     const isUnchanged = !forceChanged && storedData && String(storedData.checksum) === String(newChecksum);
     Logger.log(`Is unchanged: ${isUnchanged}${forceChanged ? ' (forceChanged=true)' : ''}`);
 
-    // Determine which modules changed
+    // Determine which modules changed (only if stored version matches to avoid false positives)
     const changedModules = [];
-    if (storedData && storedData.moduleChecksums) {
+    const storedModuleVersion = storedData?.moduleChecksums?._version || 0;
+    if (storedData && storedData.moduleChecksums && storedModuleVersion === MODULE_CHECKSUMS_VERSION) {
       const stored = storedData.moduleChecksums;
       if (stored.emails !== newModuleChecksums.emails) changedModules.push('emails');
       if (stored.tasks !== newModuleChecksums.tasks) changedModules.push('tasks');
@@ -1780,7 +2335,13 @@ function loadVendorData(vendorIndex, options) {
       if (stored.contacts !== newModuleChecksums.contacts) changedModules.push('contacts');
     }
 
-    if (isUnchanged) {
+    // If we stopped due to overdue emails, make sure emails is in changedModules
+    if (changeType === 'overdue emails' && !changedModules.includes('emails')) {
+      changedModules.push('emails');
+      Logger.log(`Added emails to changedModules due to overdue emails`);
+    }
+
+    if (isUnchanged && !changedModules.length) {
       // Add ✅ to title row
       const currentTitle = bsSh.getRange(1, 1).getValue();
       bsSh.getRange(1, 1).setValue(`${currentTitle} ✅`);
@@ -1826,16 +2387,253 @@ function loadVendorData(vendorIndex, options) {
       Logger.log(`First view for ${vendor} - no previous checksums`);
     }
 
-    // Store the new checksums including module checksums
-    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums);
-    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}`);
+    // Create email summary data for change tracking
+    const emailData = (emails || []).map(e => ({
+      subject: (e.subject || '').substring(0, 60),
+      date: e.date
+    }));
+
+    // Log email changes and get added/removed details
+    let emailChanges = { added: [], removed: [] };
+    if (changedModules.includes('emails') && storedData && storedData.emailData) {
+      emailChanges = logEmailChanges_(storedData.emailData, emailData, vendor);
+    }
+
+    // ========== WHAT CHANGED SECTION (right side - below Google Drive) ==========
+    // Show if:
+    // 1. There's a legitimate changeType (Overdue emails, Flagged, etc.) - always show
+    // 2. There are changedModules AND stored version matches (avoids false positives from format changes)
+    const hasLegitimateChangeType = changeType && changeType !== 'First view' && changeType !== 'unchanged';
+    const hasCompatibleModuleChanges = changedModules.length > 0;  // Already filtered by version above
+    const shouldShowWhatChanged = forceChanged || hasLegitimateChangeType || hasCompatibleModuleChanges;
+    if (shouldShowWhatChanged) {
+      // Find where to render - use rightColumnRow which tracks furthest row on right side
+      let changeRow = rightColumnRow + 1;
+
+      bsSh.getRange(changeRow, 6, 1, 4).merge()
+        .setValue('🔄 WHAT CHANGED')
+        .setBackground('#fff3cd')  // Light yellow/amber
+        .setFontWeight('bold')
+        .setFontSize(10)
+        .setFontColor('#856404')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(changeRow, 24);
+      changeRow++;
+
+      // Build change descriptions
+      const changeDescriptions = [];
+
+      // Add the main changeType if provided (from skip detection)
+      if (changeType && changeType !== 'First view') {
+        changeDescriptions.push({ text: `• ${changeType}` });
+      }
+
+      // Add detailed module changes
+      if (changedModules.length > 0) {
+        // Email changes with details
+        if (changedModules.includes('emails')) {
+          const emailDesc = getEmailChangeDescription_(
+            storedData?.emailChecksum,
+            newEmailChecksum,
+            emailChanges.added.length,
+            emailChanges.removed.length
+          );
+          if (!changeType || !changeType.includes('emails')) {
+            changeDescriptions.push({ text: `• Emails: ${emailDesc}` });
+          }
+          // Show specific added emails with clickable links
+          for (const e of emailChanges.added.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ➕ "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
+          }
+          if (emailChanges.added.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${emailChanges.added.length - 3} more added` });
+          }
+          // Show specific removed emails (no link - they're gone)
+          for (const e of emailChanges.removed.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            changeDescriptions.push({ text: `  ➖ "${subjectDisplay}"` });
+          }
+          if (emailChanges.removed.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${emailChanges.removed.length - 3} more removed` });
+          }
+
+          // Show specific emails that are no longer overdue
+          const oldOverdueEmails = storedData?.moduleChecksums?.overdueEmails || [];
+          const newOverdueEmails = newModuleChecksums?.overdueEmails || [];
+          const newOverdueIds = new Set(newOverdueEmails.map(e => e.threadId));
+          const noLongerOverdue = oldOverdueEmails.filter(e => !newOverdueIds.has(e.threadId));
+
+          for (const e of noLongerOverdue.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ✅ No longer overdue: "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
+          }
+          if (noLongerOverdue.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${noLongerOverdue.length - 3} more no longer overdue` });
+          }
+        }
+
+        // Other module changes (skip if already mentioned in changeType to avoid duplicates)
+        const ct = (changeType || '').toLowerCase();
+        if (changedModules.includes('tasks') && !ct.includes('task')) changeDescriptions.push({ text: '• Tasks updated' });
+        if (changedModules.includes('notes') && !ct.includes('note')) changeDescriptions.push({ text: '• Notes changed' });
+        if (changedModules.includes('status') && !ct.includes('status')) changeDescriptions.push({ text: '• Status changed' });
+        if (changedModules.includes('states') && !ct.includes('state')) changeDescriptions.push({ text: '• States changed' });
+        if (changedModules.includes('contacts') && !ct.includes('contact')) changeDescriptions.push({ text: '• Contacts updated' });
+        if (changedModules.includes('meetings') && !ct.includes('meeting')) changeDescriptions.push({ text: '• Meetings changed' });
+        if (changedModules.includes('contracts') && !ct.includes('contract')) changeDescriptions.push({ text: '• Contracts updated' });
+        if (changedModules.includes('helpfulLinks') && !ct.includes('link')) changeDescriptions.push({ text: '• Helpful links changed' });
+        if (changedModules.includes('boxDocs') && !ct.includes('box')) changeDescriptions.push({ text: '• Box documents changed' });
+        if (changedModules.includes('gDriveFiles') && !ct.includes('drive')) changeDescriptions.push({ text: '• Google Drive files changed' });
+      }
+
+      // First view message
+      if (changeType === 'First view' || !storedData) {
+        changeDescriptions.push({ text: '• First time viewing this vendor' });
+      }
+
+      // Render each change description
+      if (changeDescriptions.length === 0) {
+        changeDescriptions.push({ text: '• Changes detected (details unavailable)' });
+      }
+
+      for (const desc of changeDescriptions) {
+        const range = bsSh.getRange(changeRow, 6, 1, 4).merge();
+
+        if (desc.link && desc.linkText) {
+          // Create rich text with clickable link
+          const prefix = desc.text.substring(0, desc.text.indexOf(desc.linkText));
+          const suffix = desc.text.substring(desc.text.indexOf(desc.linkText) + desc.linkText.length);
+          const richText = SpreadsheetApp.newRichTextValue()
+            .setText(desc.text)
+            .setLinkUrl(prefix.length, prefix.length + desc.linkText.length, desc.link)
+            .build();
+          range.setRichTextValue(richText);
+        } else {
+          range.setValue(desc.text);
+        }
+
+        range.setBackground('#fff9e6')  // Lighter yellow
+          .setFontColor('#664d03')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top')
+          .setWrap(true);
+        changeRow++;
+      }
+
+      // Update rightColumnRow
+      rightColumnRow = changeRow;
+    }
+
+    // Generate vendor-label-only checksum (secondary checksum for catching unlabeled emails)
+    // Skip during Turbo mode - it's redundant with other checksums and expensive (~6-8s for 100 threads)
+    let vendorLabelChecksum = null;
+    if (!turboMode) {
+      const gmailLinkForChecksum = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+      vendorLabelChecksum = generateVendorLabelChecksum_(gmailLinkForChecksum);
+    } else {
+      Logger.log(`Skipping vendor label checksum in turbo mode`);
+    }
+
+    // Store the new checksums including module checksums, email data, and vendor label checksum
+    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums, emailData, vendorLabelChecksum);
+    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}, vendorLabel=${vendorLabelChecksum || 'skipped'}`);
   } catch (e) {
     Logger.log(`Error with checksum: ${e.message}`);
+  }
+
+  // Check if this vendor was detected via OCR (chat platforms)
+  // Show dialog to alert user this vendor communicates via chat, not email
+  if (!turboMode) {
+    try {
+      const ocrInfo = checkOcrDetectedVendor(vendor);
+      if (ocrInfo) {
+        const detectedDate = ocrInfo.detectedAt ? new Date(ocrInfo.detectedAt).toLocaleDateString() : 'Unknown';
+        SpreadsheetApp.getUi().alert(
+          '💬 Chat Platform Vendor',
+          `"${vendor}" was detected from a chat screenshot.\n\n` +
+          `Source: ${ocrInfo.sourceFile || 'Unknown'}\n` +
+          `Detected: ${detectedDate}\n\n` +
+          `This vendor communicates via chat (Teams, Telegram, etc.), not email.\n\n` +
+          `Click OK to continue, or use the menu to clear this alert.`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+
+        // Clear the vendor from OCR tracking after showing the alert
+        clearOcrDetectedVendor(vendor);
+      }
+    } catch (e) {
+      Logger.log(`Error checking OCR vendor: ${e.message}`);
+    }
   }
   } // end if (!isFastMode) - checksum generation
 
   const modeLabel = isFastMode ? '⚡ Fast' : '✅ Ready';
   ss.toast(`Loaded vendor ${vendorIndex} of ${totalVendors}`, modeLabel, 2);
+}
+
+/**
+ * Generate L2M (Last 2 Months) Reporting permalink for a vendor
+ * @param {string} phonexaLink - The Phonexa link from monday.com
+ * @param {string} source - The source (Buyers or Affiliates)
+ * @returns {object|null} - { url, label } or null if can't generate
+ */
+function getL2MReportingLink_(phonexaLink, source) {
+  if (!phonexaLink) return null;
+
+  const isBuyer = source.toLowerCase().includes('buyer');
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+
+  if (!isBuyer && !isAffiliate) return null;
+
+  // Extract the ID from the Phonexa link
+  let vendorId = null;
+
+  if (isBuyer) {
+    // Buyers: https://cp.profitise.com/p2/buyer/partner/view?id=65
+    const match = phonexaLink.match(/[?&]id=(\d+)/);
+    if (match) vendorId = match[1];
+  } else {
+    // Affiliates: https://cp.profitise.com/p2/user/webmaster/view?userId=2160
+    const match = phonexaLink.match(/[?&]userId=(\d+)/);
+    if (match) vendorId = match[1];
+  }
+
+  if (!vendorId) return null;
+
+  // Generate date range: 2 months ago to today
+  const today = new Date();
+  const twoMonthsAgo = new Date(today);
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+  const formatDate = (d) => {
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${month}/${day}/${year}`;
+  };
+
+  const dateRange = `${formatDate(twoMonthsAgo)}%20-%20${formatDate(today)}`;
+
+  let url;
+  if (isBuyer) {
+    url = `https://cp.profitise.com/p2/report/summarypartnerbypartner/index?searchForm[pr.productType]=1&searchForm[productId]=&searchForm[date]=${dateRange}&searchForm[partnerId]=${vendorId}`;
+  } else {
+    url = `https://cp.profitise.com/p2/report/summarypublisherbywm/index?searchForm[pr.productType]=1&searchForm[r.date]=${dateRange}&searchForm[productId]=&searchForm[webmasterId]=${vendorId}`;
+  }
+
+  return { url: url, label: 'Link to L2M Reporting' };
 }
 
 /**
@@ -2272,6 +3070,114 @@ function getEmailsForVendor_(vendor, listRow) {
 }
 
 /**
+ * FAST: Get just email thread count without fetching message content
+ * Used for quick change detection in Skip Unchanged
+ * @param {number} listRow - Row number in List sheet
+ * @returns {number} Thread count, or -1 on error
+ */
+function getEmailThreadCountFast_(listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return -1;
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll || !gmailLinkAll.toString().includes('#search')) return 0;
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const urlParts = gmailLinkStr.split('#search/');
+    if (urlParts.length < 2) return 0;
+
+    let searchQuery = decodeURIComponent(urlParts[1]);
+    if (searchQuery.includes('?')) searchQuery = searchQuery.split('?')[0];
+    searchQuery = searchQuery.replace(/\+/g, ' ').replace(/-is:snoozed/gi, '-label:snoozed');
+
+    // Just get thread count - don't fetch messages (fast!)
+    const threads = GmailApp.search(searchQuery, 0, 50);
+    return threads.length;
+  } catch (e) {
+    Logger.log(`ERROR in getEmailThreadCountFast_: ${e.message}`);
+    return -1;
+  }
+}
+
+/**
+ * Get ALL emails from vendor's Gmail sublabel for task analysis context
+ * Uses label search (not filtered search) to get complete email history
+ * @param {number} listRow - The row number in the list sheet
+ * @param {number} maxThreads - Maximum threads to fetch (default 50)
+ * @returns {Array} - Array of email objects with full context
+ */
+function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return [];
+
+  try {
+    // Get the Gmail link to extract the vendor label
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return [];
+
+    const gmailLinkStr = gmailLinkAll.toString();
+
+    // Extract vendor label (zzzvendors-*) from URL
+    // Format: label%3Azzzvendors-vendorname or label:zzzvendors-vendorname
+    // Include periods, underscores, hyphens in vendor name (e.g., "inc." in "american-remodeling-enterprises-inc.")
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      Logger.log('Could not extract vendor label from Gmail link');
+      return [];
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+    // Convert dash format to slash format for GmailApp: zzzvendors-name -> zzzVendors/Name
+    const labelPath = vendorLabel.replace('zzzvendors-', 'zzzVendors/').replace(/-/g, ' ');
+
+    Logger.log(`Searching vendor label: ${labelPath}`);
+
+    // Search by label only - no filters, get ALL emails
+    const searchQuery = `label:${vendorLabel}`;
+    const threads = GmailApp.search(searchQuery, 0, maxThreads);
+
+    Logger.log(`Found ${threads.length} threads in vendor label`);
+
+    const emails = [];
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const firstMessage = messages[0];
+
+      // Get labels for this thread
+      const labels = thread.getLabels().map(l => l.getName());
+
+      emails.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        from: lastMessage.getFrom(),
+        to: lastMessage.getTo(),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
+        messageCount: messages.length,
+        labels: labels,
+        isUnread: thread.isUnread(),
+        lastMessageDate: lastMessage.getDate()
+      });
+    }
+
+    // Sort by date descending
+    emails.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+
+    return emails;
+
+  } catch (e) {
+    Logger.log(`ERROR in getAllEmailsFromVendorLabel_: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Helper function to search Gmail from a link
  */
 function searchGmailFromLink_(gmailLink, querySetName) {
@@ -2303,11 +3209,60 @@ function searchGmailFromLink_(gmailLink, querySetName) {
     for (const thread of threads) {
       const messages = thread.getMessages();
       if (messages.length === 0) continue;
-      
-      const lastMessage = messages[messages.length - 1]; // Most recent message
+
+      // Find the last message from a real person (skip bounces/system messages)
+      let lastMessage = messages[messages.length - 1];
+      let lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if last message is a bounce/system message, if so find the previous real message
+      if (isSystemOrBounceEmail_(lastSender)) {
+        for (let i = messages.length - 2; i >= 0; i--) {
+          const prevSender = messages[i].getFrom().toLowerCase();
+          if (!isSystemOrBounceEmail_(prevSender)) {
+            lastMessage = messages[i];
+            lastSender = prevSender;
+            break;
+          }
+        }
+      }
+
       const subject = thread.getFirstMessageSubject();
-      const date = lastMessage.getDate(); // Use last message date
-      const labels = thread.getLabels().map(label => label.getName()).join(', ');
+      const date = lastMessage.getDate(); // Use last real message date
+
+      // Determine who sent the last message
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      let lastFrom = 'VENDOR';
+      if (lastSender.includes(myEmail)) {
+        lastFrom = 'ME';
+      } else if (lastSender.includes('aden')) {
+        lastFrom = 'ADEN';
+      } else if (lastSender.includes('tina@zeroparallel.com')) {
+        lastFrom = 'LEGAL';
+      } else if (lastSender.includes('accounting')) {
+        lastFrom = 'ACCOUNTING';
+      } else if (lastSender.includes('@zeroparallel.com') || lastSender.includes('@profitise.com') || lastSender.includes('@phonexa.com')) {
+        lastFrom = 'INTERNAL';
+      } else {
+        // It's a vendor - extract first name from the From field
+        const senderRaw = lastMessage.getFrom(); // Get original case
+        let firstName = '';
+        // Try to extract name from "First Last <email>" format
+        const nameMatch = senderRaw.match(/^"?([^"<]+)/);
+        if (nameMatch) {
+          const fullName = nameMatch[1].trim();
+          firstName = fullName.split(/\s+/)[0]; // Get first word
+        }
+        if (firstName && firstName.length > 1 && !firstName.includes('@')) {
+          lastFrom = `VENDOR (${firstName})`;
+        }
+      }
+
+      // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
+      const userLabels = thread.getLabels().map(label => label.getName());
+      if (thread.isInInbox()) {
+        userLabels.push('INBOX');
+      }
+      const labels = userLabels.sort().join(', ');
       const threadId = thread.getId();
       const threadLink = `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
       
@@ -2326,7 +3281,8 @@ function searchGmailFromLink_(gmailLink, querySetName) {
         threadId: threadId,
         subject: subject || '(no subject)',
         date: dateFormatted,
-        count: messages.length,
+        lastFrom: lastFrom,
+        count: messages.length,  // Keep for Claude analysis context
         labels: labels,
         link: threadLink,
         querySet: querySetName,
@@ -2345,220 +3301,401 @@ function searchGmailFromLink_(gmailLink, querySetName) {
 
 /**
  * Get tasks for a specific vendor from monday.com Tasks board
+ * Uses cached batch data from getAllMondayTasks_() for fast lookups
  */
 function getTasksForVendor_(vendor, listRow) {
-  const apiToken = BS_CFG.MONDAY_API_TOKEN;
-  const tasksBoardId = BS_CFG.TASKS_BOARD_ID;
-  
-  Logger.log(`=== MONDAY.COM TASKS SEARCH ===`);
+  Logger.log(`=== MONDAY.COM TASKS SEARCH (cached) ===`);
   Logger.log(`Vendor: ${vendor}`);
-  
-  const escapedVendor = vendor.replace(/"/g, '\\"');
-  
-  const query = `
-    query {
-      boards (ids: [${tasksBoardId}]) {
-        items_page (
-          limit: 100
-          query_params: {
-            rules: [
-              {
-                column_id: "name"
-                compare_value: ["${escapedVendor}"]
-                operator: contains_text
-              }
-            ]
-          }
-        ) {
-          items {
-            id
-            name
-            group {
-              id
-              title
-            }
-            column_values {
-              id
-              text
-              type
-              ... on BoardRelationValue {
-                linked_items {
-                  id
-                  name
-                }
-              }
-            }
-            created_at
-            updated_at
-          }
-        }
+
+  // Get all tasks from cache (or fetch if not cached)
+  const allTasks = getAllMondayTasks_();
+
+  if (!allTasks || allTasks.length === 0) {
+    Logger.log('No tasks found in cache');
+    return [];
+  }
+
+  // Filter tasks by vendor name (case-insensitive contains)
+  const searchTerm = vendor.toLowerCase();
+  const matchingItems = allTasks.filter(task => task.nameLower.includes(searchTerm));
+
+  Logger.log(`Found ${matchingItems.length} tasks matching vendor (from ${allTasks.length} cached tasks)`);
+
+  if (matchingItems.length === 0) {
+    return [];
+  }
+
+  const tasks = [];
+
+  // Group priority for sorting (DESC = higher number first)
+  const groupPriority = {
+    'topics': 3,                    // Ongoing Projects
+    'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
+    'group_title': 1,              // Completed Projects
+    'group_mkqf4yzy': 0            // Task Templates
+  };
+
+  // Explicit project order (from Large-Scale Projects board structure)
+  const projectPriority = {
+    'Home Services': 1,
+    'ACA': 2,
+    'Vertical Activation': 3,
+    'Monthly Returns': 4,
+    'CPL/Zip Optimizations': 5,
+    'Accounting/Invoices': 6,
+    'System Admin': 7,
+    'URL Whitelist': 8,
+    'Outbound Communication': 9,
+    'Pre-Onboarding': 10,
+    'Appointments': 11,
+    'Onboarding - Buyer': 12,
+    'Onboarding - Affiliate': 13,
+    'Onboarding - Vertical': 14,
+    'Templates': 15,
+    'Morning Meeting': 16,
+    'Week of 07/28/25': 17
+  };
+
+  const tz = 'America/Los_Angeles';
+
+  for (const item of matchingItems) {
+    const itemName = item.name;
+    const groupId = item.groupId;
+    const groupTitle = item.groupTitle;
+    const colVals = item.columnValues || {};
+
+    // Extract values from cached column data
+    let status = '';
+    let statusColumnId = 'status';
+    let projectName = '';
+    let tempInd = null;
+    let taskDate = '';
+    let lastUpdated = '';
+
+    // Status column - check common status column IDs
+    for (const colId of ['status', 'status4', 'status_1']) {
+      if (colVals[colId]?.text) {
+        status = colVals[colId].text;
+        statusColumnId = colId;
+        break;
       }
     }
-  `;
-  
-  try {
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
-      muteHttpExceptions: true
-    };
-    
-    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
-    const result = JSON.parse(response.getContentText());
-    
-    if (result.errors && result.errors.length > 0) {
-      Logger.log(`API Error: ${result.errors[0].message}`);
-      return [];
+
+    // Project column (board relation)
+    const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+    if (projectCol) {
+      if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+        projectName = projectCol.linked_items.map(li => li.name).join(', ');
+      } else if (projectCol.text) {
+        projectName = projectCol.text;
+      }
     }
-    
-    if (!result.data?.boards?.[0]?.items_page?.items) {
-      Logger.log('No items found in Tasks board');
-      return [];
+
+    // temp_ind column
+    const tempIndCol = colVals['numeric_mkt9pbj0'];
+    if (tempIndCol?.text && tempIndCol.text.trim()) {
+      tempInd = parseFloat(tempIndCol.text);
     }
-    
-    const items = result.data.boards[0].items_page.items;
-    Logger.log(`Found ${items.length} tasks matching vendor`);
-    
-    const tasks = [];
-    
-    // Group priority for sorting (DESC = higher number first)
-    const groupPriority = {
-      'topics': 3,                    // Ongoing Projects
-      'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
-      'group_title': 1,              // Completed Projects
-      'group_mkqf4yzy': 0            // Task Templates
-    };
-    
-    // Explicit project order (from Large-Scale Projects board structure)
-    const projectPriority = {
-      'Home Services': 1,
-      'ACA': 2,
-      'Vertical Activation': 3,
-      'Monthly Returns': 4,
-      'CPL/Zip Optimizations': 5,
-      'Accounting/Invoices': 6,
-      'System Admin': 7,
-      'URL Whitelist': 8,
-      'Outbound Communication': 9,
-      'Pre-Onboarding': 10,
-      'Appointments': 11,
-      'Onboarding - Buyer': 12,
-      'Onboarding - Affiliate': 13,
-      'Onboarding - Vertical': 14,
-      'Templates': 15,
-      'Morning Meeting': 16,
-      'Week of 07/28/25': 17
-    };
-    
-    for (const item of items) {
-      const itemName = String(item.name || '');
-      const groupId = item.group?.id || '';
-      const groupTitle = item.group?.title || '';
-      
-      let status = '';
-      let projectName = '';
-      let tempInd = null;
-      let taskDate = '';  // Date from timeline column
-      
-      for (const col of item.column_values) {
-        // Status column
-        if (col.id === 'status' || col.id === 'status4' || col.id === 'status_1') {
-          status = col.text || '';
-        }
-        // Project column (board relation)
-        else if (col.id === BS_CFG.TASKS_PROJECT_COLUMN) {
-          if (col.linked_items && col.linked_items.length > 0) {
-            projectName = col.linked_items.map(li => li.name).join(', ');
-          } else if (col.text) {
-            projectName = col.text;
-          }
-        }
-        // temp_ind column
-        else if (col.id === 'numeric_mkt9pbj0') {
-          if (col.text && col.text.trim()) {
-            tempInd = parseFloat(col.text);
-          }
-        }
-        // Date column (timeline type - shows as "YYYY-MM-DD - YYYY-MM-DD" or just end date)
-        else if (col.id === 'timerange_mkqfmzyf') {
-          if (col.text && col.text.trim()) {
-            // Timeline format is "Start - End", we want the end date
-            const dateParts = col.text.split(' - ');
-            taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
-          }
-        }
-      }
-      
-      const createdDate = new Date(item.created_at);
-      const tz = 'America/Los_Angeles';
-      const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
-      
-      tasks.push({
-        subject: itemName,
-        status: status || 'No Status',
-        taskDate: taskDate,  // Date from timeline column
-        created: createdFormatted,
-        project: projectName || `Group: ${groupTitle}`,
-        isDone: (status.toLowerCase() === 'done'),
-        
-        // Sorting fields
-        groupId: groupId,
-        groupPriority: groupPriority[groupId] || -1,
-        projectName: projectName,
-        projectPriority: projectPriority[projectName] || 999,
-        tempInd: tempInd,
-        tempIndSort: (tempInd === null) ? 999999 : tempInd  // Blanks at end
-      });
-      
-      Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+
+    // Date column (timeline)
+    const dateCol = colVals['timerange_mkqfmzyf'];
+    if (dateCol?.text && dateCol.text.trim()) {
+      const dateParts = dateCol.text.split(' - ');
+      taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
     }
-    
-    // Sort by: Done status (not done first)
-    // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
-    // For DONE: Created Date (DESC) only
-    tasks.sort((a, b) => {
-      // 0. Done status (not done before done)
-      if (a.isDone !== b.isDone) {
-        return a.isDone ? 1 : -1;
-      }
-      
-      // If BOTH are done, sort only by Created Date DESC
-      if (a.isDone && b.isDone) {
-        const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
-        const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
-        return dateB - dateA;
-      }
-      
-      // For not-done tasks, use full sorting logic:
-      // 1. Group priority (DESC - higher numbers first)
-      if (a.groupPriority !== b.groupPriority) {
-        return b.groupPriority - a.groupPriority;
-      }
-      
-      // 2. Project (explicit order from Large-Scale Projects)
-      if (a.projectPriority !== b.projectPriority) {
-        return a.projectPriority - b.projectPriority;
-      }
-      
-      // 3. temp_ind (ASC - low to high, blanks at end)
-      if (a.tempIndSort !== b.tempIndSort) {
-        return a.tempIndSort - b.tempIndSort;
-      }
-      
-      // 4. Created Date (DESC - newest first)
+
+    // Last Updated column
+    const lastUpdatedCol = colVals['pulse_updated_mkyyesw'];
+    if (lastUpdatedCol?.text && lastUpdatedCol.text.trim()) {
+      lastUpdated = lastUpdatedCol.text.split(' ')[0];
+    }
+
+    const createdDate = new Date(item.createdAt);
+    const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
+
+    tasks.push({
+      itemId: item.id,
+      statusColumnId: statusColumnId,
+      subject: itemName,
+      status: status || 'No Status',
+      taskDate: taskDate,
+      lastUpdated: lastUpdated,
+      created: createdFormatted,
+      project: projectName || `Group: ${groupTitle}`,
+      isDone: (status.toLowerCase() === 'done'),
+
+      // Sorting fields
+      groupId: groupId,
+      groupPriority: groupPriority[groupId] || -1,
+      projectName: projectName,
+      projectPriority: projectPriority[projectName] || 999,
+      tempInd: tempInd,
+      tempIndSort: (tempInd === null) ? 999999 : tempInd
+    });
+
+    Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+  }
+
+  // Sort by: Done status (not done first)
+  // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
+  // For DONE: Created Date (DESC) only
+  tasks.sort((a, b) => {
+    // 0. Done status (not done before done)
+    if (a.isDone !== b.isDone) {
+      return a.isDone ? 1 : -1;
+    }
+
+    // If BOTH are done, sort only by Created Date DESC
+    if (a.isDone && b.isDone) {
       const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
       const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
       return dateB - dateA;
-    });
-    
-    return tasks.slice(0, 30);
-    
+    }
+
+    // For not-done tasks, use full sorting logic:
+    // 1. Group priority (DESC - higher numbers first)
+    if (a.groupPriority !== b.groupPriority) {
+      return b.groupPriority - a.groupPriority;
+    }
+
+    // 2. Project (explicit order from Large-Scale Projects)
+    if (a.projectPriority !== b.projectPriority) {
+      return a.projectPriority - b.projectPriority;
+    }
+
+    // 3. temp_ind (ASC - low to high, blanks at end)
+    if (a.tempIndSort !== b.tempIndSort) {
+      return a.tempIndSort - b.tempIndSort;
+    }
+
+    // 4. Created Date (DESC - newest first)
+    const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
+    const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
+    return dateB - dateA;
+  });
+
+  return tasks.slice(0, 30);
+}
+
+/**
+ * Get ALL calendar events for batch processing (with caching)
+ * Fetches all events from owned calendars once and caches for the session
+ * @returns {array} All calendar events with metadata
+ */
+function getAllCalendarEvents_() {
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'calendar_all_events';
+
+  // Check script-level cache first
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const events = JSON.parse(cached);
+      Logger.log(`Calendar batch: loaded ${events.length} events from cache`);
+      return events;
+    } catch (e) {
+      // Cache corrupted, continue to fetch
+    }
+  }
+
+  Logger.log('Calendar batch: fetching all events from calendars...');
+
+  const now = new Date();
+  const pastDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
+  const futureDate = new Date(now.getTime() + (60 * 24 * 60 * 60 * 1000)); // 60 days ahead
+
+  const calendars = CalendarApp.getAllCalendars();
+  const allEvents = [];
+
+  // Only search calendars owned by the user
+  const ownedCalendars = calendars.filter(cal => {
+    try {
+      return cal.isOwnedByMe();
+    } catch (e) {
+      return false;
+    }
+  });
+
+  Logger.log(`Calendar batch: searching ${ownedCalendars.length} owned calendars`);
+
+  for (const calendar of ownedCalendars) {
+    try {
+      const events = calendar.getEvents(pastDate, futureDate);
+
+      for (const event of events) {
+        const title = event.getTitle() || '';
+        const description = event.getDescription() || '';
+        const location = event.getLocation() || '';
+        const startTime = event.getStartTime();
+        const endTime = event.getEndTime();
+        const isAllDay = event.isAllDayEvent();
+
+        // Get attendee emails
+        let attendeeEmails = [];
+        try {
+          const guests = event.getGuestList();
+          attendeeEmails = guests.map(g => g.getEmail().toLowerCase());
+        } catch (e) {
+          // Some events may not allow guest list access
+        }
+
+        allEvents.push({
+          id: event.getId(),
+          title: title,
+          description: description,
+          location: location,
+          startTime: startTime,
+          endTime: endTime,
+          isAllDay: isAllDay,
+          attendeeEmails: attendeeEmails,
+          searchText: (title + ' ' + description + ' ' + location + ' ' + attendeeEmails.join(' ')).toLowerCase(),
+          calendarName: calendar.getName()
+        });
+      }
+    } catch (e) {
+      Logger.log(`Error fetching events from calendar: ${e.message}`);
+    }
+  }
+
+  Logger.log(`Calendar batch: fetched ${allEvents.length} events total`);
+
+  // Cache for 30 minutes
+  try {
+    const jsonStr = JSON.stringify(allEvents);
+    if (jsonStr.length < 90000) {
+      cache.put(cacheKey, jsonStr, 1800);
+    } else {
+      Logger.log(`Calendar batch: ${allEvents.length} events too large for cache (${Math.round(jsonStr.length/1024)}KB)`);
+    }
   } catch (e) {
-    Logger.log(`Error fetching monday.com tasks: ${e.message}`);
+    Logger.log(`Calendar batch cache error: ${e.message}`);
+  }
+
+  return allEvents;
+}
+
+/**
+ * Filter calendar events for a specific vendor (local matching)
+ * @param {array} allEvents - All calendar events (from getAllCalendarEvents_)
+ * @param {string} vendor - Vendor name to search for
+ * @param {array} contactEmails - Contact emails to search for
+ * @returns {array} Matching events formatted for display
+ */
+function filterCalendarEventsForVendor_(allEvents, vendor, contactEmails) {
+  if (!allEvents || allEvents.length === 0 || !vendor) {
     return [];
   }
+
+  const tz = 'America/Los_Angeles';
+  const now = new Date();
+  const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+
+  // Build search terms
+  const searchTerms = [vendor.toLowerCase()];
+
+  // Without parentheses
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
+  if (withoutParens !== vendor.toLowerCase()) {
+    searchTerms.push(withoutParens);
+  }
+
+  // Without common suffixes
+  const withoutSuffix = vendor.replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.?)$/i, '').trim().toLowerCase();
+  if (withoutSuffix !== vendor.toLowerCase() && !searchTerms.includes(withoutSuffix)) {
+    searchTerms.push(withoutSuffix);
+  }
+
+  // Check if multi-word vendor (affects matching strictness)
+  const words = vendor.split(/[\s\-\(\)]+/).filter(w => w.length > 0);
+  const isMultiWord = words.length >= 2;
+  const commonWords = ['solar', 'energy', 'home', 'power', 'green', 'sun', 'electric', 'services', 'solutions', 'group', 'pro', 'usa', 'national'];
+
+  // Email search terms
+  const emailSearchTerms = (contactEmails || [])
+    .filter(e => e && e.includes('@'))
+    .map(e => e.toLowerCase().trim());
+
+  const matches = [];
+  const seenIds = new Set();
+
+  for (const event of allEvents) {
+    if (seenIds.has(event.id)) continue;
+
+    let isMatch = false;
+    let matchedTerm = '';
+    let matchedIn = '';
+
+    // Check vendor name against searchText
+    for (const term of searchTerms) {
+      if (event.searchText.includes(term)) {
+        // For multi-word vendors, skip single common word matches
+        if (isMultiWord) {
+          const termWords = term.split(/\s+/);
+          if (termWords.length < 2 && commonWords.includes(term)) {
+            continue;
+          }
+        }
+        isMatch = true;
+        matchedTerm = term;
+        matchedIn = event.title.toLowerCase().includes(term) ? 'title' :
+                   event.description.toLowerCase().includes(term) ? 'notes' :
+                   event.location.toLowerCase().includes(term) ? 'location' : 'attendees';
+        break;
+      }
+    }
+
+    // Check contact emails against attendees
+    if (!isMatch && emailSearchTerms.length > 0 && event.attendeeEmails.length > 0) {
+      for (const email of emailSearchTerms) {
+        if (event.attendeeEmails.some(ae => ae.includes(email))) {
+          isMatch = true;
+          matchedTerm = email;
+          matchedIn = 'contact email';
+          break;
+        }
+      }
+    }
+
+    if (isMatch) {
+      const startTime = event.startTime;
+      const startDateStr = Utilities.formatDate(startTime, tz, 'yyyy-MM-dd');
+      const isPast = startDateStr < todayStr;
+
+      matches.push({
+        title: event.title,
+        startTime: startTime,
+        endTime: event.endTime,
+        isAllDay: event.isAllDay,
+        location: event.location,
+        isPast: isPast,
+        matchedIn: matchedIn,
+        matchedTerm: matchedTerm,
+        formattedDate: event.isAllDay
+          ? Utilities.formatDate(startTime, tz, 'EEE, MMM d')
+          : Utilities.formatDate(startTime, tz, 'EEE, MMM d @ h:mm a'),
+        calendarName: event.calendarName
+      });
+      seenIds.add(event.id);
+    }
+  }
+
+  // Sort: future meetings first (by date ASC), then past meetings (by date DESC)
+  matches.sort((a, b) => {
+    if (a.isPast !== b.isPast) return a.isPast ? 1 : -1;
+    if (a.isPast) return b.startTime - a.startTime;
+    return a.startTime - b.startTime;
+  });
+
+  return matches;
+}
+
+/**
+ * Clear the Calendar batch cache
+ */
+function clearCalendarBatchCache() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('calendar_all_events');
+  Logger.log('Calendar batch cache cleared');
 }
 
 /**
@@ -2859,8 +3996,9 @@ function getAllContracts_(useCache) {
   
   const allRecords = [];
   
-  // Fetch from both tables
+  // Fetch from all contract tables
   const tables = [
+    { name: 'Contracts 2026', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2026, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2026 },
     { name: 'Contracts 2025', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2025 },
     { name: 'Contracts 2024', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2024, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2024 }
   ];
@@ -3021,7 +4159,7 @@ function getContractsForVendor_(vendorName) {
 }
 
 /**
- * Format contracts for display in Battle Station
+ * Format contracts for display in A(I)DEN
  */
 function formatContractsForDisplay_(contracts) {
   if (!contracts || contracts.length === 0) {
@@ -3101,8 +4239,8 @@ function formatContractsForDisplay_(contracts) {
 }
 
 /**
- * Get contracts for vendor and format for Battle Station display
- * This is the main function to call from Battle Station
+ * Get contracts for vendor and format for A(I)DEN display
+ * This is the main function to call from A(I)DEN
  */
 function getVendorContracts_(vendorName) {
   try {
@@ -3131,10 +4269,11 @@ function getVendorContracts_(vendorName) {
  */
 function testAirtableConnection() {
   const tables = [
+    { name: 'Contracts 2026', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2026 },
     { name: 'Contracts 2025', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025 },
     { name: 'Contracts 2024', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2024 }
   ];
-  
+
   let allSuccess = true;
   
   for (const table of tables) {
@@ -3178,10 +4317,53 @@ function testAirtableConnection() {
  ************************************************************/
 
 /**
+ * Get all vendor folders from Google Drive parent folder (batched)
+ * Fetches once and caches for session - much faster than searching per vendor
+ * @returns {array} Array of { id, name, nameLower, url }
+ */
+function getAllGDriveVendorFolders_() {
+  // Check session cache first
+  const cached = getCachedData_('gdrive_folders', 'all');
+  if (cached && cached.length > 0) {
+    Logger.log(`Google Drive folders loaded from cache: ${cached.length} folders`);
+    return cached;
+  }
+
+  Logger.log('Fetching all Google Drive vendor folders (batch operation)...');
+  const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
+  const folders = [];
+
+  try {
+    const parentFolder = DriveApp.getFolderById(parentFolderId);
+    const folderIterator = parentFolder.getFolders();
+
+    while (folderIterator.hasNext()) {
+      const folder = folderIterator.next();
+      folders.push({
+        id: folder.getId(),
+        name: folder.getName(),
+        nameLower: folder.getName().toLowerCase(),
+        url: folder.getUrl()
+      });
+    }
+
+    Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
+
+    // Cache for future lookups (within same session)
+    setCachedData_('gdrive_folders', 'all', folders);
+
+    return folders;
+  } catch (e) {
+    Logger.log(`Error fetching Google Drive folders: ${e.message}`);
+    return [];
+  }
+}
+
+/**
  * Get files from vendor's Google Drive folder
- * Searches for a folder matching the vendor name (ignoring YYMMDD prefix)
+ * Uses batched folder list for fast local matching, then fetches files
  * Only returns files at the first level (not in subfolders)
- * 
+ *
  * @param {string} vendorName - The vendor name to search for
  * @returns {array} Array of file objects with name, type, modified, url
  */
@@ -3190,100 +4372,52 @@ function getGDriveFilesForVendor_(vendorName) {
     Logger.log('No vendor name provided for Google Drive search');
     return [];
   }
-  
+
   Logger.log(`=== GOOGLE DRIVE SEARCH ===`);
   Logger.log(`Vendor: ${vendorName}`);
-  
+
   try {
-    const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
     const cleanVendorName = vendorName.trim().toLowerCase();
-    
-    Logger.log(`Searching for: "${cleanVendorName}"`);
-    
+
     // Remove common suffixes for alternate search
     const nameWithoutSuffix = cleanVendorName
       .replace(/,?\s*(llc|inc\.?|corp\.?|corporation|company|co\.|l\.?l\.?c\.?)$/i, '')
       .trim();
-    
+
+    // Get all vendor folders from cache (batch operation)
+    const allFolders = getAllGDriveVendorFolders_();
+
+    // Match locally - no API calls needed!
     let vendorFolder = null;
-    
-    // Strategy 1: Search for exact vendor name phrase
-    let searchQuery = `title contains '${vendorName.replace(/'/g, "\\'")}' and '${parentFolderId}' in parents`;
-    Logger.log(`Search query: ${searchQuery}`);
-    
-    let folderIterator = DriveApp.searchFolders(searchQuery);
-    
-    while (folderIterator.hasNext()) {
-      const folder = folderIterator.next();
-      const folderName = folder.getName();
-      const folderNameLower = folderName.toLowerCase();
-      Logger.log(`  Found: "${folderName}"`);
-      
+    let vendorFolderUrl = null;
+
+    for (const folder of allFolders) {
       // Check if folder contains the exact vendor name (case-insensitive)
-      if (folderNameLower.includes(cleanVendorName)) {
-        vendorFolder = folder;
-        Logger.log(`Exact match! Using vendor folder: ${folderName}`);
+      if (folder.nameLower.includes(cleanVendorName)) {
+        vendorFolder = DriveApp.getFolderById(folder.id);
+        vendorFolderUrl = folder.url;
+        Logger.log(`Match found: "${folder.name}"`);
         break;
       }
-      
+
       // Also accept if it contains the name without suffix
-      if (nameWithoutSuffix !== cleanVendorName && folderNameLower.includes(nameWithoutSuffix)) {
-        vendorFolder = folder;
-        Logger.log(`Match without suffix! Using vendor folder: ${folderName}`);
+      if (nameWithoutSuffix !== cleanVendorName && folder.nameLower.includes(nameWithoutSuffix)) {
+        vendorFolder = DriveApp.getFolderById(folder.id);
+        vendorFolderUrl = folder.url;
+        Logger.log(`Match found (without suffix): "${folder.name}"`);
         break;
       }
     }
-    
-    // Strategy 2: If not found, try searching without suffix
-    if (!vendorFolder && nameWithoutSuffix !== cleanVendorName) {
-      searchQuery = `title contains '${nameWithoutSuffix.replace(/'/g, "\\'")}' and '${parentFolderId}' in parents`;
-      Logger.log(`Trying without suffix: ${searchQuery}`);
-      
-      folderIterator = DriveApp.searchFolders(searchQuery);
-      
-      while (folderIterator.hasNext()) {
-        const folder = folderIterator.next();
-        const folderName = folder.getName();
-        const folderNameLower = folderName.toLowerCase();
-        Logger.log(`  Found: "${folderName}"`);
-        
-        if (folderNameLower.includes(nameWithoutSuffix)) {
-          vendorFolder = folder;
-          Logger.log(`Match! Using vendor folder: ${folderName}`);
-          break;
-        }
-      }
-    }
-    
-    // Strategy 3: Fallback - iterate through parent folder directly (for newly created folders)
-    if (!vendorFolder) {
-      Logger.log('Search API found nothing, trying direct folder iteration...');
-      const parentFolder = DriveApp.getFolderById(parentFolderId);
-      folderIterator = parentFolder.getFolders();
-      
-      while (folderIterator.hasNext()) {
-        const folder = folderIterator.next();
-        const folderName = folder.getName();
-        const folderNameLower = folderName.toLowerCase();
-        
-        // Check for exact phrase match
-        if (folderNameLower.includes(cleanVendorName) || 
-            (nameWithoutSuffix !== cleanVendorName && folderNameLower.includes(nameWithoutSuffix))) {
-          vendorFolder = folder;
-          Logger.log(`Found via direct iteration: ${folderName}`);
-          break;
-        }
-      }
-    }
-    
+
     if (!vendorFolder) {
       Logger.log('No matching vendor folder found in Google Drive');
       return { files: [], folderFound: false, folderUrl: null };
     }
-    
+
     // Get files at the first level only (no subfolders)
+    // Use cached URL instead of calling getUrl() again
     const files = [];
-    const folderUrl = vendorFolder.getUrl();
+    const folderUrl = vendorFolderUrl;
     const fileIterator = vendorFolder.getFiles();
     
     while (fileIterator.hasNext()) {
@@ -3342,46 +4476,533 @@ function getGDriveFilesForVendor_(vendorName) {
   }
 }
 
+/************************************************************
+ * CRYSTAL BALL - Vendor Email Analysis
+ * Analyzes outstanding items and snoozed emails for a vendor
+ ************************************************************/
+
 /**
- * Find a monday.com item ID by searching for a vendor name
+ * Get Crystal Ball analysis for a vendor
+ * Analyzes emails in 00.received and snoozed emails to determine what's outstanding
+ * Runs realtime (no caching) - data changes frequently and we want latest insight
+ *
+ * @param {string} vendor - The vendor name
+ * @param {number} listRow - The row number in the list sheet
+ * @returns {object} - { items: [], snoozed: [], summary: string, error: string }
  */
-function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
-  Logger.log(`=== SEARCHING FOR VENDOR ===`);
-  Logger.log(`Search term: "${vendor}"`);
-  Logger.log(`Board ID: ${boardId}`);
-  
-  let query = `
-    query {
-      boards (ids: [${boardId}]) {
-        items_page (limit: 100, query_params: {rules: [{column_id: "name", compare_value: ["${vendor.replace(/"/g, '\\"')}"]}]}) {
-          items { id name }
-        }
-      }
-    }
-  `;
-  
-  let itemId = tryFindItem_(query, apiToken, 'Exact match');
-  if (itemId) return itemId;
-  
-  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim();
-  if (withoutParens !== vendor) {
-    Logger.log(`Trying without parentheses: "${withoutParens}"`);
-    query = `
-      query {
-        boards (ids: [${boardId}]) {
-          items_page (limit: 100, query_params: {rules: [{column_id: "name", compare_value: ["${withoutParens.replace(/"/g, '\\"')}"]}]}) {
-            items { id name }
-          }
-        }
-      }
-    `;
-    
-    itemId = tryFindItem_(query, apiToken, 'Without parentheses');
-    if (itemId) return itemId;
+function getCrystalBallData_(vendor, listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    return { items: [], snoozed: [], summary: '', error: 'List sheet not found' };
   }
-  
-  Logger.log(`Trying contains search...`);
-  query = `
+
+  try {
+    // Get the Gmail link to extract the vendor label
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) {
+      return { items: [], snoozed: [], summary: '', error: 'No Gmail link found' };
+    }
+
+    const gmailLinkStr = gmailLinkAll.toString();
+
+    // Extract vendor label (zzzvendors-*) from URL
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      return { items: [], snoozed: [], summary: '', error: 'Could not extract vendor label' };
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+    Logger.log(`[Crystal Ball] Analyzing vendor: ${vendor}, label: ${vendorLabel}`);
+
+    // Search 1: Threads in 00.received with this vendor's label
+    const receivedQuery = `label:00.received label:${vendorLabel}`;
+    const receivedThreads = GmailApp.search(receivedQuery, 0, 30);
+    Logger.log(`[Crystal Ball] Found ${receivedThreads.length} threads in 00.received`);
+
+    // Search 2: Snoozed threads for this vendor
+    const snoozedQuery = `is:snoozed label:${vendorLabel}`;
+    const snoozedThreads = GmailApp.search(snoozedQuery, 0, 20);
+    Logger.log(`[Crystal Ball] Found ${snoozedThreads.length} snoozed threads`);
+
+    // Crystal Ball always runs fresh (realtime) - no checksum caching
+    // Data changes frequently and we want the latest insight when viewing a vendor
+    Logger.log(`[Crystal Ball] Running realtime analysis (no caching)`);
+
+    // Process received threads
+    const receivedItems = [];
+    for (const thread of receivedThreads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const labels = thread.getLabels().map(l => l.getName());
+
+      // Determine status based on labels
+      let status = 'inbox';
+      if (labels.some(l => l.includes('02.waiting/customer'))) status = 'waiting-customer';
+      else if (labels.some(l => l.includes('02.waiting/me'))) status = 'waiting-me';
+      else if (labels.some(l => l.includes('02.waiting/phonexa'))) status = 'waiting-phonexa';
+      else if (labels.some(l => l.includes('01.accounting'))) status = 'accounting';
+
+      // Get last sender (skip system emails)
+      let lastFrom = lastMessage.getFrom();
+      let lastSenderEmail = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const sender = messages[i].getFrom();
+        if (!isSystemOrBounceEmail_(sender)) {
+          lastFrom = sender;
+          // Extract email from "Name <email>" format
+          const emailMatch = sender.match(/<([^>]+)>/) || [null, sender];
+          lastSenderEmail = (emailMatch[1] || sender).toLowerCase();
+          break;
+        }
+      }
+
+      // Determine if the last sender is from our team
+      const ourDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+      const lastSenderIsUs = ourDomains.some(d => lastSenderEmail.includes(d));
+
+      receivedItems.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        lastFrom: lastFrom,
+        lastSenderIsUs: lastSenderIsUs,
+        status: status,
+        labels: labels.filter(l => l.startsWith('02.') || l.startsWith('01.')).join(', '),
+        snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
+      });
+    }
+
+    // Process snoozed threads
+    const snoozedItems = [];
+    for (const thread of snoozedThreads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+
+      snoozedItems.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
+      });
+    }
+
+    // If no emails, return early
+    if (receivedItems.length === 0 && snoozedItems.length === 0) {
+      return {
+        items: [],
+        snoozed: [],
+        summary: 'No outstanding emails found.',
+        error: null
+      };
+    }
+
+    // Build context for Claude analysis - clearly indicate who sent the last message
+    const emailContext = receivedItems.map((e, i) => {
+      const ballInCourt = e.lastSenderIsUs ? '⚪ BALL IN THEIR COURT (we sent last)' : '🔴 BALL IN OUR COURT (they sent last)';
+      return `${i+1}. [${e.status.toUpperCase()}] "${e.subject}" (${e.date})\n   Last message from: ${e.lastFrom}\n   ${ballInCourt}\n   Labels: ${e.labels || 'none'}\n   Preview: ${e.snippet}...`;
+    }).join('\n\n');
+
+    const snoozedContext = snoozedItems.map((e, i) =>
+      `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
+    ).join('\n\n');
+
+    // Call Claude for analysis
+    const prompt = `You are analyzing emails for a vendor named "${vendor}" to determine what is OUTSTANDING and needs attention.
+
+CRITICAL CONTEXT:
+- "OUR TEAM" = Profitise/ZeroParallel/Phonexa (emails from @profitise.com, @zeroparallel.com, @phonexa.com)
+- "VENDOR" = ${vendor} (the external party)
+- If WE sent the last message → we are WAITING on the vendor to respond (🟡)
+- If THEY sent the last message AND it has 01.priority/1 label → urgent, we need to respond (🔴)
+- If THEY sent the last message but NO 01.priority/1 label → less urgent (🟡)
+
+IMPORTANT: Only use 🔴 (red) if the email has the "01.priority/1" label. Without that label, use 🟡 (yellow) instead.
+
+ACTIVE EMAILS IN INBOX (label:00.received):
+${emailContext || 'None'}
+
+SNOOZED EMAILS (deferred for later):
+${snoozedContext || 'None'}
+
+Analyze these emails and provide a BRIEF, ACTIONABLE summary. Pay close attention to:
+1. WHO sent the last message
+2. Whether the email has the 01.priority/1 label (check the Labels line)
+
+Format your response as a SHORT bulleted list (3-6 bullets max). Be concise - each bullet should be 10 words or less.
+Start each bullet with an emoji:
+- 🔴 = URGENT: they sent last AND has 01.priority/1 label
+- 🟡 = Waiting/needs attention but not urgent (no priority label, or we sent last)
+- 🔵 = Snoozed/deferred for later
+- 🟢 = FYI/informational
+
+Example format:
+• 🟡 Awaiting vendor response on Invoice #123
+• 🔴 URGENT: Reply to their pricing question (priority)
+• 🔵 Follow-up snoozed until Jan 15`;
+
+    const apiKey = BS_CFG.CLAUDE_API_KEY;
+    if (!apiKey) {
+      // No API key - return raw data without analysis
+      return {
+        items: receivedItems,
+        snoozed: snoozedItems,
+        summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
+        error: null
+      };
+    }
+
+    const claudeResult = callClaudeAPI_(prompt, apiKey);
+
+    if (claudeResult.error) {
+      Logger.log(`[Crystal Ball] Claude API error: ${claudeResult.error}`);
+      return {
+        items: receivedItems,
+        snoozed: snoozedItems,
+        summary: `${receivedItems.length} active, ${snoozedItems.length} snoozed (analysis failed)`,
+        error: claudeResult.error
+      };
+    }
+
+    Logger.log(`[Crystal Ball] Analysis complete`);
+    return {
+      items: receivedItems,
+      snoozed: snoozedItems,
+      summary: claudeResult.content,
+      error: null
+    };
+
+  } catch (e) {
+    Logger.log(`[Crystal Ball] Error: ${e.message}`);
+    return { items: [], snoozed: [], summary: '', error: e.message };
+  }
+}
+
+/**
+ * Ask a question about a vendor and search their emails for the answer
+ * Uses Claude to analyze all emails with the vendor's zzzVendors label
+ */
+function askAboutVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    ui.alert('No vendor currently loaded. Please navigate to a vendor first.');
+    return;
+  }
+
+  // Prompt for the question
+  const response = ui.prompt(
+    `❓ Ask About ${vendor}`,
+    'Enter your question (e.g., "What verticals do they want?", "What was their last pricing request?"):',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const question = response.getResponseText().trim();
+  if (!question) {
+    ui.alert('Please enter a question.');
+    return;
+  }
+
+  ss.toast('Searching emails and analyzing...', '🔍 Searching', 10);
+
+  // Get all emails from vendor label
+  const emails = getAllEmailsFromVendorLabel_(listRow, 100); // Get more emails for context
+
+  if (emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  Logger.log(`[Ask About Vendor] Found ${emails.length} emails for ${vendor}`);
+
+  // Build email context for Claude - include more detail than Crystal Ball
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    // Format date nicely
+    const dateStr = e.date || 'Unknown date';
+
+    // Get the content snippet
+    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
+
+    // Format labels nicely
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    return `--- Email ${i+1} ---
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
+Labels: ${labelsStr}
+Content: ${snippet}`;
+  }).join('\n\n');
+
+  // Call Claude with the question
+  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+
+USER'S QUESTION: ${question}
+
+Here are the emails from this vendor (most recent first):
+
+${emailContext}
+
+Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+
+Keep your answer concise but complete.`;
+
+  const apiKey = BS_CFG.CLAUDE_API_KEY;
+  if (!apiKey) {
+    ui.alert('Claude API key not configured.');
+    return;
+  }
+
+  const result = callClaudeAPI_(prompt, apiKey);
+
+  if (result.error) {
+    ui.alert(`Error: ${result.error}`);
+    return;
+  }
+
+  // Store the question for "Search More" functionality
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('BS_ASK_VENDOR_QUESTION', question);
+  props.setProperty('BS_ASK_VENDOR_OFFSET', '100'); // Next search starts at 100
+
+  // Show answer in a dialog with "Search Older Emails" button
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      .question { background: #e8f0fe; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-weight: bold; }
+      .answer { background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; }
+      .meta { color: #666; font-size: 12px; margin-top: 15px; }
+      .btn { padding: 10px 20px; margin-top: 15px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; }
+      .btn-secondary { background: #6c757d; color: white; }
+      .btn-secondary:hover { background: #5a6268; }
+      .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
+      #loading { display: none; color: #666; margin-top: 10px; }
+    </style>
+    <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
+    <div class="question">Q: ${escapeHtml_(question)}</div>
+    <div class="answer" id="answerBox">${escapeHtml_(result.content)}</div>
+    <div class="meta" id="metaBox">Searched emails 1-${Math.min(emails.length, 50)} of ${emails.length} retrieved</div>
+    <button class="btn btn-secondary" id="searchMoreBtn" onclick="searchMore()">🔍 Search Older Emails (101-200)</button>
+    <div id="loading">⏳ Searching older emails...</div>
+
+    <script>
+      function searchMore() {
+        document.getElementById('searchMoreBtn').disabled = true;
+        document.getElementById('loading').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('loading').style.display = 'none';
+            if (result.error) {
+              alert('Error: ' + result.error);
+              document.getElementById('searchMoreBtn').disabled = false;
+            } else {
+              document.getElementById('answerBox').textContent = result.answer;
+              document.getElementById('metaBox').textContent = result.meta;
+              if (result.hasMore) {
+                document.getElementById('searchMoreBtn').textContent = '🔍 Search Even Older Emails (' + result.nextRange + ')';
+                document.getElementById('searchMoreBtn').disabled = false;
+              } else {
+                document.getElementById('searchMoreBtn').textContent = '✓ No more emails to search';
+                document.getElementById('searchMoreBtn').disabled = true;
+              }
+            }
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('loading').style.display = 'none';
+            alert('Error: ' + error.message);
+            document.getElementById('searchMoreBtn').disabled = false;
+          })
+          .askAboutVendorContinue();
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(550);
+
+  ui.showModalDialog(htmlOutput, `❓ Ask About ${vendor}`);
+
+  Logger.log(`[Ask About Vendor] Answered question for ${vendor}: "${question}"`);
+}
+
+/**
+ * Continue searching older emails for Ask About Vendor
+ * Called from the dialog when user clicks "Search Older Emails"
+ */
+function askAboutVendorContinue() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  const props = PropertiesService.getScriptProperties();
+  const question = props.getProperty('BS_ASK_VENDOR_QUESTION');
+  const offset = parseInt(props.getProperty('BS_ASK_VENDOR_OFFSET') || '100', 10);
+
+  if (!question) {
+    return { error: 'No active question. Please start a new search.' };
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  // Get emails with offset
+  const emails = getAllEmailsFromVendorLabelWithOffset_(listRow, 100, offset);
+
+  if (emails.length === 0) {
+    return {
+      error: null,
+      answer: 'No more emails found in this range.',
+      meta: `Searched emails ${offset + 1}-${offset + 100} (none found)`,
+      hasMore: false,
+      nextRange: ''
+    };
+  }
+
+  Logger.log(`[Ask About Vendor Continue] Found ${emails.length} emails at offset ${offset} for ${vendor}`);
+
+  // Build email context
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    const dateStr = e.date || 'Unknown date';
+    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    return `--- Email ${offset + i + 1} ---
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
+Labels: ${labelsStr}
+Content: ${snippet}`;
+  }).join('\n\n');
+
+  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+
+USER'S QUESTION: ${question}
+
+Here are OLDER emails from this vendor (emails ${offset + 1}-${offset + emails.length}):
+
+${emailContext}
+
+Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+
+Keep your answer concise but complete.`;
+
+  const apiKey = BS_CFG.CLAUDE_API_KEY;
+  const result = callClaudeAPI_(prompt, apiKey);
+
+  if (result.error) {
+    return { error: result.error };
+  }
+
+  // Update offset for next search
+  const newOffset = offset + 100;
+  props.setProperty('BS_ASK_VENDOR_OFFSET', newOffset.toString());
+
+  const hasMore = emails.length >= 50; // If we got a full batch, there might be more
+  const nextRange = `${newOffset + 1}-${newOffset + 100}`;
+
+  return {
+    error: null,
+    answer: result.content,
+    meta: `Searched emails ${offset + 1}-${offset + Math.min(emails.length, 50)}`,
+    hasMore: hasMore,
+    nextRange: nextRange
+  };
+}
+
+/**
+ * Get emails from vendor label with offset for pagination
+ */
+function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return [];
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return [];
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) return [];
+
+    const vendorLabel = vendorLabelMatch[1];
+    const searchQuery = `label:${vendorLabel}`;
+
+    // Search with offset
+    const threads = GmailApp.search(searchQuery, offset, maxThreads);
+
+    Logger.log(`Found ${threads.length} threads at offset ${offset}`);
+
+    const emails = [];
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const labels = thread.getLabels().map(l => l.getName());
+
+      emails.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        from: lastMessage.getFrom(),
+        to: lastMessage.getTo(),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
+        messageCount: messages.length,
+        labels: labels,
+        lastMessageDate: lastMessage.getDate()
+      });
+    }
+
+    emails.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+    return emails;
+
+  } catch (e) {
+    Logger.log(`ERROR in getAllEmailsFromVendorLabelWithOffset_: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get all items from a Monday.com board (batched)
+ * Fetches once and caches for session - much faster than searching per vendor
+ * @param {string} boardId - The board ID to fetch from
+ * @param {string} apiToken - The API token
+ * @returns {array} Array of { id, name, nameLower }
+ */
+function getAllMondayBoardItems_(boardId, apiToken) {
+  const cacheKey = `board_${boardId}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_items', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com items loaded from cache for board ${boardId}: ${cached.length} items`);
+    return cached;
+  }
+
+  Logger.log(`Fetching all items from Monday.com board ${boardId} (batch operation)...`);
+
+  const query = `
     query {
       boards (ids: [${boardId}]) {
         items_page (limit: 500) {
@@ -3390,7 +5011,7 @@ function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
       }
     }
   `;
-  
+
   try {
     const options = {
       method: 'post',
@@ -3399,77 +5020,297 @@ function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
       payload: JSON.stringify({ query: query }),
       muteHttpExceptions: true
     };
-    
+
     const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
     const result = JSON.parse(response.getContentText());
-    
+
     if (result.data?.boards?.[0]?.items_page?.items) {
-      const items = result.data.boards[0].items_page.items;
-      
-      for (const item of items) {
-        const itemName = String(item.name || '').toLowerCase();
-        const searchTerm = vendor.toLowerCase();
-        const searchTermNoParens = withoutParens.toLowerCase();
-        
-        if (itemName.includes(searchTerm) || searchTerm.includes(itemName) ||
-            itemName.includes(searchTermNoParens) || searchTermNoParens.includes(itemName)) {
-          Logger.log(`✓ FOUND MATCH: "${item.name}" (ID: ${item.id})`);
-          return item.id;
-        }
-      }
+      const items = result.data.boards[0].items_page.items.map(item => ({
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase()
+      }));
+
+      Logger.log(`Fetched ${items.length} items from Monday.com board ${boardId}`);
+
+      // Cache for future lookups
+      setCachedData_('monday_items', cacheKey, items);
+
+      return items;
     }
-    
-    return null;
+
+    return [];
   } catch (e) {
-    Logger.log(`Error in contains search: ${e}`);
-    return null;
+    Logger.log(`Error fetching Monday.com items: ${e.message}`);
+    return [];
   }
 }
 
 /**
- * Helper to try a specific query
+ * Get all tasks from the Tasks board with full details (cached)
+ * This is much faster than querying per-vendor since it's one API call per session
+ *
+ * Filters:
+ * - Group: "Ongoing Projects" OR "Completed Projects"
+ *
+ * Uses cursor-based pagination to fetch beyond 500 item limit
+ * @returns {array} Array of task objects with full details
  */
-function tryFindItem_(query, apiToken, attemptName) {
+function getAllMondayTasks_() {
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_tasks', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com tasks loaded from cache: ${cached.length} tasks`);
+    return cached;
+  }
+
+  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation with pagination)...`);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Groups to include (no project filter - include all projects)
+  const VALID_GROUPS = ['ongoing projects', 'completed projects'];
+
+  // First query to get initial page
+  const initialQuery = `
+    query {
+      boards (ids: [${boardId}]) {
+        items_page (limit: 500) {
+          cursor
+          items {
+            id
+            name
+            group {
+              id
+              title
+            }
+            column_values {
+              id
+              text
+              type
+              ... on BoardRelationValue {
+                linked_items {
+                  id
+                  name
+                }
+              }
+            }
+            created_at
+            updated_at
+          }
+        }
+      }
+    }
+  `;
+
+  // Query for subsequent pages using cursor
+  const nextPageQuery = (cursor) => `
+    query {
+      next_items_page (limit: 500, cursor: "${cursor}") {
+        cursor
+        items {
+          id
+          name
+          group {
+            id
+            title
+          }
+          column_values {
+            id
+            text
+            type
+            ... on BoardRelationValue {
+              linked_items {
+                id
+                name
+              }
+            }
+          }
+          created_at
+          updated_at
+        }
+      }
+    }
+  `;
+
   try {
     const options = {
       method: 'post',
       contentType: 'application/json',
       headers: { 'Authorization': apiToken },
-      payload: JSON.stringify({ query: query }),
       muteHttpExceptions: true
     };
-    
+
+    let allItems = [];
+    let cursor = null;
+    let pageNum = 1;
+
+    // First page
+    options.payload = JSON.stringify({ query: initialQuery });
     const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
     const result = JSON.parse(response.getContentText());
-    
-    if (result.data?.boards?.[0]?.items_page?.items?.length > 0) {
-      const item = result.data.boards[0].items_page.items[0];
-      Logger.log(`✓ ${attemptName} SUCCESS: Found "${item.name}" (ID: ${item.id})`);
-      return item.id;
-    } else {
-      Logger.log(`✗ ${attemptName} failed: No items found`);
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`API Error fetching tasks: ${result.errors[0].message}`);
+      return [];
     }
-    
-    return null;
+
+    if (!result.data?.boards?.[0]?.items_page?.items) {
+      Logger.log('No tasks found in Tasks board');
+      return [];
+    }
+
+    allItems = result.data.boards[0].items_page.items;
+    cursor = result.data.boards[0].items_page.cursor;
+    Logger.log(`Page ${pageNum}: Fetched ${allItems.length} tasks, cursor: ${cursor ? 'yes' : 'no'}`);
+
+    // Fetch additional pages if cursor exists
+    while (cursor) {
+      pageNum++;
+      options.payload = JSON.stringify({ query: nextPageQuery(cursor) });
+      const nextResponse = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      const nextResult = JSON.parse(nextResponse.getContentText());
+
+      if (nextResult.errors && nextResult.errors.length > 0) {
+        Logger.log(`API Error on page ${pageNum}: ${nextResult.errors[0].message}`);
+        break;
+      }
+
+      if (!nextResult.data?.next_items_page?.items) {
+        Logger.log(`No more items on page ${pageNum}`);
+        break;
+      }
+
+      const pageItems = nextResult.data.next_items_page.items;
+      allItems = allItems.concat(pageItems);
+      cursor = nextResult.data.next_items_page.cursor;
+      Logger.log(`Page ${pageNum}: Fetched ${pageItems.length} tasks (total: ${allItems.length}), cursor: ${cursor ? 'yes' : 'no'}`);
+
+      // Safety limit to prevent infinite loops
+      if (pageNum >= 20) {
+        Logger.log('Reached page limit (20), stopping pagination');
+        break;
+      }
+    }
+
+    Logger.log(`Total fetched from Monday.com: ${allItems.length} tasks across ${pageNum} page(s)`);
+
+    // Process items into a more usable format AND filter by group/project
+    const tasks = [];
+    let filteredOutCount = 0;
+
+    for (const item of allItems) {
+      const colVals = {};
+      for (const col of (item.column_values || [])) {
+        colVals[col.id] = col;
+      }
+
+      // Get project from board_relation column (use correct column ID from config)
+      let project = '';
+      const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+      if (projectCol) {
+        if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+          project = projectCol.linked_items[0].name || '';
+        } else if (projectCol.text) {
+          project = projectCol.text;
+        }
+      }
+
+      const groupTitle = item.group?.title || '';
+
+      // Filter: Only include tasks from valid groups
+      const groupLower = groupTitle.toLowerCase();
+
+      if (!VALID_GROUPS.includes(groupLower)) {
+        filteredOutCount++;
+        continue;
+      }
+
+      tasks.push({
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase(),
+        groupId: item.group?.id || '',
+        groupTitle: groupTitle,
+        status: colVals['status']?.text || '',
+        project: project,
+        tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+        columnValues: colVals
+      });
+    }
+
+    Logger.log(`After filtering: ${tasks.length} tasks (filtered out ${filteredOutCount} from other groups)`);
+    Logger.log(`Valid groups: ${VALID_GROUPS.join(', ')}`);
+
+    // Cache for future lookups (1 hour cache)
+    setCachedData_('monday_tasks', cacheKey, tasks);
+
+    return tasks;
   } catch (e) {
-    Logger.log(`✗ ${attemptName} error: ${e}`);
-    return null;
+    Logger.log(`Error fetching Monday.com tasks: ${e.message}`);
+    return [];
   }
+}
+
+/**
+ * Find a monday.com item ID by searching for a vendor name
+ * Uses batched item list for fast local matching
+ */
+function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
+  Logger.log(`=== SEARCHING FOR VENDOR ===`);
+  Logger.log(`Search term: "${vendor}"`);
+  Logger.log(`Board ID: ${boardId}`);
+
+  const searchTerm = vendor.toLowerCase();
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim();
+  const searchTermNoParens = withoutParens.toLowerCase();
+
+  // Get all items from cache (batch operation)
+  const allItems = getAllMondayBoardItems_(boardId, apiToken);
+
+  // Match locally - no API calls needed!
+  // Try exact match first
+  for (const item of allItems) {
+    if (item.nameLower === searchTerm || item.nameLower === searchTermNoParens) {
+      Logger.log(`✓ EXACT MATCH: "${item.name}" (ID: ${item.id})`);
+      return item.id;
+    }
+  }
+
+  // Try contains match
+  for (const item of allItems) {
+    if (item.nameLower.includes(searchTerm) || searchTerm.includes(item.nameLower) ||
+        item.nameLower.includes(searchTermNoParens) || searchTermNoParens.includes(item.nameLower)) {
+      Logger.log(`✓ CONTAINS MATCH: "${item.name}" (ID: ${item.id})`);
+      return item.id;
+    }
+  }
+
+  Logger.log(`No match found for "${vendor}" in board ${boardId}`);
+  return null;
 }
 
 /**
  * Navigation: Go to next vendor
  */
 function battleStationNext() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
-  
+
   const currentIndex = getCurrentVendorIndex_();
   
   if (!currentIndex) {
@@ -3479,8 +5320,13 @@ function battleStationNext() {
 
   const totalVendors = listSh.getLastRow() - 1;
 
+  // Wrap around to first vendor if at the end
   if (currentIndex >= totalVendors) {
-    ss.toast('Already at the last vendor!', '⚠️ End of List', 3);
+    const listRow = currentIndex + 1;
+    const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+    listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
+    ss.toast(`Marked "${vendor}" as reviewed. Wrapping to vendor #1...`, '🔄 Wrap Around', 2);
+    loadVendorData(1);
     return;
   }
   
@@ -3496,11 +5342,14 @@ function battleStationNext() {
  * Navigation: Go to previous vendor
  */
 function battleStationPrevious() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
 
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
 
@@ -3527,7 +5376,7 @@ function battleStationRefresh() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
@@ -3547,12 +5396,23 @@ function battleStationQuickRefresh() {
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!bsSh || !listSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
-  
+
+  // Check for pending archive threads (from Email Responses) and archive if I sent the reply
+  const didArchive = checkAndArchivePendingThreads_();
+  if (didArchive) {
+    // Threads were archived - need to wait for Gmail to update, then refresh
+    ss.toast('Archived sent emails, waiting for Gmail to update...', '📬 Auto-Archive', 2);
+    Utilities.sleep(2000);
+    // Do a Quick Refresh Until Changed to catch the archive
+    battleStationQuickRefreshUntilChanged();
+    return;
+  }
+
   ss.toast('Refreshing emails only...', '⚡ Quick Refresh', 2);
   
   // Get current vendor info
@@ -3645,16 +5505,16 @@ function battleStationQuickRefresh() {
     // Email headers
     bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 3).setValue('Count').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
     bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
     currentRow++;
-    
+
     for (const email of emails.slice(0, 20)) {
       bsSh.getRange(currentRow, 1).setValue(email.subject);
       const emailDateCell2 = bsSh.getRange(currentRow, 2);
       emailDateCell2.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
       emailDateCell2.setValue(email.date);
-      bsSh.getRange(currentRow, 3).setValue(email.count).setNumberFormat('0');
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
       bsSh.getRange(currentRow, 4).setValue(email.labels);
 
       if (email.link) {
@@ -3703,27 +5563,98 @@ function battleStationQuickRefresh() {
   
   // Update checksum for emails
   const newEmailChecksum = generateEmailChecksum_(emails);
-  updateEmailChecksum_(vendor, newEmailChecksum);
-  
+
+  // Also update vendor label checksum to prevent false "new vendor emails" detection after snooze
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+  const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+  updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum);
+
   ss.toast('Emails refreshed!', '⚡ Done', 2);
 }
 
 /**
- * Update just the email checksum for a vendor
+ * Quick Refresh Until Changed - repeatedly refreshes emails until a change is detected
+ * Useful when you've made email changes and are waiting for them to take effect
  */
-function updateEmailChecksum_(vendor, newEmailChecksum) {
+function battleStationQuickRefreshUntilChanged() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  // Get current email checksum before refreshing
+  const storedData = getStoredChecksum_(vendor);
+  // Convert to string for consistent comparison (spreadsheet reads numbers as strings)
+  const oldChecksum = storedData && storedData.emailChecksum != null ? String(storedData.emailChecksum) : null;
+
+  const maxAttempts = 20;  // Max attempts to prevent infinite loop
+  const delaySeconds = 3;  // Seconds between attempts
+
+  Logger.log(`Quick Refresh Until Changed - Starting for ${vendor}`);
+  Logger.log(`Old checksum: ${oldChecksum} (type: ${typeof oldChecksum})`);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    ss.toast(`Checking for email changes... (attempt ${attempt}/${maxAttempts})`, '🔁 Waiting', delaySeconds + 1);
+
+    // Fetch fresh emails
+    const emails = getEmailsForVendor_(vendor, listRow);
+    const newChecksum = String(generateEmailChecksum_(emails));
+
+    Logger.log(`Attempt ${attempt}: newChecksum = ${newChecksum} (type: ${typeof newChecksum})`);
+
+    if (newChecksum !== oldChecksum) {
+      // Change detected! Do a full quick refresh to update the display
+      Logger.log(`Change detected! Old: ${oldChecksum}, New: ${newChecksum}`);
+      ss.toast('Change detected! Refreshing display...', '✅ Found', 2);
+      battleStationQuickRefresh();
+      return;
+    }
+
+    // No change yet, wait before next attempt
+    if (attempt < maxAttempts) {
+      Utilities.sleep(delaySeconds * 1000);
+    }
+  }
+
+  ss.toast(`No changes detected after ${maxAttempts} attempts`, '⏱️ Timeout', 3);
+}
+
+/**
+ * Update the email checksum (and optionally vendor label checksum) for a vendor
+ * @param {string} vendor - Vendor name
+ * @param {string} newEmailChecksum - New email checksum
+ * @param {string} [newVendorLabelChecksum] - Optional new vendor label checksum
+ */
+function updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
-  
+
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0] === vendor) {
+    // Use case-insensitive comparison to match storeChecksum_ and getStoredChecksum_
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
       sh.getRange(i + 1, 3).setValue(newEmailChecksum); // Column C = EmailChecksum
       sh.getRange(i + 1, 5).setValue(new Date()); // Column E = Last Viewed
-      Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+
+      // Also update vendor label checksum if provided (Column I = 9)
+      if (newVendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(newVendorLabelChecksum);
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}, vendorLabel: ${newVendorLabelChecksum}`);
+      } else {
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+      }
       return;
     }
   }
-  
+
   // Vendor not found - this shouldn't happen but handle it
   Logger.log(`Warning: Could not find ${vendor} in checksums sheet to update email checksum`);
 }
@@ -3736,14 +5667,53 @@ function battleStationHardRefresh() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station not found. Run setupBattleStation() first.');
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
     return;
   }
   
   // Clear the cache
   clearBSCache_();
   ss.toast('Cache cleared, refreshing...', '🔄 Hard Refresh', 2);
-  
+
+  const currentIndex = getCurrentVendorIndex_();
+  loadVendorData(currentIndex || 1, { useCache: false });
+}
+
+/**
+ * Hardest Refresh - clears ALL caches including batch caches (monday.com tasks, calendar events, etc.)
+ * Use when you need completely fresh data from all external sources
+ */
+function battleStationHardestRefresh() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  ss.toast('Clearing ALL caches...', '💥 Hardest Refresh', 2);
+
+  // Clear the BS Cache sheet (box, gdrive, airtable, monday_items, monday_tasks, etc.)
+  clearBSCache_();
+
+  // Clear the Script Cache (calendar events)
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Hardest Refresh: All caches cleared (BS Cache sheet + Script Cache)');
+
+  // Re-fetch batch data to repopulate caches
+  ss.toast('Refetching monday.com tasks...', '💥 Hardest Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Hardest Refresh: Refetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refetching calendar events...', '💥 Hardest Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Hardest Refresh: Refetched ${events.length} calendar events`);
+
+  ss.toast('All caches refreshed, loading vendor...', '💥 Hardest Refresh', 2);
+
   const currentIndex = getCurrentVendorIndex_();
   loadVendorData(currentIndex || 1, { useCache: false });
 }
@@ -3771,13 +5741,69 @@ function getBSCacheSheet_() {
 function clearBSCache_() {
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
-  
+
   if (sh) {
     sh.clear();
     sh.getRange(1, 1, 1, 4).setValues([['Type', 'Key', 'Data', 'LastUpdated']]);
   }
-  
+
   Logger.log('BS Cache cleared');
+}
+
+/**
+ * Refresh batch caches (monday.com tasks, calendar events)
+ * Called when buildList runs to ensure fresh data for vendor review
+ */
+function refreshBatchCaches_() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Clear specific cache types for batch data
+  clearCacheByType_('monday_tasks');
+  clearCacheByType_('monday_items');
+  clearCacheByType_('airtable');
+  clearCacheByType_('gdrive_folders');
+
+  // Clear Script Cache for calendar events
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Batch caches cleared, refetching...');
+
+  // Refetch batch data to populate caches
+  ss.toast('Refreshing monday.com tasks...', '🔄 Cache Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Batch refresh: Fetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refreshing calendar events...', '🔄 Cache Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Batch refresh: Fetched ${events.length} calendar events`);
+
+  ss.toast('Caches refreshed!', '🔄 Done', 2);
+}
+
+/**
+ * Clear cache entries by type
+ */
+function clearCacheByType_(type) {
+  const sh = getBSCacheSheet_();
+  const data = sh.getDataRange().getValues();
+
+  // Find rows to delete (in reverse order to avoid index shifting)
+  const rowsToDelete = [];
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][0] === type) {
+      rowsToDelete.push(i + 1); // Sheet rows are 1-indexed
+    }
+  }
+
+  // Delete rows
+  for (const row of rowsToDelete) {
+    sh.deleteRow(row);
+  }
+
+  if (rowsToDelete.length > 0) {
+    Logger.log(`Cleared ${rowsToDelete.length} cache entries of type: ${type}`);
+  }
 }
 
 /**
@@ -3831,6 +5857,84 @@ function setCachedData_(type, key, data) {
   // Add new row
   sh.appendRow([type, key, JSON.stringify(data), new Date()]);
   Logger.log(`Cache SET: ${type}/${key}`);
+}
+
+/**
+ * Cache original notes when loading a vendor (for auto-save on transition)
+ */
+function cacheOriginalNotes_(notes) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('aiden_original_notes', notes || '');
+}
+
+/**
+ * Get cached original notes
+ */
+function getOriginalNotes_() {
+  const props = PropertiesService.getScriptProperties();
+  return props.getProperty('aiden_original_notes') || '';
+}
+
+/**
+ * Check if notes changed and auto-save to monday.com if so
+ * Called before transitioning to another vendor
+ */
+function checkAndAutoSaveNotes_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) return;
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) return;
+
+  // Find the notes row - look for 📝 NOTES header
+  let notesRow = -1;
+  for (let i = 5; i < 50; i++) {
+    const label = String(bsSh.getRange(i, 1).getValue() || '');
+    if (label.indexOf('📝 NOTES') !== -1) {
+      notesRow = i + 1;  // Notes content is in the row after the header
+      break;
+    }
+  }
+
+  if (notesRow === -1) return;
+
+  const currentNotes = String(bsSh.getRange(notesRow, 1).getValue() || '').trim();
+  const originalNotes = getOriginalNotes_();
+
+  // Skip if notes haven't changed or are empty/placeholder
+  if (currentNotes === originalNotes) return;
+  if (!currentNotes || currentNotes === '(no notes)') return;
+  if (currentNotes.startsWith('=HYPERLINK')) return;  // It's a formula, not user content
+
+  // Notes changed - auto-save to monday.com
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+  if (!vendor) return;
+
+  Logger.log(`Auto-saving notes for ${vendor} (changed from "${originalNotes.substring(0, 50)}..." to "${currentNotes.substring(0, 50)}...")`);
+  ss.toast(`Auto-saving notes for ${vendor}...`, '💾 Auto-Save', 2);
+
+  try {
+    // Update List sheet
+    listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(currentNotes);
+
+    // Update monday.com
+    const result = updateMondayComNotesForVendor_(vendor, currentNotes, listRow);
+
+    if (result.success) {
+      // Update cache so we don't try to save again
+      cacheOriginalNotes_(currentNotes);
+      ss.toast(`Notes auto-saved for ${vendor}`, '✅ Saved', 2);
+    } else {
+      Logger.log(`Auto-save failed: ${result.error}`);
+    }
+  } catch (e) {
+    Logger.log(`Auto-save error: ${e.message}`);
+  }
 }
 
 /**
@@ -3889,8 +5993,10 @@ function battleStationUpdateMondayNotes() {
     listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(notes);
     
     const result = updateMondayComNotesForVendor_(vendor, notes, listRow);
-    
+
     if (result.success) {
+      // Update cached original notes so auto-save won't trigger again
+      cacheOriginalNotes_(notes);
       ss.toast(`Notes updated for ${vendor}`, '✅ Success', 3);
       battleStationRefresh();
     } else {
@@ -4006,32 +6112,77 @@ function battleStationMarkReviewed() {
 }
 
 /**
- * Open Gmail search for current vendor
+ * Open Gmail search for current vendor - just the zzzVendors label
  */
 function battleStationOpenGmail() {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
   const currentIndex = getCurrentVendorIndex_();
-  
+
   if (!currentIndex) {
     SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
     return;
   }
-  
+
   const listRow = currentIndex + 1;
   const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
-  
+
   if (!gmailLink || gmailLink.toString().indexOf('#search') === -1) {
     SpreadsheetApp.getUi().alert('No valid Gmail search link found.');
     return;
   }
-  
+
+  // Extract just the zzzvendors label from the full link
+  const linkStr = gmailLink.toString();
+  const match = linkStr.match(/label%3Azzzvendors-[a-z0-9.-]+/i);
+
+  let simpleLink;
+  if (match) {
+    // Build simplified URL with just the zzzvendors label
+    simpleLink = `https://mail.google.com/mail/u/0/#search/${match[0]}`;
+  } else {
+    // Fallback to original link if pattern not found
+    simpleLink = gmailLink;
+  }
+
+  const html = `<html><body><script>window.open('${simpleLink}', '_blank');google.script.host.close();</script></body></html>`;
+  const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
+  SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
+}
+
+/**
+ * Open Gmail search using the full URL from column F (with 00.received filter)
+ */
+function battleStationOpenGmailReceived() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+
+  if (!gmailLink || gmailLink.toString().indexOf('#search') === -1) {
+    SpreadsheetApp.getUi().alert('No valid Gmail search link found.');
+    return;
+  }
+
   const html = `<html><body><script>window.open('${gmailLink}', '_blank');google.script.host.close();</script></body></html>`;
   const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
   SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
@@ -4077,16 +6228,829 @@ function battleStationEmailContacts() {
   
   try {
     const subject = `Re: ${vendor}`;
-    const body = `Hi,\n\n\n\nBest regards,\nAndy Worford\nProfitise`;
-    
-    GmailApp.createDraft(recipients, subject, body);
-    
+    const body = `Hi,\n\n`;
+
+    // Get Gmail signature from settings
+    let signature = '';
+    try {
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Create draft with HTML body including signature
+    const bodyHtml = body.replace(/\n/g, '<br>');
+    let fullBodyHtml = bodyHtml;
+    if (signature) {
+      fullBodyHtml += '<br><br>' + signature;
+    }
+
+    GmailApp.createDraft(recipients, subject, '', { htmlBody: fullBodyHtml });
+
     ss.toast('Draft created!', '✅ Success', 3);
     SpreadsheetApp.getUi().alert(`✓ Draft created!\n\nTo: ${recipients}\nSubject: ${subject}\n\nCheck your Gmail drafts.`);
-    
+
   } catch (e) {
     SpreadsheetApp.getUi().alert(`Error creating draft: ${e.message}`);
   }
+}
+
+/**
+ * Open Email Contacts dialog with Claude AI assistance for composing emails
+ * Allows contact selection, AI-assisted message composition, and direct Gmail draft creation
+ */
+function battleStationEmailContactsDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex || isNaN(currentIndex)) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+  ss.toast('Loading contacts...', '📧 Email Contacts', 2);
+
+  const contactData = getVendorContacts_(vendor, listRow);
+
+  if (contactData.contacts.length === 0) {
+    SpreadsheetApp.getUi().alert('No contacts found for this vendor.');
+    return;
+  }
+
+  // Pass data to the dialog via template
+  const html = HtmlService.createHtmlOutput(getEmailContactsDialogHtml_(vendor, contactData))
+    .setWidth(800)
+    .setHeight(700);
+  SpreadsheetApp.getUi().showModalDialog(html, `Email Contacts: ${vendor}`);
+}
+
+/**
+ * Get contacts data for the dialog (called from HTML)
+ */
+function getEmailContactsData() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return { error: 'Required sheets not found.' };
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) return { error: 'Could not determine current vendor index.' };
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const contactData = getVendorContacts_(vendor, listRow);
+
+  return {
+    vendor: vendor,
+    contacts: contactData.contacts,
+    notes: contactData.notes
+  };
+}
+
+/**
+ * Generate email copy with Claude AI
+ * @param {string} vendor - Vendor name
+ * @param {string} purpose - Email purpose/context
+ * @param {string} tone - Desired tone
+ * @param {string} additionalContext - Any additional context
+ * @returns {object} Result with generated email content
+ */
+function generateEmailWithClaude(vendor, purpose, tone, additionalContext) {
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    return { error: 'Claude API key not configured.' };
+  }
+
+  const prompt = `You are a professional email writer for a lead generation company called Profitise.
+Write a concise, professional email for the following scenario:
+
+VENDOR: ${vendor}
+PURPOSE: ${purpose}
+TONE: ${tone}
+${additionalContext ? `ADDITIONAL CONTEXT: ${additionalContext}` : ''}
+
+Guidelines:
+- Keep the email brief and to the point (2-4 short paragraphs max)
+- Be professional but personable
+- Use clear, actionable language
+- Don't use excessive pleasantries or filler words
+- End with a clear call to action if appropriate
+- No signature block (it will be added automatically from Gmail)
+
+Return ONLY the email body (no subject line). Start with an appropriate greeting.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, claudeApiKey);
+
+    if (response.error) {
+      return { error: response.error };
+    }
+
+    return { content: response.content };
+
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Create Gmail draft and return draft URL for direct navigation
+ * Automatically appends Gmail signature from user's settings
+ * @param {string} recipients - Comma-separated email addresses
+ * @param {string} subject - Email subject
+ * @param {string} body - Email body
+ * @returns {object} Result with draft URL or error
+ */
+function createEmailDraftAndGetUrl(recipients, subject, body) {
+  try {
+    // Get Gmail signature from settings
+    let signature = '';
+    const myEmail = Session.getActiveUser().getEmail();
+    try {
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail.toLowerCase()) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Convert body to HTML (preserve line breaks)
+    const bodyHtml = body.replace(/\n/g, '<br>');
+
+    // Build full HTML body with signature
+    let fullBodyHtml = bodyHtml;
+    if (signature) {
+      fullBodyHtml += '<br><br>' + signature;
+    }
+
+    // Create draft with HTML body and BCC to sales@profitise.com
+    const draft = GmailApp.createDraft(recipients, subject, '', {
+      htmlBody: fullBodyHtml,
+      bcc: 'sales@profitise.com'
+    });
+    const draftId = draft.getId();
+
+    // Get the message ID via Gmail API for proper direct link
+    const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+    const messageId = gmailDraft.message.id;
+
+    // Gmail draft URL format - use message ID for direct compose link
+    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${messageId}`;
+
+    return {
+      success: true,
+      draftId: draftId,
+      draftUrl: draftUrl,
+      recipients: recipients,
+      subject: subject
+    };
+
+  } catch (e) {
+    return {
+      success: false,
+      error: e.message
+    };
+  }
+}
+
+/**
+ * Generate HTML for the Email Contacts dialog
+ */
+function getEmailContactsDialogHtml_(vendor, contactData) {
+  // Sort contacts: Active first, then by type
+  const sortedContacts = contactData.contacts.sort((a, b) => {
+    // Active contacts first
+    if (a.status === 'Active' && b.status !== 'Active') return -1;
+    if (b.status === 'Active' && a.status !== 'Active') return 1;
+    // Then by contact type
+    const typeOrder = ['Primary', 'Technical', 'Contracts', 'Accounting', ''];
+    const aTypeIndex = typeOrder.indexOf(a.contactType) >= 0 ? typeOrder.indexOf(a.contactType) : 99;
+    const bTypeIndex = typeOrder.indexOf(b.contactType) >= 0 ? typeOrder.indexOf(b.contactType) : 99;
+    return aTypeIndex - bTypeIndex;
+  });
+
+  // Build contacts HTML
+  const contactsHtml = sortedContacts.map((c, i) => {
+    const statusClass = c.status === 'Active' ? 'active' : 'inactive';
+    const hasEmail = c.email && c.email.trim();
+    return `
+      <div class="contact-item ${statusClass}">
+        <label class="contact-checkbox">
+          <input type="checkbox" name="contact" value="${i}" data-email="${c.email || ''}" ${hasEmail ? 'checked' : 'disabled'}>
+          <span class="checkmark"></span>
+        </label>
+        <div class="contact-info">
+          <div class="contact-name">${escapeHtml_(c.name)}</div>
+          <div class="contact-meta">
+            ${hasEmail ? `<span class="email">${escapeHtml_(c.email)}</span>` : '<span class="no-email">No email</span>'}
+            ${c.phone ? ` | <span class="phone">${escapeHtml_(c.phone)}</span>` : ''}
+          </div>
+        </div>
+        <div class="contact-badges">
+          ${c.contactType ? `<span class="badge type">${escapeHtml_(c.contactType)}</span>` : ''}
+          <span class="badge status ${statusClass}">${escapeHtml_(c.status || 'Unknown')}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Google Sans', Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #f8f9fa;
+      font-size: 13px;
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .header h2 {
+      color: #1a73e8;
+      margin: 0 0 5px 0;
+      font-size: 18px;
+    }
+
+    .header p {
+      color: #5f6368;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .section {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .section-title {
+      font-weight: 600;
+      color: #202124;
+      margin-bottom: 12px;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .contacts-list {
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .contact-item {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid #f1f3f4;
+      gap: 12px;
+    }
+
+    .contact-item:last-child {
+      border-bottom: none;
+    }
+
+    .contact-item.inactive {
+      opacity: 0.6;
+    }
+
+    .contact-checkbox {
+      position: relative;
+      cursor: pointer;
+    }
+
+    .contact-checkbox input {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+
+    .contact-checkbox input:disabled {
+      cursor: not-allowed;
+    }
+
+    .contact-info {
+      flex: 1;
+    }
+
+    .contact-name {
+      font-weight: 500;
+      color: #202124;
+    }
+
+    .contact-meta {
+      font-size: 12px;
+      color: #5f6368;
+      margin-top: 2px;
+    }
+
+    .contact-meta .no-email {
+      color: #d93025;
+      font-style: italic;
+    }
+
+    .contact-badges {
+      display: flex;
+      gap: 6px;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .badge.type {
+      background: #e8f0fe;
+      color: #1a73e8;
+    }
+
+    .badge.status.active {
+      background: #e6f4ea;
+      color: #137333;
+    }
+
+    .badge.status.inactive {
+      background: #fce8e6;
+      color: #c5221f;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      font-weight: 500;
+      color: #202124;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .form-group input,
+    .form-group textarea,
+    .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-group input:focus,
+    .form-group textarea:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+    }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .form-row .form-group {
+      flex: 1;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-primary {
+      background: #1a73e8;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #1557b0;
+    }
+
+    .btn-secondary {
+      background: #f1f3f4;
+      color: #202124;
+    }
+
+    .btn-secondary:hover {
+      background: #e8eaed;
+    }
+
+    .btn-success {
+      background: #137333;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background: #0d5626;
+    }
+
+    .btn:disabled {
+      background: #dadce0;
+      color: #9aa0a6;
+      cursor: not-allowed;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .email-preview {
+      background: #fafafa;
+      border: 1px solid #e8eaed;
+      border-radius: 4px;
+      padding: 12px;
+      min-height: 120px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .loading {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      color: #5f6368;
+      font-size: 13px;
+    }
+
+    .loading.show {
+      display: flex;
+    }
+
+    .spinner {
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #1a73e8;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .error {
+      background: #fce8e6;
+      color: #c5221f;
+      padding: 10px 12px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+      font-size: 13px;
+    }
+
+    .error.show {
+      display: block;
+    }
+
+    .success {
+      background: #e6f4ea;
+      color: #137333;
+      padding: 12px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    .success.show {
+      display: block;
+    }
+
+    .success a {
+      color: #137333;
+      font-weight: 500;
+    }
+
+    .quick-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .quick-prompt {
+      padding: 4px 10px;
+      background: #e8f0fe;
+      color: #1a73e8;
+      border-radius: 16px;
+      font-size: 11px;
+      cursor: pointer;
+      border: none;
+      transition: background 0.2s;
+    }
+
+    .quick-prompt:hover {
+      background: #d0e1fd;
+    }
+
+    .recipients-display {
+      background: #f1f3f4;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #5f6368;
+      margin-bottom: 12px;
+    }
+
+    .recipients-display strong {
+      color: #202124;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Email Contacts</h2>
+    <p>Compose an email to ${escapeHtml_(vendor)} contacts with Claude AI assistance</p>
+  </div>
+
+  <!-- Step 1: Select Contacts -->
+  <div class="section">
+    <div class="section-title">1. Select Recipients</div>
+    <div class="contacts-list">
+      ${contactsHtml}
+    </div>
+  </div>
+
+  <!-- Step 2: Compose with AI -->
+  <div class="section">
+    <div class="section-title">2. Compose Email</div>
+
+    <div class="form-group">
+      <label>Subject</label>
+      <input type="text" id="subject" value="Re: ${escapeHtml_(vendor)}" placeholder="Email subject">
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Purpose</label>
+        <select id="purpose">
+          <option value="Follow up on our previous conversation">Follow up</option>
+          <option value="Schedule a meeting or call">Schedule meeting</option>
+          <option value="Request information or documentation">Request info</option>
+          <option value="Send a status update">Status update</option>
+          <option value="Discuss pricing or contract terms">Pricing/Contract</option>
+          <option value="Introduce ourselves and explore partnership">Introduction</option>
+          <option value="Address an issue or concern">Address issue</option>
+          <option value="Custom (describe below)">Custom...</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tone</label>
+        <select id="tone">
+          <option value="Professional and friendly">Professional & Friendly</option>
+          <option value="Formal and businesslike">Formal</option>
+          <option value="Casual and conversational">Casual</option>
+          <option value="Urgent and action-oriented">Urgent</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Additional Context <span style="font-weight: normal; color: #5f6368;">(optional)</span></label>
+      <textarea id="context" placeholder="Add any specific details, talking points, or context for the email..."></textarea>
+      <div class="quick-prompts">
+        <button class="quick-prompt" onclick="addContext('Mention our recent performance improvements')">Performance updates</button>
+        <button class="quick-prompt" onclick="addContext('Ask about their current lead volume needs')">Lead volume</button>
+        <button class="quick-prompt" onclick="addContext('Discuss expanding to new verticals')">New verticals</button>
+        <button class="quick-prompt" onclick="addContext('Follow up on pending invoice')">Invoice follow-up</button>
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" id="generateBtn" onclick="generateEmail()">
+        🤖 Generate with Claude
+      </button>
+      <div class="loading" id="generateLoading">
+        <div class="spinner"></div>
+        Generating email...
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 3: Review and Send -->
+  <div class="section">
+    <div class="section-title">3. Review & Send</div>
+
+    <div class="recipients-display" id="recipientsDisplay">
+      <strong>To:</strong> <span id="selectedRecipients">Select contacts above</span>
+    </div>
+
+    <div class="form-group">
+      <label>Email Body</label>
+      <textarea id="emailBody" rows="8" placeholder="Generated email will appear here. You can also write your own or edit the generated content."></textarea>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-success" id="createDraftBtn" onclick="createDraft()">
+        ✉️ Create Draft & Open Gmail
+      </button>
+      <div class="loading" id="draftLoading">
+        <div class="spinner"></div>
+        Creating draft...
+      </div>
+    </div>
+
+    <div class="error" id="error"></div>
+    <div class="success" id="success"></div>
+  </div>
+
+  <script>
+    const vendor = '${escapeHtml_(vendor).replace(/'/g, "\\'")}';
+
+    // Update recipients display when checkboxes change
+    document.querySelectorAll('input[name="contact"]').forEach(cb => {
+      cb.addEventListener('change', updateRecipients);
+    });
+
+    // Initial update
+    updateRecipients();
+
+    function updateRecipients() {
+      const checked = document.querySelectorAll('input[name="contact"]:checked');
+      const emails = Array.from(checked).map(cb => cb.dataset.email).filter(e => e);
+
+      if (emails.length > 0) {
+        document.getElementById('selectedRecipients').textContent = emails.join(', ');
+        document.getElementById('createDraftBtn').disabled = false;
+      } else {
+        document.getElementById('selectedRecipients').textContent = 'Select contacts above';
+        document.getElementById('createDraftBtn').disabled = true;
+      }
+    }
+
+    function addContext(text) {
+      const textarea = document.getElementById('context');
+      if (textarea.value) {
+        textarea.value += '\\n' + text;
+      } else {
+        textarea.value = text;
+      }
+    }
+
+    function generateEmail() {
+      const purpose = document.getElementById('purpose').value;
+      const tone = document.getElementById('tone').value;
+      const context = document.getElementById('context').value;
+
+      // Show loading
+      document.getElementById('generateBtn').disabled = true;
+      document.getElementById('generateLoading').classList.add('show');
+      document.getElementById('error').classList.remove('show');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('generateBtn').disabled = false;
+          document.getElementById('generateLoading').classList.remove('show');
+
+          if (result.error) {
+            showError(result.error);
+          } else {
+            document.getElementById('emailBody').value = result.content;
+          }
+        })
+        .withFailureHandler(function(error) {
+          document.getElementById('generateBtn').disabled = false;
+          document.getElementById('generateLoading').classList.remove('show');
+          showError(error.message || 'Failed to generate email');
+        })
+        .generateEmailWithClaude(vendor, purpose, tone, context);
+    }
+
+    function createDraft() {
+      const checked = document.querySelectorAll('input[name="contact"]:checked');
+      const recipients = Array.from(checked).map(cb => cb.dataset.email).filter(e => e).join(', ');
+
+      if (!recipients) {
+        showError('Please select at least one contact with an email address.');
+        return;
+      }
+
+      const subject = document.getElementById('subject').value.trim();
+      const body = document.getElementById('emailBody').value.trim();
+
+      if (!subject) {
+        showError('Please enter a subject.');
+        return;
+      }
+
+      if (!body) {
+        showError('Please enter an email body or generate one with Claude.');
+        return;
+      }
+
+      // Show loading
+      document.getElementById('createDraftBtn').disabled = true;
+      document.getElementById('draftLoading').classList.add('show');
+      document.getElementById('error').classList.remove('show');
+      document.getElementById('success').classList.remove('show');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('createDraftBtn').disabled = false;
+          document.getElementById('draftLoading').classList.remove('show');
+
+          if (result.success) {
+            // Open Gmail draft in new window
+            window.open(result.draftUrl, '_blank');
+            // Close the dialog
+            google.script.host.close();
+          } else {
+            showError(result.error || 'Failed to create draft');
+          }
+        })
+        .withFailureHandler(function(error) {
+          document.getElementById('createDraftBtn').disabled = false;
+          document.getElementById('draftLoading').classList.remove('show');
+          showError(error.message || 'Failed to create draft');
+        })
+        .createEmailDraftAndGetUrl(recipients, subject, body);
+    }
+
+    function showError(message) {
+      const errorDiv = document.getElementById('error');
+      errorDiv.textContent = message;
+      errorDiv.classList.add('show');
+    }
+  </script>
+</body>
+</html>
+`;
+}
+
+/**
+ * HTML escape helper
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 /**
@@ -4245,15 +7209,34 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
       .replace(/## (.*?)<br>/g, '<h3>$1</h3>')
       .replace(/### (.*?)<br>/g, '<h4>$1</h4>');
     
+    // Build email options for the dropdown
+    const emailOptions = emailData.map((e, i) => {
+      const shortSubject = e.subject.length > 50 ? e.subject.substring(0, 50) + '...' : e.subject;
+      return `<option value="${i}">${i + 1}. ${shortSubject} (${e.date})</option>`;
+    }).join('');
+
+    // Store analysis context for response generation
+    const analysisContext = {
+      vendor: vendor,
+      emailData: emailData.map(e => ({
+        threadId: e.threadId,
+        subject: e.subject,
+        date: e.date,
+        content: e.content
+      })),
+      analysisContent: response.content
+    };
+    PropertiesService.getUserProperties().setProperty('emailAnalysisContext', JSON.stringify(analysisContext));
+
     const htmlContent = `
       <style>
         body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
         h2 { color: #4a86e8; margin-top: 0; margin-bottom: 10px; }
         h3 { color: #4a86e8; margin-top: 20px; margin-bottom: 10px; border-bottom: 2px solid #4a86e8; padding-bottom: 5px; }
         h4 { color: #666; margin-top: 12px; margin-bottom: 5px; }
-        .email-link { 
-          color: #1a73e8; 
-          text-decoration: none; 
+        .email-link {
+          color: #1a73e8;
+          text-decoration: none;
           font-weight: bold;
           font-size: 14px;
           display: inline-block;
@@ -4264,15 +7247,87 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
         }
         .email-link:hover { background: #d0e1fd; text-decoration: none; }
         .date { color: #888; font-size: 11px; }
-        .content { background: #fafafa; padding: 15px; border-radius: 5px; }
+        .content { background: #fafafa; padding: 15px; border-radius: 5px; max-height: 350px; overflow-y: auto; }
         strong { color: #333; }
+        .write-response-section {
+          margin-top: 20px;
+          padding: 15px;
+          background: #e8f4e8;
+          border-radius: 8px;
+          border: 1px solid #c8e6c9;
+        }
+        .write-response-section h3 {
+          color: #2e7d32;
+          border-bottom-color: #2e7d32;
+          margin-top: 0;
+        }
+        .form-row { margin-bottom: 12px; }
+        .form-label { font-size: 12px; color: #555; margin-bottom: 4px; display: block; }
+        .form-select, .form-input {
+          width: 100%;
+          padding: 8px 10px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          font-size: 13px;
+          box-sizing: border-box;
+        }
+        .form-select:focus, .form-input:focus { border-color: #2e7d32; outline: none; }
+        .btn-write {
+          background: #2e7d32;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 4px;
+          font-size: 14px;
+          cursor: pointer;
+        }
+        .btn-write:hover { background: #1b5e20; }
+        .btn-write:disabled { background: #a5d6a7; cursor: not-allowed; }
+        .loading-msg { color: #666; font-style: italic; margin-top: 10px; display: none; }
       </style>
       <h2>🤖 Claude Analysis: ${vendor}</h2>
       <p><em>Analyzed ${emailData.length} unsnoozed email threads</em></p>
       <div class="content">${formattedContent}</div>
+
+      <div class="write-response-section">
+        <h3>✍️ Write Response</h3>
+        <div class="form-row">
+          <label class="form-label">Select email to respond to:</label>
+          <select id="emailSelect" class="form-select">
+            ${emailOptions}
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Directions (optional):</label>
+          <input type="text" id="directions" class="form-input" placeholder="e.g., schedule a call, follow up on payment, ask about volume...">
+        </div>
+        <button id="writeBtn" class="btn-write" onclick="doWriteResponse()">Generate Response</button>
+        <div id="loadingMsg" class="loading-msg">Generating response...</div>
+      </div>
+
+      <script>
+        function doWriteResponse() {
+          var emailIndex = document.getElementById('emailSelect').value;
+          var directions = document.getElementById('directions').value.trim();
+
+          document.getElementById('writeBtn').disabled = true;
+          document.getElementById('loadingMsg').style.display = 'block';
+
+          google.script.run
+            .withSuccessHandler(function() {
+              google.script.host.close();
+            })
+            .withFailureHandler(function(err) {
+              alert('Error: ' + (err.message || err));
+              document.getElementById('writeBtn').disabled = false;
+              document.getElementById('loadingMsg').style.display = 'none';
+            })
+            .generateResponseFromAnalysis(parseInt(emailIndex), directions);
+        }
+      </script>
     `;
-    
-    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(600);
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(700);
     SpreadsheetApp.getUi().showModalDialog(html, `Claude Analysis: ${vendor}`);
     
     ss.toast('Analysis complete!', '✅ Done', 3);
@@ -4332,29 +7387,107 @@ function callClaudeAPI_(prompt, apiKey, options) {
 }
 
 /**
+ * Generate email response from analysis context (no underscore - callable from client)
+ * Called from the analysis dialog when user clicks "Generate Response"
+ * Uses the stored analysis context to inform the response
+ */
+function generateResponseFromAnalysis(emailIndex, directions) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  // Get stored analysis context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailAnalysisContext');
+  if (!contextJson) {
+    throw new Error('No analysis context found. Please run the analysis again.');
+  }
+
+  const analysisContext = JSON.parse(contextJson);
+  const selectedEmail = analysisContext.emailData[emailIndex];
+
+  if (!selectedEmail) {
+    throw new Error('Selected email not found in analysis context.');
+  }
+
+  ss.toast('Generating response with analysis context...', '🤖 AI Working', 5);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(selectedEmail.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Get thread content and detect last sender
+  const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+  // Build enhanced directions that include the analysis context
+  const analysisNote = `CONTEXT FROM EMAIL ANALYSIS:
+The user just analyzed their emails for vendor "${analysisContext.vendor}". Here's what the analysis found:
+---
+${analysisContext.analysisContent}
+---
+
+The user selected email #${emailIndex + 1} (Subject: "${selectedEmail.subject}") to respond to.`;
+
+  const fullDirections = directions
+    ? `${analysisNote}\n\nUser's specific directions: ${directions}`
+    : analysisNote;
+
+  // Generate response using the existing email generator
+  const responseBody = generateEmailWithClaude_(
+    threadContent,
+    selectedEmail.subject,
+    'Analysis-Based Response',
+    fullDirections,
+    lastSenderIsMe
+  );
+
+  // Store context for edit/rerun capability (same pattern as other email responses)
+  const revisionContext = {
+    threadId: selectedEmail.threadId,
+    responseType: 'Analysis-Based Response',
+    originalDirections: fullDirections,
+    previousResponse: responseBody,
+    analysisContext: analysisContext  // Keep analysis context for revisions
+  };
+  PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+  // Clean up the analysis context
+  PropertiesService.getUserProperties().deleteProperty('emailAnalysisContext');
+
+  // Show the draft preview dialog with edit/rerun capability
+  showDraftPreviewDialog_(responseBody, selectedEmail.threadId);
+}
+
+/**
  * Go to a specific vendor by index or name
  */
 function battleStationGoTo() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+
   if (!listSh) return;
-  
+
   const totalVendors = listSh.getLastRow() - 1;
+  const minRow = 2;  // Row 2 is first vendor (row 1 is header)
+  const maxRow = totalVendors + 1;
   const ui = SpreadsheetApp.getUi();
   const response = ui.prompt(
     'Go to Vendor',
-    `Enter vendor index (1-${totalVendors}) or vendor name:`,
+    `Enter row number (${minRow}-${maxRow}) or vendor name:`,
     ui.ButtonSet.OK_CANCEL
   );
-  
+
   if (response.getSelectedButton() === ui.Button.OK) {
     const input = response.getResponseText().trim();
-    const index = parseInt(input);
-    
-    // If it's a number, go directly to that index
-    if (!isNaN(index) && index >= 1 && index <= totalVendors) {
-      loadVendorData(index, { loadMode: 'fast' });
+    const rowNum = parseInt(input);
+
+    // If it's a number, treat it as a row number (row 2 = first vendor)
+    if (!isNaN(rowNum) && rowNum >= minRow && rowNum <= maxRow) {
+      const vendorIndex = rowNum - 1;  // Convert row to index (row 2 = index 1)
+      loadVendorData(vendorIndex, { loadMode: 'fast' });
       return;
     }
 
@@ -4366,7 +7499,7 @@ function battleStationGoTo() {
     for (let i = 1; i < data.length; i++) {
       const vendorName = String(data[i][0] || '').toLowerCase();
       if (vendorName.includes(searchTerm)) {
-        matches.push({ index: i, name: data[i][0] });
+        matches.push({ index: i, row: i + 1, name: data[i][0] });
       }
     }
 
@@ -4375,22 +7508,22 @@ function battleStationGoTo() {
     } else if (matches.length === 1) {
       loadVendorData(matches[0].index, { loadMode: 'fast' });
     } else {
-      // Multiple matches - show list
-      let matchList = matches.slice(0, 15).map(m => `${m.index}: ${m.name}`).join('\n');
+      // Multiple matches - show list with row numbers
+      let matchList = matches.slice(0, 15).map(m => `Row ${m.row}: ${m.name}`).join('\n');
       if (matches.length > 15) {
         matchList += `\n... and ${matches.length - 15} more`;
       }
-      
+
       const pickResponse = ui.prompt(
         `Found ${matches.length} matches`,
-        `${matchList}\n\nEnter the index number to go to:`,
+        `${matchList}\n\nEnter the row number to go to:`,
         ui.ButtonSet.OK_CANCEL
       );
-      
+
       if (pickResponse.getSelectedButton() === ui.Button.OK) {
-        const pickIndex = parseInt(pickResponse.getResponseText());
-        if (!isNaN(pickIndex) && pickIndex >= 1 && pickIndex <= totalVendors) {
-          loadVendorData(pickIndex, { loadMode: 'fast' });
+        const pickRow = parseInt(pickResponse.getResponseText());
+        if (!isNaN(pickRow) && pickRow >= minRow && pickRow <= maxRow) {
+          loadVendorData(pickRow - 1, { loadMode: 'fast' });  // Convert row to index
         }
       }
     }
@@ -4463,12 +7596,21 @@ function hashString_(str) {
   return hash.toString(16);
 }
 
+// Increment this when checksum format changes to avoid false positives
+const MODULE_CHECKSUMS_VERSION = 3;
+
 /**
  * Generate sub-checksums for each module
  * Returns an object with checksums for each data section
  */
 function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, contracts, helpfulLinks, meetings, boxDocs, gDriveFiles, contacts) {
+  // Track which specific emails are overdue (for showing "no longer overdue" details)
+  const overdueEmails = (emails || [])
+    .filter(e => isEmailOverdue_(e))
+    .map(e => ({ threadId: e.threadId, subject: e.subject }));
+
   return {
+    _version: MODULE_CHECKSUMS_VERSION,  // Version for compatibility checking
     emails: generateEmailChecksum_(emails),  // Use the overdue-aware email checksum
     tasks: generateTasksChecksum_(tasks),
     notes: hashString_(JSON.stringify(notes || '')),
@@ -4479,14 +7621,18 @@ function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, 
     meetings: generateMeetingsChecksum_(meetings),
     boxDocs: hashString_(JSON.stringify((boxDocs || []).map(d => ({ name: d.name, modified: d.modifiedAt })))),
     gDriveFiles: hashString_(JSON.stringify((gDriveFiles || []).map(f => ({ name: f.name, modified: f.modified })))),
-    contacts: generateContactsChecksum_(contacts)
+    contacts: generateContactsChecksum_(contacts),
+    overdueEmails: overdueEmails  // Store specific overdue emails for comparison
   };
 }
 
 /**
  * Generate a sub-checksum for just emails (most volatile data)
+ * Prefixed with thread count for quick change detection
  */
 function generateEmailChecksum_(emails) {
+  const count = (emails || []).length;
+
   // Base checksum - same as before so existing checksums stay valid
   const data = (emails || []).map(e => ({
     subject: e.subject,
@@ -4494,45 +7640,137 @@ function generateEmailChecksum_(emails) {
     labels: e.labels
   }));
   const baseChecksum = hashString_(JSON.stringify(data));
-  
+
   // Count overdue emails - append to checksum so it changes when overdue status changes
   const overdueCount = (emails || []).filter(e => isEmailOverdue_(e)).length;
-  
-  // Combine: baseChecksum + overdueCount
-  // This way, if no emails are overdue (overdueCount=0), checksum matches old format
-  // But if any become overdue, the checksum changes
-  return overdueCount > 0 ? `${baseChecksum}_OD${overdueCount}` : baseChecksum;
+
+  // Format: count:hash or count:hash_ODn
+  // Prefix with count allows fast count-based change detection
+  const hashPart = overdueCount > 0 ? `${baseChecksum}_OD${overdueCount}` : baseChecksum;
+  return `${count}:${hashPart}`;
+}
+
+/**
+ * Generate a secondary checksum for vendor-label-only Gmail search
+ * This catches emails that might not have label:00.received yet
+ * @param {string} gmailLink - The full Gmail search link (with 00.received)
+ * @returns {string|null} - Checksum or null if can't extract vendor label
+ */
+function generateVendorLabelChecksum_(gmailLink) {
+  if (!gmailLink) return null;
+
+  try {
+    const gmailLinkStr = gmailLink.toString();
+
+    // Extract the vendor label (zzzvendors-*) from the URL
+    // Include periods in vendor name (e.g., "inc." in "american-remodeling-enterprises-inc.")
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      Logger.log('Could not extract vendor label from Gmail link');
+      return null;
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+
+    // Build simplified search query: just vendor label, no snoozed, no noInbox
+    const searchQuery = `label:${vendorLabel} -is:snoozed -label:03.noInbox`;
+    Logger.log(`Vendor label search query: ${searchQuery}`);
+
+    // Search Gmail - only check last 10 emails (most real-time emails are recent)
+    const threads = GmailApp.search(searchQuery, 0, 10);
+    Logger.log(`Vendor label search found ${threads.length} threads (limit 10)`);
+
+    // Generate simple checksum based on thread count and thread IDs
+    const threadData = threads.map(t => ({
+      id: t.getId(),
+      lastDate: t.getLastMessageDate().getTime()
+    }));
+
+    return hashString_(JSON.stringify(threadData));
+  } catch (e) {
+    Logger.log(`Error in generateVendorLabelChecksum_: ${e.message}`);
+    return null;
+  }
 }
 
 /**
  * Check if an email is overdue:
- * - Priority + waiting/customer or waiting/me + >16 business hours, OR
- * - waiting/phonexa + >7 days
+ * - Manual override: has 03.overdue/manual label (always overdue regardless of other conditions)
+ * - Auto: REQUIRES 01.priority/1 label + any waiting label + business hours threshold
+ *
+ * For waiting/customer: exponential backoff based on how many times we've followed up
+ *   - 1 follow-up = 16 hours, 2 = 32 hours, 3 = 48 hours, etc.
+ * For waiting/me or waiting/phonexa: 16 business hours (standard)
  */
 function isEmailOverdue_(email) {
   if (!email || !email.labels) return false;
+
+  // Snoozed emails are never overdue
+  if (email.isSnoozed) return false;
+
+  // Manual override - if marked manually as overdue, always return true
+  if (email.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL)) return true;
+
+  // Auto-detection requires priority label - non-priority emails are never auto-overdue
+  if (!email.labels.includes('01.priority/1')) return false;
 
   // Parse the email date
   const emailDate = parseEmailDate_(email.date);
   if (!emailDate) return false;
 
-  // Check for Phonexa waiting - 7 calendar days
-  if (email.labels.includes('02.waiting/phonexa')) {
-    const now = new Date();
-    const daysDiff = (now - emailDate) / (1000 * 60 * 60 * 24);
-    if (daysDiff > 7) return true;
+  const businessHours = getBusinessHoursElapsed_(emailDate);
+  const baseHours = BS_CFG.OVERDUE_BUSINESS_HOURS;  // 16
+
+  // Check for waiting/customer - exponential backoff based on consecutive follow-ups from us
+  if (email.labels.includes('02.waiting/customer')) {
+    // Count how many times we've pinged them (consecutive messages from me/Aden)
+    const consecutiveFollowUps = countConsecutiveRepliesFromUs_(email.threadId);
+    const threshold = baseHours * consecutiveFollowUps;  // 16, 32, 48, 64, etc.
+    return businessHours > threshold;
   }
 
-  // Check for priority + waiting/customer or waiting/me - 16 business hours
-  if (email.labels.includes('01.priority/1')) {
-    const isWaiting = email.labels.includes('02.waiting/customer') || email.labels.includes('02.waiting/me');
-    if (isWaiting) {
-      const businessHours = getBusinessHoursElapsed_(emailDate);
-      if (businessHours > BS_CFG.OVERDUE_BUSINESS_HOURS) return true;
-    }
+  // Check for waiting/me or waiting/phonexa - standard 16 hour threshold
+  if (email.labels.includes('02.waiting/me') || email.labels.includes('02.waiting/phonexa')) {
+    return businessHours > baseHours;
   }
 
   return false;
+}
+
+/**
+ * Count consecutive messages from me or Aden at the end of a thread
+ * Used to calculate exponential backoff for overdue threshold
+ */
+function countConsecutiveRepliesFromUs_(threadId) {
+  if (!threadId) return 1;
+
+  try {
+    const thread = GmailApp.getThreadById(threadId);
+    if (!thread) return 1;
+
+    const messages = thread.getMessages();
+    if (!messages || messages.length === 0) return 1;
+
+    const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+    const adenEmail = 'aden@profitise.com';
+
+    let consecutiveCount = 0;
+
+    // Count from the end backwards
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const sender = messages[i].getFrom().toLowerCase();
+      if (sender.includes(myEmail) || sender.includes(adenEmail)) {
+        consecutiveCount++;
+      } else {
+        break;  // Stop at first message not from us
+      }
+    }
+
+    return Math.max(1, consecutiveCount);  // At least 1
+  } catch (e) {
+    Logger.log(`Error counting consecutive replies for thread ${threadId}: ${e.message}`);
+    return 1;  // Default to 1 on error
+  }
 }
 
 /**
@@ -4601,12 +7839,12 @@ function getChecksumsSheet_() {
 
   if (!sh) {
     sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
-    sh.getRange(1, 1, 1, 6).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged']]);
-    sh.getRange(1, 1, 1, 6).setFontWeight('bold');
+    sh.getRange(1, 1, 1, 9).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData', 'SnoozedUntil', 'VendorLabelChecksum']]);
+    sh.getRange(1, 1, 1, 9).setFontWeight('bold');
     sh.hideSheet();
   } else {
     // Check if we need to add columns (migration)
-    const headers = sh.getRange(1, 1, 1, 6).getValues()[0];
+    const headers = sh.getRange(1, 1, 1, 8).getValues()[0];
     if (headers[3] !== 'ModuleChecksums') {
       const numCols = sh.getLastColumn();
       if (numCols < 5) {
@@ -4622,9 +7860,57 @@ function getChecksumsSheet_() {
         sh.getRange(1, 6).setValue('Flagged').setFontWeight('bold');
       }
     }
+    // Add EmailData column if missing
+    if (headers[6] !== 'EmailData') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 7) {
+        sh.getRange(1, 7).setValue('EmailData').setFontWeight('bold');
+      }
+    }
+    // Add SnoozedUntil column if missing
+    if (headers[7] !== 'SnoozedUntil') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 8) {
+        sh.getRange(1, 8).setValue('SnoozedUntil').setFontWeight('bold');
+      }
+    }
+    // Add VendorLabelChecksum column if missing (column 9)
+    const numCols = sh.getLastColumn();
+    if (numCols < 9) {
+      sh.getRange(1, 9).setValue('VendorLabelChecksum').setFontWeight('bold');
+    }
   }
 
   return sh;
+}
+
+/**
+ * Reset all module checksums to force a fresh baseline
+ * This clears only the ModuleChecksums column (4), preserving flags, snooze dates, etc.
+ * After running this, the first traversal will establish new baselines without false positives
+ */
+function resetAllModuleChecksums() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.alert(
+    'Reset Module Checksums',
+    'This will clear all stored module checksums. The next traversal will establish fresh baselines.\n\nFlags, snooze dates, and email data will be preserved.\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (result !== ui.Button.YES) {
+    ui.alert('Cancelled');
+    return;
+  }
+
+  const sh = getChecksumsSheet_();
+  const lastRow = sh.getLastRow();
+
+  if (lastRow > 1) {
+    // Clear column 4 (ModuleChecksums) for all data rows
+    sh.getRange(2, 4, lastRow - 1, 1).clearContent();
+  }
+
+  ui.alert('Done', `Cleared module checksums for ${lastRow - 1} vendors. Next traversal will establish fresh baselines.`, ui.ButtonSet.OK);
 }
 
 /**
@@ -4673,13 +7959,13 @@ function battleStationToggleFlag() {
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
 
   if (!bsSh) {
-    SpreadsheetApp.getUi().alert('Battle Station sheet not found.');
+    SpreadsheetApp.getUi().alert('A(I)DEN sheet not found.');
     return;
   }
 
-  // Get vendor name from row 2 (vendor name banner) - remove any existing flag icon
+  // Get vendor name from row 2 (vendor name banner) - remove any icons (flag/snooze)
   const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
-  const vendor = rawValue.replace(/\s*⚑\s*$/, '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*/, '').replace(/\s*💤\d+\/\d+\s*$/, '').trim();
   if (!vendor) {
     SpreadsheetApp.getUi().alert('No vendor currently displayed.');
     return;
@@ -4695,6 +7981,374 @@ function battleStationToggleFlag() {
   } else {
     bsSh.getRange(2, 1).setValue(vendor);
     ss.toast(`Unflagged "${vendor}"`, '⚑ Unflagged', 3);
+  }
+}
+
+/**
+ * Check if a vendor is snoozed (and snooze date hasn't passed)
+ * Returns true if snoozed and date is in the future
+ */
+function isVendorSnoozed_(vendor) {
+  const snoozeDate = getVendorSnoozeDate_(vendor);
+  if (!snoozeDate) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return snoozeDate > today;
+}
+
+/**
+ * Get the snooze date for a vendor
+ * Returns Date object or null if not snoozed
+ */
+function getVendorSnoozeDate_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      const snoozeVal = data[i][7];
+      if (snoozeVal instanceof Date) {
+        return snoozeVal;
+      }
+      if (snoozeVal) {
+        const parsed = new Date(snoozeVal);
+        if (!isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Set or clear the snooze date for a vendor
+ */
+function setVendorSnooze_(vendor, snoozeDate) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 8).setValue(snoozeDate || '');
+      return true;
+    }
+  }
+
+  // Vendor not in checksums yet - add a row
+  if (snoozeDate) {
+    const lastRow = sh.getLastRow();
+    sh.getRange(lastRow + 1, 1).setValue(vendor);
+    sh.getRange(lastRow + 1, 8).setValue(snoozeDate);
+  }
+  return true;
+}
+
+/**
+ * Snooze the currently displayed vendor until a specified date
+ */
+function battleStationSnoozeVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('A(I)DEN sheet not found.');
+    return;
+  }
+
+  // Get vendor name from row 2 (vendor name banner) - remove any icons
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
+  if (!vendor) {
+    ui.alert('No vendor currently displayed.');
+    return;
+  }
+
+  // Check if already snoozed
+  const currentSnooze = getVendorSnoozeDate_(vendor);
+  if (currentSnooze && currentSnooze > new Date()) {
+    const response = ui.alert(
+      'Already Snoozed',
+      `"${vendor}" is snoozed until ${currentSnooze.toLocaleDateString()}.\n\nDo you want to clear the snooze?`,
+      ui.ButtonSet.YES_NO
+    );
+    if (response === ui.Button.YES) {
+      setVendorSnooze_(vendor, null);
+      // Update display
+      const newDisplay = rawValue.replace(/\s*💤.*$/, '').trim();
+      bsSh.getRange(2, 1).setValue(newDisplay);
+      ss.toast(`Snooze cleared for "${vendor}"`, '⏰ Unsnooze', 3);
+    }
+    return;
+  }
+
+  // Prompt for snooze date
+  const response = ui.prompt(
+    'Snooze Vendor',
+    `Enter snooze date for "${vendor}" (YYYY-MM-DD):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const dateStr = response.getResponseText().trim();
+
+  // Parse date parts to avoid timezone issues (YYYY-MM-DD interpreted as UTC)
+  const dateParts = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!dateParts) {
+    ui.alert('Invalid date format. Please use YYYY-MM-DD.');
+    return;
+  }
+
+  const snoozeDate = new Date(
+    parseInt(dateParts[1], 10),      // year
+    parseInt(dateParts[2], 10) - 1,  // month (0-indexed)
+    parseInt(dateParts[3], 10)       // day
+  );
+
+  if (isNaN(snoozeDate.getTime())) {
+    ui.alert('Invalid date format. Please use YYYY-MM-DD.');
+    return;
+  }
+
+  // Set snooze to end of day
+  snoozeDate.setHours(23, 59, 59, 999);
+
+  if (snoozeDate <= new Date()) {
+    ui.alert('Snooze date must be in the future.');
+    return;
+  }
+
+  setVendorSnooze_(vendor, snoozeDate);
+
+  // Update display with snooze indicator
+  const displayDate = snoozeDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const baseDisplay = rawValue.replace(/\s*💤.*$/, '').trim();
+  bsSh.getRange(2, 1).setValue(`${baseDisplay} 💤${displayDate}`);
+
+  ss.toast(`Snoozed "${vendor}" until ${displayDate}`, '💤 Snoozed', 3);
+}
+
+/**
+ * Mark the highlighted email as manually overdue
+ * Works on the email row that is currently selected in the sheet
+ */
+function markEmailAsOverdue() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+    ss.toast(`Marking email as overdue...`, '🔴 Overdue', 2);
+
+    // Get or create the label
+    let label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+    if (!label) {
+      label = GmailApp.createLabel(BS_CFG.MANUAL_OVERDUE_LABEL);
+      Logger.log(`Created label: ${BS_CFG.MANUAL_OVERDUE_LABEL}`);
+    }
+
+    emailData.thread.addLabel(label);
+    ss.toast(`Marked as overdue: "${emailData.subject}"`, '🔴 Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Clear manual overdue label from the highlighted email
+ * Works on the email row that is currently selected in the sheet
+ */
+function clearOverdueFromEmail() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+    ss.toast(`Clearing overdue...`, '✅ Clear', 2);
+
+    const label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+    if (!label) {
+      throw new Error('Manual overdue label not found');
+    }
+
+    emailData.thread.removeLabel(label);
+    ss.toast(`Cleared overdue: "${emailData.subject}"`, '✅ Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Send highlighted email to Aden for investigation
+ * Shows dialog for context, then sends email with Gmail search link
+ */
+function sendToAden() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    // Get sender email from the thread
+    const messages = emailData.thread.getMessages();
+    const lastMessage = messages[messages.length - 1];
+    const senderEmail = lastMessage.getFrom();
+
+    // Extract just the email address from "Name <email>" format
+    const emailMatch = senderEmail.match(/<([^>]+)>/) || [null, senderEmail];
+    const senderEmailClean = emailMatch[1] || senderEmail;
+
+    // Build the dialog HTML
+    const escapedSubject = emailData.subject.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    const escapedSender = senderEmailClean.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .info { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; }
+    .info-label { font-weight: bold; color: #5f6368; }
+    .info-value { color: #202124; margin-left: 5px; }
+    .context-label { font-weight: bold; margin-bottom: 8px; display: block; }
+    textarea {
+      width: 100%;
+      height: 100px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+    .buttons { margin-top: 15px; display: flex; gap: 10px; }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-send { background: #34a853; color: white; }
+    .btn-send:hover { background: #2d8e47; }
+    .btn-cancel { background: #f1f3f4; color: #5f6368; }
+    .btn-cancel:hover { background: #e8eaed; }
+    .loading { color: #5f6368; font-style: italic; display: none; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="info">
+    <div><span class="info-label">Subject:</span><span class="info-value">${escapedSubject}</span></div>
+    <div><span class="info-label">From:</span><span class="info-value">${escapedSender}</span></div>
+  </div>
+
+  <label class="context-label">Context for Aden:</label>
+  <textarea id="context" placeholder="Add any context or notes about what needs to be investigated..."></textarea>
+
+  <div class="buttons">
+    <button class="btn btn-send" onclick="doSend()">Send to Aden</button>
+    <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div id="loading" class="loading">Sending...</div>
+
+  <script>
+    function doSend() {
+      var context = document.getElementById('context').value;
+      document.querySelector('.btn-send').disabled = true;
+      document.querySelector('.btn-cancel').disabled = true;
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.querySelector('.btn-send').disabled = false;
+          document.querySelector('.btn-cancel').disabled = false;
+          document.getElementById('loading').style.display = 'none';
+        })
+        .sendToAdenExecute('${escapedSubject}', '${escapedSender}', context);
+    }
+
+    // Focus on textarea when dialog opens
+    document.getElementById('context').focus();
+  </script>
+</body>
+</html>`;
+
+    const htmlOutput = HtmlService.createHtmlOutput(html)
+      .setWidth(500)
+      .setHeight(320);
+
+    SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📤 Send to Aden');
+
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Execute sending email to Aden (called from dialog)
+ */
+function sendToAdenExecute(subject, senderEmail, context) {
+  const recipient = 'aden@profitise.com';
+  const emailSubject = `SUBJECT: ${subject} - PLEASE INVESTIGATE/REACH-OUT/RESOLVE`;
+
+  // Build Gmail search URL: subject + from sender
+  const searchQuery = `subject:(${subject}) from:(${senderEmail})`;
+  const encodedQuery = encodeURIComponent(searchQuery);
+  const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/${encodedQuery}`;
+
+  // Build email body
+  let body = `Hi Aden,\n\n`;
+  body += `Please investigate/reach-out/resolve the following email:\n\n`;
+  body += `Subject: ${subject}\n`;
+  body += `From: ${senderEmail}\n\n`;
+  body += `Gmail Search Link:\n${gmailSearchUrl}\n\n`;
+
+  if (context && context.trim()) {
+    body += `Context:\n${context.trim()}\n\n`;
+  }
+
+  body += `Thanks,\nAndy`;
+
+  // Send the email
+  GmailApp.sendEmail(recipient, emailSubject, body);
+
+  SpreadsheetApp.getActive().toast(`Sent to Aden: "${subject}"`, '📤 Sent', 3);
+}
+
+/**
+ * Archive the currently selected email thread
+ */
+function archiveSelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    emailData.thread.moveToArchive();
+    ss.toast(`Archived: "${emailData.subject}"`, '📥 Archived', 3);
+
+    // Trigger a quick refresh to update the email list
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
   }
 }
 
@@ -4762,15 +8416,16 @@ function getBoxBlacklist_() {
 
 /**
  * Get stored checksum for a vendor
- * Returns object with { checksum, emailChecksum, moduleChecksums }
+ * Returns object with { checksum, emailChecksum, moduleChecksums, emailData }
  */
 function getStoredChecksum_(vendor) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
-  
+
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
       let moduleChecksums = null;
+      let emailData = null;
       try {
         if (data[i][3]) {
           moduleChecksums = JSON.parse(data[i][3]);
@@ -4778,36 +8433,147 @@ function getStoredChecksum_(vendor) {
       } catch (e) {
         // Invalid JSON, ignore
       }
+      try {
+        if (data[i][6]) {
+          emailData = JSON.parse(data[i][6]);
+        }
+      } catch (e) {
+        // Invalid JSON, ignore
+      }
       return {
         checksum: data[i][1],
         emailChecksum: data[i][2] || null,
-        moduleChecksums: moduleChecksums
+        moduleChecksums: moduleChecksums,
+        emailData: emailData,
+        vendorLabelChecksum: data[i][8] || null  // Column 9 (0-indexed = 8)
       };
     }
   }
-  
+
   return null;
 }
 
 /**
- * Store checksum for a vendor (including module sub-checksums)
+ * Store checksum for a vendor (including module sub-checksums and email data)
+ * @param {string} vendor
+ * @param {string} checksum
+ * @param {string} emailChecksum
+ * @param {object} moduleChecksums
+ * @param {object} emailData
+ * @param {string} vendorLabelChecksum - Optional secondary checksum for vendor-label-only search
  */
-function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums) {
+function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailData, vendorLabelChecksum) {
   const sh = getChecksumsSheet_();
   const data = sh.getDataRange().getValues();
   const now = new Date();
   const moduleJson = moduleChecksums ? JSON.stringify(moduleChecksums) : '';
-  
+  const emailDataJson = emailData ? JSON.stringify(emailData) : '';
+
   // Look for existing row
   for (let i = 1; i < data.length; i++) {
     if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      // Update columns 2-5 (Checksum, EmailChecksum, ModuleChecksums, Last Viewed) and column 7 (EmailData), column 9 (VendorLabelChecksum)
       sh.getRange(i + 1, 2, 1, 4).setValues([[checksum, emailChecksum || '', moduleJson, now]]);
+      sh.getRange(i + 1, 7).setValue(emailDataJson);
+      if (vendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(vendorLabelChecksum);
+      }
       return;
     }
   }
-  
-  // Add new row
-  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now]);
+
+  // Add new row (9 columns now)
+  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now, '', emailDataJson, '', vendorLabelChecksum || '']);
+}
+
+/**
+ * Log what changed in emails by comparing old and new email data
+ * @returns {object} { added: [], removed: [] }
+ */
+function logEmailChanges_(oldEmails, newEmails, vendor) {
+  // Create maps for comparison using subject+date as key
+  const oldMap = new Map((oldEmails || []).map(e => [`${e.subject}|${e.date}`, e]));
+  const newMap = new Map((newEmails || []).map(e => [`${e.subject}|${e.date}`, e]));
+
+  const added = [];
+  const removed = [];
+
+  // Find added emails (in new but not in old)
+  for (const [key, email] of newMap) {
+    if (!oldMap.has(key)) {
+      added.push(email);
+    }
+  }
+
+  // Find removed emails (in old but not in new)
+  for (const [key, email] of oldMap) {
+    if (!newMap.has(key)) {
+      removed.push(email);
+    }
+  }
+
+  // Log the changes
+  if (added.length > 0 || removed.length > 0) {
+    Logger.log(`📧 Email changes for ${vendor}:`);
+    if (added.length > 0) {
+      Logger.log(`  ➕ ADDED (${added.length}):`);
+      for (const e of added.slice(0, 5)) {
+        Logger.log(`     - "${e.subject}" (${e.date})`);
+      }
+      if (added.length > 5) Logger.log(`     ... and ${added.length - 5} more`);
+    }
+    if (removed.length > 0) {
+      Logger.log(`  ➖ REMOVED (${removed.length}):`);
+      for (const e of removed.slice(0, 5)) {
+        Logger.log(`     - "${e.subject}" (${e.date})`);
+      }
+      if (removed.length > 5) Logger.log(`     ... and ${removed.length - 5} more`);
+    }
+  } else {
+    // If no added/removed but checksum changed, might be label changes
+    Logger.log(`📧 Email changes for ${vendor}: Labels or other metadata changed (same threads)`);
+  }
+
+  return { added, removed };
+}
+
+/**
+ * Parse the overdue count from an email checksum (e.g., "-17ff163c_OD1" -> 1)
+ */
+function parseOverdueCount_(checksum) {
+  if (!checksum) return 0;
+  const match = String(checksum).match(/_OD(\d+)$/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Get human-readable description of email checksum change
+ */
+function getEmailChangeDescription_(oldChecksum, newChecksum, addedCount, removedCount) {
+  const oldOverdue = parseOverdueCount_(oldChecksum);
+  const newOverdue = parseOverdueCount_(newChecksum);
+
+  const changes = [];
+
+  if (addedCount > 0) {
+    changes.push(`${addedCount} new email${addedCount > 1 ? 's' : ''}`);
+  }
+  if (removedCount > 0) {
+    changes.push(`${removedCount} removed`);
+  }
+  if (oldOverdue !== newOverdue) {
+    if (newOverdue > oldOverdue) {
+      changes.push(`${newOverdue - oldOverdue} became overdue`);
+    } else {
+      changes.push(`${oldOverdue - newOverdue} no longer overdue`);
+    }
+  }
+
+  if (changes.length === 0) {
+    changes.push('labels or metadata changed');
+  }
+
+  return changes.join(', ');
 }
 
 /************************************************************
@@ -4863,15 +8629,24 @@ function generateContactsChecksum_(contacts) {
 
 /**
  * Generate checksum for meetings data
+ * Only includes future meetings - past meetings falling off shouldn't trigger changes
+ * Excludes [DAILY], [WEEKLY], and [MONTHLY] recurring events as they change too often
  * @param {array} meetings - Array of meeting objects
  * @returns {string} Hash string
  */
 function generateMeetingsChecksum_(meetings) {
-  return hashString_(JSON.stringify((meetings || []).map(m => ({ 
-    title: m.title, 
-    date: m.date, 
-    time: m.time, 
-    isPast: m.isPast 
+  // Filter to only future meetings for checksum, excluding recurring events
+  const futureMeetings = (meetings || []).filter(m => {
+    if (m.isPast) return false;
+    // Exclude recurring events that change daily/weekly/monthly
+    const title = (m.title || '').toUpperCase();
+    if (title.includes('[DAILY]') || title.includes('[WEEKLY]') || title.includes('[MONTHLY]')) return false;
+    return true;
+  });
+  return hashString_(JSON.stringify(futureMeetings.map(m => ({
+    title: m.title,
+    date: m.date,
+    time: m.time
   }))));
 }
 
@@ -4898,53 +8673,107 @@ function filterTasksBySource_(tasks, source) {
 /**
  * Check if a vendor has changes compared to stored checksums
  * Returns detailed change info for use in skip functions
- * 
+ *
  * @param {string} vendor - Vendor name
  * @param {number} listRow - Row number in List sheet
  * @param {string} source - Vendor source for task filtering
+ * @param {object} [options] - Optional settings
+ * @param {boolean} [options.skipVendorLabelCheck] - Skip the vendor label checksum check (faster, but may miss unlabeled emails)
  * @returns {object} { hasChanges, changeType, data }
  *   - hasChanges: boolean
  *   - changeType: string describing what changed (or 'first_view' or 'unchanged')
  *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
  */
-function checkVendorForChanges_(vendor, listRow, source) {
-  // Check if vendor is flagged - always stop on flagged vendors
+function checkVendorForChanges_(vendor, listRow, source, options) {
+  options = options || {};
+  // Check if vendor is flagged - always stop on flagged vendors (fast - no API)
   if (isVendorFlagged_(vendor)) {
     Logger.log(`${vendor}: flagged for review`);
     // Clear the flag since we're stopping here
     setVendorFlag_(vendor, false);
     return {
       hasChanges: true,
-      changeType: 'flagged',
+      changeType: 'Flagged',
       data: null
     };
   }
 
+  // Get stored checksum data first (fast - just reads from sheet)
   const storedData = getStoredChecksum_(vendor);
 
-  // If no stored data, this is a first view
+  // If no stored data, this is a first view - definitely has changes
   if (!storedData) {
     Logger.log(`${vendor}: no stored checksums - first view`);
     return {
       hasChanges: true,
-      changeType: 'first view',
-      data: null 
+      changeType: 'First view',
+      data: null
     };
   }
-  
-  // Check emails (most volatile)
+
+  // FAST PATH: Quick thread count check before fetching full email data
+  // If count differs from stored, we know there's a change without expensive processing
+  const storedEmailChecksum = String(storedData.emailChecksum || '');
+  const storedCountMatch = storedEmailChecksum.match(/^(\d+):/);
+  if (storedCountMatch) {
+    const storedCount = parseInt(storedCountMatch[1], 10);
+    const currentCount = getEmailThreadCountFast_(listRow);
+
+    if (currentCount >= 0 && currentCount !== storedCount) {
+      Logger.log(`${vendor}: FAST DETECT - email count changed (${storedCount} → ${currentCount})`);
+      return {
+        hasChanges: true,
+        changeType: `Emails: ${currentCount > storedCount ? 'new emails' : 'emails removed'}`,
+        data: null  // Don't fetch full data - loadVendorData will do that
+      };
+    }
+    // Count matches - need to fetch full data for detailed comparison
+  }
+
+  // Full email fetch needed for overdue check and detailed checksum
   const emails = getEmailsForVendor_(vendor, listRow) || [];
-  const newEmailChecksum = generateEmailChecksum_(emails);
-  
-  if (storedData.emailChecksum !== newEmailChecksum) {
-    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum})`);
-    return { 
-      hasChanges: true, 
-      changeType: 'emails changed',
-      data: { emails } 
+  const overdueEmails = emails.filter(e => isEmailOverdue_(e));
+  if (overdueEmails.length > 0) {
+    Logger.log(`${vendor}: has ${overdueEmails.length} overdue email(s)`);
+    return {
+      hasChanges: true,
+      changeType: 'Overdue emails',
+      data: { emails }
     };
   }
-  
+
+  // Check emails (most volatile) - emails already fetched above for overdue check
+  const newEmailChecksum = generateEmailChecksum_(emails);
+
+  if (storedData.emailChecksum !== newEmailChecksum) {
+    // Get human-readable description of what changed
+    const changeDesc = getEmailChangeDescription_(storedData.emailChecksum, newEmailChecksum, 0, 0);
+    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum}) - ${changeDesc}`);
+    return {
+      hasChanges: true,
+      changeType: `Emails: ${changeDesc}`,
+      data: { emails }
+    };
+  }
+
+  // Check vendor-label-only checksum (catches emails without 00.received label)
+  // Skip if: no stored checksum, or skipVendorLabelCheck option is true (for faster skip unchanged)
+  if (storedData.vendorLabelChecksum && !options.skipVendorLabelCheck) {
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+    if (newVendorLabelChecksum && storedData.vendorLabelChecksum !== newVendorLabelChecksum) {
+      Logger.log(`${vendor}: vendor label emails changed (stored=${storedData.vendorLabelChecksum}, new=${newVendorLabelChecksum})`);
+      return {
+        hasChanges: true,
+        changeType: 'New vendor emails (unlabeled)',
+        data: { emails }
+      };
+    }
+  }
+
   // Check tasks (second most volatile)
   let tasks = getTasksForVendor_(vendor, listRow) || [];
   tasks = filterTasksBySource_(tasks, source);
@@ -4954,7 +8783,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: tasks changed`);
     return { 
       hasChanges: true, 
-      changeType: 'tasks changed',
+      changeType: 'Tasks changed',
       data: { emails, tasks } 
     };
   }
@@ -4970,7 +8799,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: notes changed`);
       return { 
         hasChanges: true, 
-        changeType: 'notes changed',
+        changeType: 'Notes changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -4978,7 +8807,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: status changed`);
       return { 
         hasChanges: true, 
-        changeType: 'status changed',
+        changeType: 'Status changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -4986,7 +8815,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
       Logger.log(`${vendor}: contacts changed`);
       return { 
         hasChanges: true, 
-        changeType: 'contacts changed',
+        changeType: 'Contacts changed',
         data: { emails, tasks, contactData } 
       };
     }
@@ -5002,7 +8831,7 @@ function checkVendorForChanges_(vendor, listRow, source) {
     Logger.log(`${vendor}: meetings changed`);
     return { 
       hasChanges: true, 
-      changeType: 'meetings changed',
+      changeType: 'Meetings changed',
       data: { emails, tasks, contactData, meetings } 
     };
   }
@@ -5017,6 +8846,26 @@ function checkVendorForChanges_(vendor, listRow, source) {
 }
 
 /**
+ * Format change type for display in toast notifications
+ * @param {string} changeType - Raw change type from checkVendorForChanges_
+ * @return {string} Formatted change type with emoji
+ */
+function formatChangeType_(changeType) {
+  const typeMap = {
+    'Flagged': '⚑ Flagged for review',
+    'Overdue emails': '🔴 Overdue emails need attention',
+    'First view': '🆕 First time viewing',
+    'Emails changed': '📧 New or updated emails',
+    'Tasks changed': '📋 Tasks changed on monday.com',
+    'Notes changed': '📝 Notes updated',
+    'Status changed': '🔄 Status changed',
+    'Contacts changed': '👤 Contacts updated',
+    'Meetings changed': '📅 Meetings changed'
+  };
+  return typeMap[changeType] || changeType;
+}
+
+/**
  * Set row background color in List sheet
  * @param {Sheet} listSh - List sheet
  * @param {number} listRow - Row number (1-based)
@@ -5024,76 +8873,724 @@ function checkVendorForChanges_(vendor, listRow, source) {
  */
 function setListRowColor_(listSh, listRow, color) {
   const numCols = listSh.getLastColumn();
-  listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  Logger.log(`setListRowColor_: row=${listRow}, cols=${numCols}, color=${color}`);
+  if (numCols > 0) {
+    listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  } else {
+    Logger.log(`WARNING: numCols is ${numCols}, skipping row color`);
+  }
+}
+
+/**
+ * Find vendor index by name (case-insensitive)
+ * @param {Sheet} listSh - List sheet
+ * @param {string} vendorName - Vendor name to search for
+ * @returns {number|null} - Vendor index (1-based) or null if not found
+ */
+function findVendorIndexByName_(listSh, vendorName) {
+  const data = listSh.getDataRange().getValues();
+  const searchName = vendorName.toLowerCase().trim();
+
+  for (let i = 1; i < data.length; i++) {
+    const name = String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase().trim();
+    if (name === searchName) {
+      return i;  // Return the index (1-based matches row - 1)
+    }
+  }
+  return null;
+}
+
+/**
+ * Check inbox for new emails with zzzVendors labels since a given timestamp
+ * @param {Date} sinceTime - Only return emails newer than this time
+ * @returns {Object|null} - {vendorName, threadId, subject} or null if none found
+ */
+function checkInboxForNewVendorEmails_(sinceTime) {
+  try {
+    // Get current user's email to check if last message is from me
+    const myEmail = Session.getEffectiveUser().getEmail().toLowerCase();
+
+    // Search inbox for emails since the given time
+    const threads = GmailApp.search('in:inbox', 0, 100);
+
+    for (const thread of threads) {
+      const lastMessageDate = thread.getLastMessageDate();
+
+      // Skip if older than sinceTime
+      if (lastMessageDate <= sinceTime) {
+        continue;
+      }
+
+      // Check if last message in thread is from me - skip if so
+      // (It's probably a response I sent that's still in inbox waiting for reply)
+      const messages = thread.getMessages();
+      if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const fromHeader = lastMessage.getFrom().toLowerCase();
+        if (fromHeader.includes(myEmail)) {
+          console.log(`Skipping inbox thread - last message is from me: ${thread.getFirstMessageSubject()}`);
+          continue;
+        }
+      }
+
+      // Check for zzzVendors label
+      const labels = thread.getLabels();
+      for (const label of labels) {
+        const labelName = label.getName();
+
+        if (labelName.startsWith('zzzVendors/')) {
+          const vendorName = labelName.substring('zzzVendors/'.length);
+          console.log(`Found inbox email for vendor: ${vendorName} (${thread.getFirstMessageSubject()})`);
+          return {
+            vendorName: vendorName,
+            threadId: thread.getId(),
+            subject: thread.getFirstMessageSubject(),
+            date: lastMessageDate
+          };
+        }
+      }
+    }
+
+    return null;
+  } catch (e) {
+    console.error('Error checking inbox for vendor emails:', e);
+    return null;
+  }
+}
+
+/**
+ * Inbox Mode - Navigate to vendors based on oldest inbox emails
+ * Searches for inbox emails with zzzVendors/ labels, sorted oldest first
+ * Skips emails where the last message is from the user
+ */
+function inboxModeNext() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  ss.toast('Searching inbox for vendor emails...', '📥 Inbox Mode', 2);
+
+  // Get user's email to skip threads where last message is from me
+  const myEmail = Session.getEffectiveUser().getEmail().toLowerCase();
+
+  // Search inbox for all threads (get more to find vendor-labeled ones)
+  const threads = GmailApp.search('in:inbox', 0, 200);
+
+  if (threads.length === 0) {
+    ui.alert('Inbox Empty', 'No emails found in inbox.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Find all threads with zzzVendors labels
+  const vendorThreads = [];
+
+  for (const thread of threads) {
+    // Check if last message is from me - skip if so
+    const messages = thread.getMessages();
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      const fromHeader = lastMessage.getFrom().toLowerCase();
+      if (fromHeader.includes(myEmail)) {
+        continue; // Skip - last message is from me
+      }
+    }
+
+    // Check for zzzVendors label
+    const labels = thread.getLabels();
+    for (const label of labels) {
+      const labelName = label.getName();
+      if (labelName.startsWith('zzzVendors/')) {
+        const vendorName = labelName.substring('zzzVendors/'.length);
+        vendorThreads.push({
+          vendorName: vendorName,
+          threadId: thread.getId(),
+          subject: thread.getFirstMessageSubject(),
+          date: thread.getLastMessageDate(),
+          messageCount: thread.getMessageCount()
+        });
+        break; // Only need one vendor label per thread
+      }
+    }
+  }
+
+  if (vendorThreads.length === 0) {
+    ui.alert('No Vendor Emails', 'No inbox emails found with vendor labels (zzzVendors/).', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Sort by date - oldest first
+  vendorThreads.sort((a, b) => a.date - b.date);
+
+  // Get the oldest one
+  const oldest = vendorThreads[0];
+  Logger.log(`Inbox Mode: Found ${vendorThreads.length} vendor emails. Oldest: ${oldest.vendorName} (${oldest.date})`);
+
+  // Find vendor in list
+  const vendorIdx = findVendorIndexByName_(listSh, oldest.vendorName);
+
+  if (!vendorIdx) {
+    // Vendor not in list - try the next one
+    Logger.log(`Inbox Mode: Vendor "${oldest.vendorName}" not found in list`);
+
+    for (let i = 1; i < vendorThreads.length; i++) {
+      const next = vendorThreads[i];
+      const nextIdx = findVendorIndexByName_(listSh, next.vendorName);
+      if (nextIdx) {
+        ss.toast(`Navigating to ${next.vendorName} (oldest in inbox)`, '📥 Inbox Mode', 3);
+        loadVendorData(nextIdx, { forceChanged: true });
+
+        ui.alert(
+          '📥 Inbox Mode',
+          `Oldest inbox email for: ${next.vendorName}\n\n` +
+          `Subject: ${next.subject}\n` +
+          `Date: ${next.date.toLocaleString()}\n\n` +
+          `${vendorThreads.length} vendor email(s) in inbox total.`,
+          ui.ButtonSet.OK
+        );
+        return;
+      }
+    }
+
+    ui.alert('Vendor Not Found', `Vendor "${oldest.vendorName}" (and others) not found in list.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Navigate to the vendor
+  ss.toast(`Navigating to ${oldest.vendorName} (oldest in inbox)`, '📥 Inbox Mode', 3);
+  loadVendorData(vendorIdx, { forceChanged: true });
+
+  ui.alert(
+    '📥 Inbox Mode',
+    `Oldest inbox email for: ${oldest.vendorName}\n\n` +
+    `Subject: ${oldest.subject}\n` +
+    `Date: ${oldest.date.toLocaleString()}\n\n` +
+    `${vendorThreads.length} vendor email(s) in inbox total.`,
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Find resume position - the first white (no color) vendor that:
+ * - Has green or yellow colored vendors before it
+ * - Has a white vendor after it
+ * This is used to resume normal skip-unchanged flow after inbox redirects
+ * @param {Sheet} listSh - List sheet
+ * @returns {number|null} - Vendor index (1-based) or null if not found
+ */
+function findResumePosition_(listSh) {
+  const lastRow = listSh.getLastRow();
+  const numCols = listSh.getLastColumn();
+
+  // Get all row backgrounds at once for performance
+  const backgrounds = listSh.getRange(2, 1, lastRow - 1, numCols).getBackgrounds();
+
+  // Find the first white row that has colored rows before it and a white row after it
+  let hasSeenColored = false;
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    const rowBg = backgrounds[i][0];  // Check first column's background
+    const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
+    const isColored = rowBg === BS_CFG.COLOR_ROW_CURRENT || rowBg === BS_CFG.COLOR_ROW_VIEWED;
+
+    if (isColored) {
+      hasSeenColored = true;
+    } else if (isWhite && hasSeenColored) {
+      // This is a white row after colored rows
+      // Check if there's a white row after this one
+      if (i + 1 < backgrounds.length) {
+        const nextRowBg = backgrounds[i + 1][0];
+        const nextIsWhite = !nextRowBg || nextRowBg === '#ffffff' || nextRowBg === 'white' || nextRowBg === '';
+
+        if (nextIsWhite) {
+          // Found it! Return the index (1-based, accounting for header row)
+          console.log(`Found resume position at row ${i + 2} (index ${i + 1})`);
+          return i + 1;  // Convert to 1-based vendor index
+        }
+      }
+    }
+  }
+
+  // If no ideal position found, return the first white row after any colored rows
+  if (hasSeenColored) {
+    for (let i = 0; i < backgrounds.length; i++) {
+      const rowBg = backgrounds[i][0];
+      const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
+
+      if (isWhite) {
+        // Check if there were colored rows before this
+        let coloredBefore = false;
+        for (let j = 0; j < i; j++) {
+          const prevBg = backgrounds[j][0];
+          if (prevBg === BS_CFG.COLOR_ROW_CURRENT || prevBg === BS_CFG.COLOR_ROW_VIEWED) {
+            coloredBefore = true;
+            break;
+          }
+        }
+        if (coloredBefore) {
+          console.log(`Found resume position (fallback) at row ${i + 2} (index ${i + 1})`);
+          return i + 1;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
  * Skip to next vendor with changes (different checksum)
+ * Now with Inbox Redirect support:
+ * - Records timestamp when skip happens
+ * - Checks inbox for new emails with zzzVendors labels
+ * - If found, redirects to that vendor
+ * - On next skip, resumes normal flow if no new inbox emails
  */
 function skipToNextChanged(trackComeback) {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   const props = PropertiesService.getScriptProperties();
-  
+
   if (!bsSh || !listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
+  // ===== LOGGING: Initial State =====
+  const currentVendorIdx = getCurrentVendorIndex_();
+  const currentVendorName = currentVendorIdx ? listSh.getRange(currentVendorIdx + 1, 1).getValue() : 'none';
+  Logger.log(`\n========== SKIP TO NEXT CHANGED ==========`);
+  Logger.log(`Starting from: Vendor #${currentVendorIdx} (${currentVendorName})`);
+  Logger.log(`trackComeback param: ${trackComeback}`);
+
+  // Check if there's an active Skip 5 & Return session
+  let skip5Session = null;
+  const skip5Str = props.getProperty('BS_SKIP5_SESSION');
+  if (skip5Str) {
+    try {
+      skip5Session = JSON.parse(skip5Str);
+      Logger.log(`Skip5 Session: ACTIVE - origin=${skip5Session.originVendor} (idx ${skip5Session.originIdx}), found=${skip5Session.changedFound}/${skip5Session.changedTarget}, complete=${skip5Session.complete}`);
+
+      // Check if session is marked complete (ready to return)
+      if (skip5Session.complete) {
+        Logger.log(`DECISION: Skip5 complete - returning to origin vendor ${skip5Session.originVendor}`);
+        ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 Skip 5 Complete', 3);
+        Utilities.sleep(500);
+        loadVendorData(skip5Session.originIdx);
+        props.deleteProperty('BS_SKIP5_SESSION');
+
+        SpreadsheetApp.getUi().alert(
+          'Skip 5 & Return Complete',
+          `Found ${skip5Session.changedFound} changed vendor(s).\n` +
+          `Skipped ${skip5Session.skippedCount || 0} unchanged vendor(s).\n\n` +
+          `Returned to: ${skip5Session.originVendor}`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+        return;
+      }
+    } catch (e) {
+      Logger.log(`Skip5 Session: ERROR parsing - ${e.message}`);
+      props.deleteProperty('BS_SKIP5_SESSION');
+      skip5Session = null;
+    }
+  } else {
+    Logger.log(`Skip5 Session: none`);
+  }
+
   // If trackComeback wasn't explicitly passed, check if there's an existing comeback pending
+  const comebackStr = props.getProperty('BS_COMEBACK');
+  if (comebackStr) {
+    try {
+      const comebackData = JSON.parse(comebackStr);
+      Logger.log(`Comeback: PENDING - return to ${comebackData.vendorName} (idx ${comebackData.vendorIndex}) after ${comebackData.comebackAfter - comebackData.vendorsSeen} more vendors`);
+    } catch (e) {
+      Logger.log(`Comeback: ERROR parsing - ${e.message}`);
+    }
+  } else {
+    Logger.log(`Comeback: none`);
+  }
+
   if (trackComeback === undefined) {
-    const comebackStr = props.getProperty('BS_COMEBACK');
     if (comebackStr) {
       trackComeback = true;  // Auto-enable if comeback is pending
+      Logger.log(`trackComeback auto-enabled due to pending comeback`);
     }
   }
-  
+
   const listData = listSh.getDataRange().getValues();
   const totalVendors = listData.length - 1;
-  
+  Logger.log(`Total vendors: ${totalVendors}`);
+
+  // ===== INBOX REDIRECT LOGIC =====
+  // Check if we had a previous Inbox Redirect
+  const lastInboxRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
+  const lastInboxCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+
+  let lastInboxRedirectTime = lastInboxRedirectStr ? new Date(lastInboxRedirectStr) : null;
+  let lastInboxCheckTime = lastInboxCheckStr ? new Date(lastInboxCheckStr) : null;
+
+  const storedResumeIdxStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  const storedResumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+  Logger.log(`InboxRedirect: lastRedirect=${lastInboxRedirectStr || 'none'}, lastCheck=${lastInboxCheckStr || 'none'}, resumeIdx=${storedResumeIdxStr || 'none'}, resumeVendor=${storedResumeVendorStr || 'none'}`);
+
+  // Determine what time to use for checking new emails
+  // If we had an Inbox Redirect, check for emails newer than that
+  // Otherwise, check for emails newer than the last check
+  const checkSinceTime = lastInboxRedirectTime || lastInboxCheckTime || new Date(0);
+
+  // Throttle inbox checks - don't check if we checked less than 5 minutes ago
+  const INBOX_CHECK_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+  const timeSinceLastCheck = lastInboxCheckTime ? (new Date() - lastInboxCheckTime) : Infinity;
+  const shouldCheckInbox = timeSinceLastCheck >= INBOX_CHECK_THROTTLE_MS;
+
+  if (shouldCheckInbox) {
+    Logger.log(`Checking inbox for emails since: ${checkSinceTime.toISOString()}`);
+    ss.toast('Checking inbox for new vendor emails...', '📬 Inbox Check', 2);
+
+    // Record current time as the check time
+    const checkTime = new Date();
+    props.setProperty('BS_INBOX_CHECK_TIME', checkTime.toISOString());
+
+    // Check inbox for new vendor emails
+    const inboxResult = checkInboxForNewVendorEmails_(checkSinceTime);
+    Logger.log(`Inbox check result: ${inboxResult ? `found email for ${inboxResult.vendorName}` : 'no new emails'}`);
+
+    if (inboxResult) {
+      // Found a new email with zzzVendors label - do Inbox Redirect
+      const vendorIdx = findVendorIndexByName_(listSh, inboxResult.vendorName);
+      Logger.log(`DECISION PATH: Inbox Redirect - new email for ${inboxResult.vendorName}, vendorIdx=${vendorIdx}`);
+
+      if (vendorIdx) {
+        // Check if there's already an active inbox redirect with a resume position
+        // If so, DON'T overwrite the resume position - keep the original one
+        const existingResumeIdx = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+        const existingResumeVendor = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+        let resumeFromIdx, resumeFromVendor;
+
+        if (existingResumeIdx && existingResumeVendor && lastInboxRedirectTime) {
+          // Chained redirect - keep original resume position
+          resumeFromIdx = existingResumeIdx;
+          resumeFromVendor = existingResumeVendor;
+          Logger.log(`Chained Inbox Redirect - preserving original resume: idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+        } else {
+          // First redirect - record where we were so we can resume later
+          const originalIdx = currentVendorIdx || 1;
+          const originalVendor = currentVendorName || 'Vendor #1';
+          resumeFromIdx = String(originalIdx + 1);
+          resumeFromVendor = originalVendor;
+          Logger.log(`First Inbox Redirect - saving resume: idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+        }
+
+        // Update timestamp (always) and resume position (only if not chained)
+        props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', resumeFromIdx);
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', resumeFromVendor);
+
+        Logger.log(`NAVIGATING TO: Vendor #${vendorIdx} (${inboxResult.vendorName}) via Inbox Redirect`);
+        Logger.log(`Resume position: will resume from idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+
+        ss.toast('');
+        loadVendorData(vendorIdx, { forceChanged: true });
+
+        SpreadsheetApp.getUi().alert(
+          '📬 Inbox Redirect',
+          `New email found for: ${inboxResult.vendorName}\n\n` +
+          `Subject: ${inboxResult.subject}\n\n` +
+          `Redirecting to this vendor.\n\n` +
+          `(Will resume from ${resumeFromVendor} on next skip if no new emails)`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+
+        if (trackComeback) checkComeback_();
+        return;
+      } else {
+        // Vendor not found in list - log and continue with normal flow
+        Logger.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list - continuing to normal flow`);
+        ss.toast(`Vendor "${inboxResult.vendorName}" not in list, continuing...`, '⚠️', 2);
+      }
+    }
+  } else {
+    const minutesAgo = Math.round(timeSinceLastCheck / 60000);
+    Logger.log(`Inbox check THROTTLED - last check was ${minutesAgo} minutes ago (threshold: 5 min)`);
+  }
+
+  // Handle resume from Inbox Redirect (only if we didn't just do a new redirect)
+  if (lastInboxRedirectTime) {
+    // No new inbox emails since last Inbox Redirect - resume from stored position
+    Logger.log(`DECISION PATH: Resume from Inbox Redirect (no new inbox emails since ${lastInboxRedirectTime.toISOString()})`);
+
+    // Get the stored resume position (preferred) or fall back to heuristic
+    const storedResumeIdx = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+    const storedResumeVendor = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+    let resumeIdx = storedResumeIdx ? parseInt(storedResumeIdx, 10) : null;
+
+    if (resumeIdx) {
+      Logger.log(`Using stored resume position: idx ${resumeIdx} (after ${storedResumeVendor})`);
+      ss.toast(`Resuming from where you left off (after ${storedResumeVendor})...`, '🔄 Resume', 2);
+    } else {
+      // Fall back to heuristic if no stored position
+      ss.toast('No new inbox emails, finding resume position...', '🔄 Resume', 2);
+      resumeIdx = findResumePosition_(listSh);
+      Logger.log(`Resume position (heuristic): ${resumeIdx ? `Vendor #${resumeIdx}` : 'not found'}`);
+    }
+
+    if (resumeIdx) {
+      // Clear the Inbox Redirect state since we're resuming normal flow
+      props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+      props.deleteProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+      props.deleteProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+      const resumeVendor = listData[resumeIdx][BS_CFG.L_VENDOR];
+      Logger.log(`Resuming from: ${resumeVendor} (idx ${resumeIdx})`);
+
+      // Start searching from the resume position
+      ss.toast(`Resuming from: ${resumeVendor}`, '🔄 Resume', 2);
+
+      // Set current index to resume position - 1 so the loop starts at resume position
+      let currentIdx = resumeIdx - 1;
+      let skippedCount = 0;
+
+      ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
+
+      // Loop through vendors looking for one with changes - start from resume position
+      while (true) {
+        currentIdx++;  // Move to next vendor FIRST
+
+        // Stop at end
+        if (currentIdx > totalVendors) {
+          Logger.log(`RESULT: Reached end of list from resume position. Skipped ${skippedCount} vendors.`);
+          ss.toast('');
+          SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
+          return;
+        }
+
+        const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+        const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
+        const listRow = currentIdx + 1;
+
+        ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
+
+        // Use the centralized change detection helper
+        const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
+
+        if (changeResult.hasChanges) {
+          Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via resume path]`);
+          ss.toast('');
+          loadVendorData(currentIdx, { forceChanged: true });
+          if (skippedCount > 0) {
+            SpreadsheetApp.getUi().alert(`Resumed and skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
+          }
+          if (trackComeback) checkComeback_();
+          return;
+        }
+
+        // No changes - mark as viewed (yellow)
+        setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
+        skippedCount++;
+      }
+    }
+  }
+
+  // ===== NORMAL SKIP UNCHANGED LOGIC =====
+  Logger.log(`DECISION PATH: Normal skip unchanged flow (no inbox redirect active)`);
+
   // Get current index using the same function as other navigation
   let currentIdx = getCurrentVendorIndex_() || 1;
-  
+  const startIdx = currentIdx;  // Track where we started for wrap-around detection
+  let hasWrapped = false;       // Track if we've wrapped around
+
+  Logger.log(`Starting normal skip from idx ${startIdx}, will search forward`);
+
   let skippedCount = 0;
-  
-  ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
-  
+
+  // Show progress message based on session state
+  if (skip5Session) {
+    ss.toast(`Skip 5 & Return: ${skip5Session.changedFound}/${skip5Session.changedTarget} found. Searching...`, '🔄 Skip 5', -1);
+  } else {
+    ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
+  }
+
   // Loop through vendors looking for one with changes - start from NEXT vendor
   while (true) {
     currentIdx++;  // Move to next vendor FIRST
-    
-    // Stop at end
+
+    // Wrap around at end of list
     if (currentIdx > totalVendors) {
+      // If Skip 5 session is active, don't wrap - return to origin
+      if (skip5Session) {
+        Logger.log(`RESULT: End of list during Skip5 - returning to origin ${skip5Session.originVendor}`);
+        ss.toast('');
+        ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 End of List', 3);
+        Utilities.sleep(500);
+        loadVendorData(skip5Session.originIdx);
+        props.deleteProperty('BS_SKIP5_SESSION');
+
+        SpreadsheetApp.getUi().alert(
+          'Skip 5 & Return Complete',
+          `Reached end of list.\n` +
+          `Found ${skip5Session.changedFound} changed vendor(s).\n` +
+          `Skipped ${skippedCount + (skip5Session.skippedCount || 0)} unchanged vendor(s).\n\n` +
+          `Returned to: ${skip5Session.originVendor}`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+        return;
+      }
+
+      // Wrap around to vendor #1
+      Logger.log(`Wrapping around to vendor #1 (was at end of list)`);
+      currentIdx = 1;
+      hasWrapped = true;
+      ss.toast('Wrapping to vendor #1...', '🔄 Wrap Around', 2);
+    }
+
+    // If we've wrapped and reached our starting point, we've checked everyone
+    if (hasWrapped && currentIdx >= startIdx) {
+      Logger.log(`RESULT: Checked all vendors (wrapped around). Skipped ${skippedCount} vendors.`);
       ss.toast('');
-      SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
+      SpreadsheetApp.getUi().alert(`Checked all vendors (wrapped around).\nSkipped ${skippedCount} unchanged vendor(s).\nNo vendors with changes found.`);
       return;
     }
-    
+
     const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
     const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
     const listRow = currentIdx + 1;
-    
-    ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
-    
-    // Use the centralized change detection helper
-    const changeResult = checkVendorForChanges_(vendor, listRow, source);
-    
-    if (changeResult.hasChanges) {
-      ss.toast('');
-      loadVendorData(currentIdx, { forceChanged: true, loadMode: 'fast' });
-      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-      if (skippedCount > 0) {
-        SpreadsheetApp.getUi().alert(`Skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
+
+    if (skip5Session) {
+      ss.toast(`Checking ${vendor}... (${skip5Session.changedFound}/${skip5Session.changedTarget}, ${skippedCount} skipped)`, '🔄 Skip 5', -1);
+    } else {
+      ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
+    }
+
+    // Safeguard: After 30 skips, stop on this vendor to avoid 6-minute timeout
+    const MAX_SKIPS = 30;
+    if (skippedCount >= MAX_SKIPS) {
+      Logger.log(`RESULT: Safeguard triggered after ${skippedCount} skips - stopping at ${vendor}`);
+      ss.toast(`Stopped after ${skippedCount} skips to avoid timeout`, '⚠️ Safeguard', 5);
+
+      // Update Skip 5 session if active
+      if (skip5Session) {
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
       }
+
+      // Load this vendor with a note about the safeguard
+      loadVendorData(currentIdx, { forceChanged: false, changeType: `No changes - stopped after ${skippedCount} skips (timeout safeguard)` });
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
       if (trackComeback) checkComeback_();
       return;
     }
-    
-    // No changes - mark as skipped (yellow)
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
+
+    // Use the centralized change detection helper
+    const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
+
+    if (changeResult.hasChanges) {
+      // If Skip 5 session is active, update it
+      if (skip5Session) {
+        skip5Session.changedFound++;
+        skip5Session.currentIdx = currentIdx;
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+
+        // Check if we've found all 5
+        if (skip5Session.changedFound >= skip5Session.changedTarget) {
+          skip5Session.complete = true;
+          Logger.log(`Skip5: Found ${skip5Session.changedFound}/${skip5Session.changedTarget} - session complete, next skip returns to ${skip5Session.originVendor}`);
+          ss.toast(`Found ${skip5Session.changedFound}/${skip5Session.changedTarget}! Next skip will return to ${skip5Session.originVendor}`, '🔄 5/5 Found', 5);
+        } else {
+          Logger.log(`Skip5: Found ${skip5Session.changedFound}/${skip5Session.changedTarget} at ${vendor}`);
+          ss.toast(`Skip 5: ${skip5Session.changedFound}/${skip5Session.changedTarget} - ${vendor}`, '🔄 Skip 5', 3);
+        }
+
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
+      }
+
+      Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via normal skip, skipped ${skippedCount}]`);
+
+      // Show what changed in a toast BEFORE loading modules
+      const changeLabel = formatChangeType_(changeResult.changeType);
+      ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
+
+      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
+      // WHAT CHANGED section now shows the details, no need for dialog
+      if (trackComeback) checkComeback_();
+      return;
+    }
+
+    // No changes - mark as viewed (yellow)
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
     skippedCount++;
   }
+}
+
+/**
+ * Clear Inbox Redirect state - allows resuming normal skip flow without inbox check
+ */
+function clearInboxRedirectState() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const lastRedirect = props.getProperty('BS_INBOX_REDIRECT_TIME');
+
+  if (!lastRedirect) {
+    ui.alert('No Inbox Redirect', 'There is no active Inbox Redirect state to clear.', ui.ButtonSet.OK);
+    return;
+  }
+
+  props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+  props.deleteProperty('BS_INBOX_CHECK_TIME');
+  props.deleteProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  props.deleteProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+  ui.alert('Inbox Redirect Cleared', 'Inbox Redirect state has been cleared.\nNext skip will continue from current position.', ui.ButtonSet.OK);
+}
+
+/**
+ * View Inbox Redirect status
+ */
+function viewInboxRedirectStatus() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const lastRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
+  const lastCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+  const resumeIdxStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  const resumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+  if (!lastRedirectStr && !lastCheckStr) {
+    ui.alert('📬 Inbox Redirect Status', 'No Inbox Redirect tracking active.\n\nThe next Skip Unchanged will start fresh.', ui.ButtonSet.OK);
+    return;
+  }
+
+  let message = '';
+
+  if (lastRedirectStr) {
+    const lastRedirect = new Date(lastRedirectStr);
+    message += `Last Inbox Redirect: ${lastRedirect.toLocaleString()}\n`;
+    message += `Status: ACTIVE - Next skip will check for new inbox emails since this time.\n`;
+    if (resumeIdxStr && resumeVendorStr) {
+      message += `If no new emails, will resume from vendor #${resumeIdxStr} (after ${resumeVendorStr}).\n\n`;
+    } else {
+      message += `If no new emails, will resume from first white vendor after colored vendors.\n\n`;
+    }
+  }
+
+  if (lastCheckStr) {
+    const lastCheck = new Date(lastCheckStr);
+    message += `Last Inbox Check: ${lastCheck.toLocaleString()}`;
+  }
+
+  ui.alert('📬 Inbox Redirect Status', message, ui.ButtonSet.OK);
 }
 
 /**
@@ -5272,45 +9769,33 @@ function viewComebackStatus() {
 /**
  * Skip to next changed vendor 5 times, then return to the original
  * Useful for putting things in motion and letting them process while reviewing others
+ * This function initializes a session and delegates to skipToNextChanged()
  */
 function skip5AndReturn() {
   const ss = SpreadsheetApp.getActive();
-  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   const props = PropertiesService.getScriptProperties();
-  
-  if (!bsSh || !listSh) {
+
+  if (!listSh) {
     SpreadsheetApp.getUi().alert('Required sheets not found.');
     return;
   }
-  
+
   // Check if we're already in a "Skip 5 & Return" session
   const sessionStr = props.getProperty('BS_SKIP5_SESSION');
-  let session = null;
-  
-  if (sessionStr) {
-    try {
-      session = JSON.parse(sessionStr);
-    } catch (e) {
-      props.deleteProperty('BS_SKIP5_SESSION');
-    }
-  }
-  
-  const totalVendors = listSh.getLastRow() - 1;
-  const listData = listSh.getDataRange().getValues();
-  
-  // If no active session, start a new one
-  if (!session) {
+
+  if (!sessionStr) {
+    // Start a new session
     const originIdx = getCurrentVendorIndex_();
-    
+
     if (!originIdx) {
       SpreadsheetApp.getUi().alert('Could not determine current vendor index.');
       return;
     }
-    
+
     const originVendor = listSh.getRange(originIdx + 1, 1).getValue();
-    
-    session = {
+
+    const session = {
       originIdx: originIdx,
       originVendor: originVendor,
       currentIdx: originIdx,
@@ -5319,76 +9804,13 @@ function skip5AndReturn() {
       skippedCount: 0,
       startedAt: new Date().toISOString()
     };
-    
+
+    props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
     ss.toast(`Starting Skip 5 & Return from: ${originVendor}`, '🔄 Skip 5 & Return', 3);
-  } else {
-    ss.toast(`Continuing Skip 5 & Return (${session.changedFound}/${session.changedTarget} found)`, '🔄 Skip 5 & Return', 2);
   }
-  
-  // Search for next changed vendor
-  let currentIdx = session.currentIdx;
-  
-  while (currentIdx < totalVendors) {
-    currentIdx++;
-    
-    if (currentIdx > totalVendors) {
-      break;
-    }
-    
-    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
-    const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
-    const listRow = currentIdx + 1;
-    
-    ss.toast(`Checking ${vendor}... (${session.changedFound}/${session.changedTarget} changed, ${session.skippedCount} skipped)`, '🔄 Skip 5 & Return', -1);
-    
-    // Use the centralized change detection helper
-    const changeResult = checkVendorForChanges_(vendor, listRow, source);
-    
-    if (changeResult.hasChanges) {
-      session.changedFound++;
-      session.currentIdx = currentIdx;
-      
-      // Load this vendor
-      loadVendorData(currentIdx, { forceChanged: true });
-      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CHANGED);
-      
-      // Check if we've found all 5
-      if (session.changedFound >= session.changedTarget) {
-        // Done! Next call will return to origin
-        ss.toast(`Found ${session.changedFound} changed vendors. Run again to return to ${session.originVendor}`, '🔄 5/5 Found', 5);
-        
-        // Mark session as complete (ready to return)
-        session.complete = true;
-        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
-      } else {
-        // More to find - save session and stop here
-        ss.toast(`Changed vendor ${session.changedFound}/${session.changedTarget}: ${vendor} (${changeResult.changeType})`, '🔄 Skip 5 & Return', 3);
-        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
-      }
-      return;
-    }
-    
-    // No changes - mark as skipped (yellow)
-    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_SKIPPED);
-    session.skippedCount++;
-  }
-  
-  // If we get here, we ran out of vendors before finding enough changed ones
-  // Return to origin
-  ss.toast(`Returning to: ${session.originVendor}`, '🔄 Returning', 2);
-  Utilities.sleep(500);
-  loadVendorData(session.originIdx);
-  
-  // Clear the session
-  props.deleteProperty('BS_SKIP5_SESSION');
-  
-  SpreadsheetApp.getUi().alert(
-    'Skip 5 & Return Complete',
-    `Found only ${session.changedFound} changed vendor(s) before end of list.\n` +
-    `Skipped ${session.skippedCount} unchanged vendor(s).\n\n` +
-    `Returned to: ${session.originVendor}`,
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
+
+  // Delegate to skipToNextChanged which now handles Skip 5 sessions
+  skipToNextChanged();
 }
 
 /**
@@ -5396,9 +9818,12 @@ function skip5AndReturn() {
  * Called automatically or can be called manually
  */
 function continueSkip5AndReturn() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
   const props = PropertiesService.getScriptProperties();
   const sessionStr = props.getProperty('BS_SKIP5_SESSION');
-  
+
   if (!sessionStr) {
     SpreadsheetApp.getUi().alert('No Skip 5 & Return session active.\n\nUse "Skip 5 & Return" to start a new session.');
     return;
@@ -5448,118 +9873,206 @@ function cancelSkip5Session() {
 }
 
 /**
- * Auto-traverse through all vendors, loading each one to record checksums
- * Processes in batches and asks to continue after each batch
+ * TURBO BATCH: Process all vendors continuously without stopping
+ * Rebuilds checksums for all vendors in batches to avoid timeout
+ * Run repeatedly to process all vendors (~50-60 per run)
  */
-function autoTraverseVendors() {
+function turboTraverseAll() {
   const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  
+  const props = PropertiesService.getScriptProperties();
+  const startTime = Date.now();
+  const MAX_RUNTIME_MS = 5 * 60 * 1000; // 5 minutes (leaving 1 min buffer)
+
   if (!listSh) {
-    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    ss.toast('List sheet not found.', '❌ Error', 3);
     return;
   }
-  
-  const totalVendors = listSh.getLastRow() - 1;
-  let currentIdx = (getCurrentVendorIndex_() || 0) + 1; // Start on NEXT vendor
-  
-  // Make sure we don't start past the end
-  if (currentIdx > totalVendors) {
-    ui.alert('End of List', 'Already at the last vendor.', ui.ButtonSet.OK);
-    return;
-  }
-  
-  // Ask for batch size
-  const response = ui.prompt(
-    '🔁 Auto-Traverse Vendors',
-    `Starting from vendor ${currentIdx} of ${totalVendors}.\n\nHow many vendors to process before pausing?\n(Enter a number, or "all" for no pausing)\n\nYou can also cancel the script from the Apps Script editor if needed.`,
-    ui.ButtonSet.OK_CANCEL
-  );
-  
-  if (response.getSelectedButton() !== ui.Button.OK) {
-    return;
-  }
-  
-  const inputText = response.getResponseText().trim().toLowerCase();
-  let batchSize = 25; // Default batch size
-  let noPause = false;
-  
-  if (inputText === 'all') {
-    noPause = true;
-    batchSize = totalVendors;
-  } else {
-    const parsed = parseInt(inputText);
-    if (!isNaN(parsed) && parsed > 0) {
-      batchSize = parsed;
-    }
-  }
-  
-  let processedCount = 0;
-  let totalProcessed = 0;
-  const startTime = new Date();
-  
-  while (currentIdx <= totalVendors) {
-    const vendor = listSh.getRange(currentIdx + 1, 1).getValue();
-    
-    ss.toast(`Processing ${currentIdx} of ${totalVendors}: ${vendor}`, '🔁 Auto-Traverse', 2);
-    
+
+  const listData = listSh.getDataRange().getValues();
+  const totalVendors = listData.length - 1;
+
+  // Get or initialize session
+  let sessionData = null;
+  const sessionStr = props.getProperty('BS_TURBO_SESSION');
+  if (sessionStr) {
     try {
-      // Load vendor data (this will record checksums)
-      loadVendorData(currentIdx, { forceChanged: true });
-      processedCount++;
-      totalProcessed++;
-      
-      Logger.log(`Auto-traverse: Processed ${vendor} (${currentIdx}/${totalVendors})`);
+      sessionData = JSON.parse(sessionStr);
     } catch (e) {
-      Logger.log(`Auto-traverse error on ${vendor}: ${e.message}`);
-    }
-    
-    currentIdx++;
-    
-    // Check if we've completed a batch
-    if (!noPause && processedCount >= batchSize && currentIdx <= totalVendors) {
-      const elapsed = Math.round((new Date() - startTime) / 1000);
-      const remaining = totalVendors - currentIdx + 1;
-      
-      const continueResponse = ui.alert(
-        '🔁 Batch Complete',
-        `Processed ${totalProcessed} vendors (${processedCount} in this batch).\n` +
-        `Time elapsed: ${elapsed} seconds\n` +
-        `Current position: ${currentIdx} of ${totalVendors}\n` +
-        `Remaining: ${remaining} vendors\n\n` +
-        `Continue with next batch?`,
-        ui.ButtonSet.YES_NO
-      );
-      
-      if (continueResponse !== ui.Button.YES) {
-        ss.toast(`Stopped at vendor ${currentIdx}. Processed ${totalProcessed} total.`, '⏹️ Stopped', 5);
-        return;
-      }
-      
-      processedCount = 0; // Reset batch counter
-    }
-    
-    // Safety check - Apps Script has a 6 minute timeout
-    const elapsedMs = new Date() - startTime;
-    if (elapsedMs > 5 * 60 * 1000) { // 5 minutes
-      ui.alert(
-        '⏱️ Time Limit',
-        `Approaching Apps Script time limit.\n` +
-        `Processed ${totalProcessed} vendors.\n` +
-        `Stopped at vendor ${currentIdx}.\n\n` +
-        `Run Auto-Traverse again to continue from here.`,
-        ui.ButtonSet.OK
-      );
-      return;
+      sessionData = null;
     }
   }
-  
-  const totalTime = Math.round((new Date() - startTime) / 1000);
+
+  let startIdx = sessionData?.nextIndex || 1;
+  let processedTotal = sessionData?.processedTotal || 0;
+
+  // Check if we're done
+  if (startIdx > totalVendors) {
+    ss.toast(`All ${totalVendors} vendors processed! Session complete.`, '✅ Turbo Complete', 5);
+    props.deleteProperty('BS_TURBO_SESSION');
+    return;
+  }
+
+  ss.toast(`Starting turbo traverse from vendor ${startIdx}...`, '🚀 Turbo Mode', 3);
+
+  // Box is skipped in turbo mode - will load in real-time when viewing individual vendors
+  Logger.log('Turbo: skipping Box pre-fetch (Box loads in real-time when viewing vendors)');
+
+  // Calendar is skipped in turbo mode (not essential for checksum updates)
+  Logger.log('Turbo: skipping Calendar pre-fetch (Calendar is skipped in turbo mode)');
+
+  let processedThisRun = 0;
+  let currentIdx = startIdx;
+
+  while (currentIdx <= totalVendors) {
+    // Check if we're running out of time
+    if (Date.now() - startTime > MAX_RUNTIME_MS) {
+      break;
+    }
+
+    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+    const listRow = currentIdx + 1;
+
+    try {
+      // Load vendor - this updates checksums
+      // turboMode: skip expensive vendor label checksum (redundant with other checksums)
+      // Box and Calendar are skipped in turbo mode for speed
+      loadVendorData(currentIdx, {
+        forceChanged: false,
+        changeType: 'Turbo rebuild',
+        turboMode: true
+      });
+      processedThisRun++;
+      processedTotal++;
+
+      // Brief log every 10 vendors
+      if (processedThisRun % 10 === 0) {
+        Logger.log(`Turbo: processed ${processedThisRun} this run (${currentIdx}/${totalVendors})`);
+      }
+    } catch (e) {
+      Logger.log(`Turbo error on ${vendor}: ${e.message}`);
+      // Continue to next vendor on error
+    }
+
+    currentIdx++;
+  }
+
+  // Save progress
+  if (currentIdx > totalVendors) {
+    // Done!
+    ss.toast(`✅ Complete! Processed all ${totalVendors} vendors.`, '🚀 Turbo Done', 5);
+    props.deleteProperty('BS_TURBO_SESSION');
+  } else {
+    // More to go
+    props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+      nextIndex: currentIdx,
+      processedTotal: processedTotal,
+      startedAt: sessionData?.startedAt || new Date().toISOString()
+    }));
+
+    const remaining = totalVendors - currentIdx + 1;
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    ss.toast(
+      `Processed ${processedThisRun} vendors in ${elapsed}s\n` +
+      `Progress: ${currentIdx - 1}/${totalVendors} (${remaining} remaining)\n` +
+      `Run again to continue!`,
+      '🚀 Turbo Paused',
+      5
+    );
+  }
+}
+
+/**
+ * Reset turbo traverse session
+ */
+function resetTurboSession() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('BS_TURBO_SESSION');
+  SpreadsheetApp.getActive().toast('Turbo session reset.', '🚀 Reset', 3);
+}
+
+/**
+ * Schedule Turbo Traverse to run 6 times automatically
+ * Each run is spaced 7 minutes apart (5 min execution + 2 min buffer)
+ * Starts from current vendor position (not from beginning)
+ * Perfect for overnight batch processing of all vendors
+ */
+function scheduleTurboTraverse() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  // Clear any existing turbo triggers first
+  const existingTriggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (const trigger of existingTriggers) {
+    if (trigger.getHandlerFunction() === 'turboTraverseAll') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  }
+
+  // Get current vendor position to start from there
+  const currentIdx = getCurrentVendorIndex_() || 1;
+  const listSh = SpreadsheetApp.getActive().getSheetByName(BS_CFG.LIST_SHEET);
+  const totalVendors = listSh ? listSh.getLastRow() - 1 : 0;
+  const remaining = totalVendors - currentIdx;
+
+  // Initialize session to start from current position
+  props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+    nextIndex: currentIdx,
+    processedTotal: 0,
+    startedAt: new Date().toISOString()
+  }));
+
+  // Schedule 6 runs, 7 minutes apart
+  // Run 1 is immediate, runs 2-6 are scheduled
+  const RUNS = 6;
+  const INTERVAL_MINUTES = 7;
+
+  for (let i = 1; i < RUNS; i++) {
+    ScriptApp.newTrigger('turboTraverseAll')
+      .timeBased()
+      .after(i * INTERVAL_MINUTES * 60 * 1000) // milliseconds
+      .create();
+  }
+
+  const totalMinutes = (RUNS - 1) * INTERVAL_MINUTES;
   ui.alert(
-    '✅ Complete!',
-    `Auto-traverse finished!\n\nProcessed ${totalProcessed} vendors in ${totalTime} seconds.`,
+    '🚀 Turbo Traverse Scheduled',
+    `Starting from vendor #${currentIdx} (${remaining} remaining)\n\n` +
+    `Scheduled ${RUNS} runs over the next ${totalMinutes} minutes.\n\n` +
+    `• Run 1: Now\n` +
+    `• Run 2-${RUNS}: Every ${INTERVAL_MINUTES} minutes\n\n` +
+    `You can close this spreadsheet - it will run in the background.\n` +
+    `Check execution logs tomorrow to verify completion.`,
     ui.ButtonSet.OK
+  );
+
+  // Start the first run immediately
+  turboTraverseAll();
+}
+
+/**
+ * Cancel all scheduled Turbo Traverse runs
+ */
+function cancelTurboSchedule() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'turboTraverseAll') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('BS_TURBO_SESSION');
+
+  SpreadsheetApp.getActive().toast(
+    `Removed ${removed} scheduled runs and reset session.`,
+    '❌ Schedule Cancelled',
+    5
   );
 }
 
@@ -7118,4 +11631,4548 @@ Write ONLY the email body. No meta-commentary.`;
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
   }
+}
+
+/************************************************************
+ * EMAIL RESPONSE GENERATION
+ * Generate email responses using Claude AI and create Gmail drafts
+ ************************************************************/
+
+/**
+ * Get the selected email thread from the A(I)DEN sheet
+ * User should have their cursor on an email row in the EMAILS section
+ */
+function getSelectedEmailThread_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    throw new Error('A(I)DEN sheet not found');
+  }
+
+  // Check if we're in the emails section by looking for the subject column (column A)
+  // and checking if the row is after the EMAILS header
+  const values = bsSh.getDataRange().getValues();
+
+  // Find the EMAILS header row
+  let emailsHeaderRow = -1;
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0]).includes('📧 EMAILS')) {
+      emailsHeaderRow = i + 1; // 1-based
+      break;
+    }
+  }
+
+  if (emailsHeaderRow === -1) {
+    throw new Error('Could not find EMAILS section');
+  }
+
+  // The header row with Subject/Date/Last/Labels is emailsHeaderRow + 1
+  // Email rows start at emailsHeaderRow + 2
+  const emailDataStartRow = emailsHeaderRow + 2;
+
+  // Determine which row to use - selected row if valid, otherwise first email row
+  const selection = bsSh.getSelection();
+  const activeCell = selection.getCurrentCell();
+  let row = emailDataStartRow; // Default to first email (newest)
+
+  if (activeCell) {
+    const selectedRow = activeCell.getRow();
+    if (selectedRow >= emailDataStartRow) {
+      row = selectedRow; // Use selected row if it's in the email section
+    }
+  }
+
+  // Get the subject from the row
+  const subject = String(bsSh.getRange(row, 1).getValue() || '').trim();
+
+  if (!subject || subject === 'No emails found') {
+    throw new Error('No emails available');
+  }
+
+  // Try to get the thread ID from the hyperlink formula
+  const formula = bsSh.getRange(row, 1).getFormula();
+  let threadId = null;
+
+  if (formula) {
+    // Extract thread ID from HYPERLINK formula like: =HYPERLINK("https://mail.google.com/mail/u/0/#inbox/THREADID", "Subject")
+    const match = formula.match(/#inbox\/([^"]+)/);
+    if (match) {
+      threadId = match[1];
+    }
+  }
+
+  if (!threadId) {
+    throw new Error('Could not find thread ID for selected email. Make sure you clicked on a valid email row.');
+  }
+
+  // Fetch the full thread
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) {
+    throw new Error('Could not fetch email thread');
+  }
+
+  return {
+    threadId: threadId,
+    subject: subject,
+    thread: thread
+  };
+}
+
+/**
+ * Get Email Response settings from Settings sheet
+ * Format in Settings:
+ * Row: "Email Response Settings" | (empty)
+ * Row: "Response Type" | "Custom Instructions"
+ * Row: "Cold Outreach - Follow Up" | "Be persistent but polite"
+ * Row: "Schedule a Call" | "Always offer specific times"
+ * Row: "General" | "Instructions that apply to all response types"
+ * Note: Signature is fetched dynamically from Gmail API, not from settings
+ */
+function getEmailResponseSettings_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return { typeInstructions: {}, generalInstructions: '' };
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const typeInstructions = {};
+  let generalInstructions = '';
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Email Response Settings" header in any column
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'email response settings') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const typeCell = String(data[i][startCol] || '').trim();
+    const instructionsCell = String(data[i][startCol + 1] || '').trim();
+
+    // Skip header row
+    if (typeCell.toLowerCase() === 'response type') {
+      continue;
+    }
+
+    // Exit if we hit an empty row
+    if (typeCell === '' && instructionsCell === '') {
+      break;
+    }
+
+    // Parse settings - skip "signature" row (signature comes from Gmail API now)
+    if (typeCell !== '' && instructionsCell !== '') {
+      const typeLower = typeCell.toLowerCase();
+      if (typeLower === 'general') {
+        generalInstructions = instructionsCell;
+      } else if (typeLower !== 'signature') {
+        typeInstructions[typeCell] = instructionsCell;
+      }
+    }
+  }
+
+  return { typeInstructions, generalInstructions };
+}
+
+/**
+ * Get task analysis settings from Settings sheet
+ * Format: "Task Analysis Settings" header, then "Task Name" | "What to Look For"
+ */
+function getTaskAnalysisSettings_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return { taskInstructions: {}, generalInstructions: '' };
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const taskInstructions = {};
+  let generalInstructions = '';
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Task Analysis Settings" header in any column
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'task analysis settings') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const taskCell = String(data[i][startCol] || '').trim();
+    const instructionsCell = String(data[i][startCol + 1] || '').trim();
+
+    // Skip header row
+    if (taskCell.toLowerCase() === 'task name') {
+      continue;
+    }
+
+    // Exit if we hit an empty row
+    if (taskCell === '' && instructionsCell === '') {
+      break;
+    }
+
+    // Parse settings
+    if (taskCell !== '' && instructionsCell !== '') {
+      if (taskCell.toLowerCase() === 'general') {
+        generalInstructions = instructionsCell;
+      } else {
+        taskInstructions[taskCell.toLowerCase()] = instructionsCell;
+      }
+    }
+  }
+
+  return { taskInstructions, generalInstructions };
+}
+
+/**
+ * Get the full thread content formatted for Claude
+ */
+function getThreadContent_(thread) {
+  const messages = thread.getMessages();
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  let content = '';
+
+  for (const msg of messages) {
+    const from = msg.getFrom();
+    const to = msg.getTo();
+    const date = msg.getDate();
+    const body = msg.getPlainBody();
+
+    content += `\n\n=== MESSAGE ===\n`;
+    content += `From: ${from}\n`;
+    content += `To: ${to}\n`;
+    content += `Date: ${date}\n`;
+    content += `---\n`;
+    content += body.substring(0, 3000); // Limit each message
+  }
+
+  // Check if I sent the last message (meaning this is a follow-up, not a reply)
+  const lastMessage = messages[messages.length - 1];
+  const lastFrom = lastMessage.getFrom().toLowerCase();
+  const lastSenderIsMe = lastFrom.includes(myEmail) || lastFrom.includes('andy');
+
+  return { content, lastSenderIsMe };
+}
+
+/**
+ * Show dialog for extra directions and get user input
+ */
+function showDirectionsDialog_(responseType) {
+  const ui = SpreadsheetApp.getUi();
+
+  const result = ui.prompt(
+    `📧 ${responseType}`,
+    'Add any extra directions or context for the response:\n(Leave blank for default response)',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() !== ui.Button.OK) {
+    return null;
+  }
+
+  return result.getResponseText().trim();
+}
+
+/**
+ * Generate email response using Claude
+ */
+function generateEmailWithClaude_(threadContent, subject, responseType, extraDirections, lastSenderIsMe) {
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    throw new Error('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+  }
+
+  // Load custom settings from Settings sheet
+  const settings = getEmailResponseSettings_();
+
+  // Build the prompt based on response type
+  let systemPrompt = `You are drafting an email AS Andy Worford, Director of Business Development at Profitise. Write in first person as Andy.
+
+Key info:
+- Company: Profitise - delivers exclusive homeowner leads in real-time with TCPA consent
+- Andy's scheduling link: https://calendar.app.google/68Fk8pb9mUokSiaW8
+- Phone: 888-400-4868 x 8117 | Cell: 949.351.2300
+
+CRITICAL STYLE RULES - You must follow these:
+- Write like a real human, not like an AI assistant
+- NEVER use phrases like "Perfect!", "Absolutely!", "Great question!", "I'd be happy to", "Hope this helps!"
+- NEVER start with enthusiastic affirmations - just get to the point
+- Be direct, professional, casual-friendly (not corporate-stiff)
+- Keep it brief - 2-4 sentences when possible
+- Don't over-explain or be overly formal
+- No signature block (added automatically)
+- No extra blank line between greeting and body (e.g., "Hi Catie,\\nJust following up..." not "Hi Catie,\\n\\nJust following up...")
+
+CONTEXT AWARENESS:
+- Pay attention to WHO sent the last message in the thread
+- If Andy (me) sent the last message, this is a FOLLOW-UP because they haven't replied yet
+- If someone else sent the last message, this is a REPLY to their message`;
+
+  // Add general custom instructions from Settings if present
+  if (settings.generalInstructions) {
+    systemPrompt += `\n\nADDITIONAL INSTRUCTIONS FROM ANDY:\n${settings.generalInstructions}`;
+  }
+
+  // Add type-specific instructions from Settings if present
+  if (settings.typeInstructions[responseType]) {
+    systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "${responseType}":\n${settings.typeInstructions[responseType]}`;
+  }
+
+  // Built-in instructions for specific response types
+  if (responseType === 'Check Affiliate') {
+    systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "Check Affiliate":
+- Look at the date of the last email in the thread. If it's been more than a few weeks, START by apologizing for the delay in getting back to them.
+- Explain that we're changing our model at Profitise to be more traffic-based rather than host-and-post based.
+- Ask if they're able to do web traffic to our O&O (owned and operated) lander, since that's what we're prioritizing at the moment.
+- Keep it brief and friendly - we're checking in to see if they can work with our new model.`;
+  }
+
+  // Add context about whether this is a follow-up or reply
+  let contextNote = '';
+  if (lastSenderIsMe) {
+    contextNote = `\n\nIMPORTANT: I (Andy) sent the last message and haven't received a reply. This is a FOLLOW-UP, not a reply to them. Don't act like they said something they didn't.`;
+  }
+
+  let userPrompt = `Response Type: ${responseType}${contextNote}
+
+Email Thread:
+${threadContent}
+
+`;
+
+  if (extraDirections) {
+    userPrompt += `Extra directions: ${extraDirections}\n\n`;
+  }
+
+  userPrompt += `Draft the email body only (no subject line).`;
+
+  const payload = {
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [
+      { role: 'user', content: userPrompt }
+    ],
+    system: systemPrompt
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      'x-api-key': claudeApiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', options);
+  const result = JSON.parse(response.getContentText());
+
+  if (result.error) {
+    throw new Error(`Claude API error: ${result.error.message}`);
+  }
+
+  return result.content[0].text;
+}
+
+/**
+ * Create Gmail draft and return the URL
+ * Uses createDraftReplyAll for proper threading, then updates content via Gmail API
+ */
+function createDraftAndGetUrl_(thread, responseBody) {
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      // Find the primary send-as (or the one matching user's email)
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
+
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
+
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Helper to split email addresses respecting quoted names (handles "Name, Inc" <email>)
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    // Parse all addresses (respecting quoted names with commas)
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  // If no external recipients, internal go to To instead of Cc
+  let toRecipients = '';
+  let ccRecipients = '';
+  let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    // Normal case: external to To, internal to Cc
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    // All internal: put them in To
+    toRecipients = internalRecipients.join(', ');
+  }
+
+  // Check if sales@profitise.com should be added
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  const salesAlreadyIncluded = allRecipientsStr.includes('sales@profitise.com');
+
+  if (!salesAlreadyIncluded) {
+    if (ccRecipients) {
+      bccRecipients = 'sales@profitise.com';
+    } else if (toRecipients) {
+      bccRecipients = 'sales@profitise.com';
+    } else {
+      toRecipients = 'sales@profitise.com';
+    }
+  }
+
+  // Log computed recipients
+  Logger.log('=== RECIPIENT CALCULATION ===');
+  Logger.log(`My email: ${myEmail}`);
+  Logger.log(`All participants (${allParticipants.size}): ${[...allParticipants].join('; ')}`);
+  Logger.log(`External (To): ${toRecipients || '(none)'}`);
+  Logger.log(`Internal (Cc): ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log('=============================');
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  // Use getBody() to preserve HTML formatting (images, fonts, styling)
+  const lastMsgBody = lastMessage.getBody() || '';
+
+  // Format date for quote header
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Helper to escape HTML special characters (for our text, not the original email)
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML (preserve line breaks)
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message using Gmail's standard format
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+  // Full email body with signature and quote (HTML format)
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
+  if (signature) {
+    fullBodyHtml += `<br><br>${signature}`;
+  }
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+  // Step 1: Create a draft reply using GmailApp (this ensures proper threading)
+  Logger.log('Creating draft reply with proper threading...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draft = draftReply.getMessage();
+  const draftId = draftReply.getId();
+
+  // Step 2: Get threading headers from the ACTUAL messages in the thread (not the draft)
+  // Draft messages may not have headers accessible via getHeader(), so we get them from the real messages
+  // This is CRITICAL for proper email threading - without these headers, Gmail creates a new thread
+
+  // Get Message-ID from the last message - this becomes our In-Reply-To
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+
+  // Build References header from all messages in the thread
+  // References should contain all Message-IDs in the conversation chain
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) {
+      allMessageIds.push(msgId);
+    }
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Use the last message's ID for In-Reply-To
+  const inReplyTo = lastMessageId;
+  const references = referencesHeader;
+
+  Logger.log(`Thread ID: ${thread.getId()}`);
+  Logger.log(`Thread first subject: ${thread.getFirstMessageSubject()}`);
+  Logger.log(`Draft subject: ${draft.getSubject()}`);
+  Logger.log(`Last message Message-ID: ${lastMessageId || '(empty)'}`);
+  Logger.log(`Threading - In-Reply-To: ${inReplyTo || '(empty)'}`);
+  Logger.log(`Threading - References: ${references || '(empty)'}`);
+  Logger.log(`Total messages in thread: ${messages.length}`);
+
+  // Step 3: Get the draft via Gmail API
+  const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+  const messageId = gmailDraft.message.id;
+
+  // Step 4: Build the updated message preserving threading headers
+  // Use thread's first message subject to avoid [External] tags added by recipients
+  let subject = thread.getFirstMessageSubject();
+  if (!subject.toLowerCase().startsWith('re:')) {
+    subject = 'Re: ' + subject;
+  }
+
+  let rawHeaders = `From: ${myEmail}\r\n`;
+  rawHeaders += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawHeaders += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawHeaders += `Bcc: ${bccRecipients}\r\n`;
+  rawHeaders += `Subject: ${subject}\r\n`;
+  // CRITICAL: Include threading headers for proper reply threading
+  if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
+  if (references) rawHeaders += `References: ${references}\r\n`;
+  rawHeaders += `MIME-Version: 1.0\r\n`;
+  rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n`;
+  rawHeaders += `\r\n`;
+
+  const updateResource = {
+    message: {
+      // Use proper UTF-8 encoding for special characters in signature
+      raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawHeaders + fullBodyHtml).getBytes()),
+      threadId: thread.getId()  // Also explicitly set threadId
+    }
+  };
+
+  // Step 4: Update the draft with correct content and recipients
+  Logger.log('Updating draft with HTML content and recipients...');
+  const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+
+  // Get the message ID from the updated draft for the URL
+  const updatedMessageId = updatedDraft.message.id;
+  Logger.log(`Draft updated, message ID: ${updatedMessageId}`);
+
+  // Track this thread for auto-archive after sending
+  addPendingArchiveThread_(thread.getId());
+  Logger.log(`Added thread ${thread.getId()} to pending archive list`);
+
+  // Use the draft message ID to open compose window
+  const gmailUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedMessageId}`;
+  return gmailUrl;
+}
+
+/**
+ * Create email with proper threading, then send it immediately
+ * Similar to createDraftAndGetUrl_ but sends instead of returning draft URL
+ * Returns URL to the sent message in Gmail
+ */
+function createAndSendEmail_(thread, responseBody) {
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
+
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
+
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Helper to split email addresses respecting quoted names
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  let toRecipients = '';
+  let ccRecipients = '';
+  let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    toRecipients = internalRecipients.join(', ');
+  }
+
+  // Add sales@profitise.com to BCC if not already included
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  if (!allRecipientsStr.includes('sales@profitise.com')) {
+    bccRecipients = 'sales@profitise.com';
+  }
+
+  Logger.log('=== SEND EMAIL RECIPIENTS ===');
+  Logger.log(`To: ${toRecipients || '(none)'}`);
+  Logger.log(`Cc: ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log('=============================');
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  const lastMsgBody = lastMessage.getBody() || '';
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Helper to escape HTML
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+  // Full email body with signature and quote
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
+  if (signature) {
+    fullBodyHtml += `<br><br>${signature}`;
+  }
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+  // Create draft reply for proper threading
+  Logger.log('Creating draft for threading, then sending...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draftId = draftReply.getId();
+
+  // Get threading headers from the actual messages
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) allMessageIds.push(msgId);
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Get the subject (with Re: if needed)
+  const subject = draftReply.getMessage().getSubject();
+
+  // Build raw RFC 2822 message for proper threading
+  const boundary = 'boundary_' + Utilities.getUuid();
+  let rawMessage = '';
+  rawMessage += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
+  rawMessage += `Subject: ${subject}\r\n`;
+  rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
+  rawMessage += `References: ${referencesHeader}\r\n`;
+  rawMessage += `MIME-Version: 1.0\r\n`;
+  rawMessage += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`;
+  rawMessage += `\r\n`;
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
+  rawMessage += responseBody + '\r\n';
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+  rawMessage += fullBodyHtml + '\r\n';
+  rawMessage += `--${boundary}--`;
+
+  // Encode for Gmail API
+  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+
+  // Send the message using Gmail API
+  const sentMessage = Gmail.Users.Messages.send(
+    { raw: encodedMessage, threadId: thread.getId() },
+    'me'
+  );
+
+  Logger.log(`Email sent! Message ID: ${sentMessage.id}`);
+
+  // Delete the placeholder draft
+  try {
+    Gmail.Users.Drafts.remove('me', draftId);
+  } catch (e) {
+    Logger.log(`Could not delete placeholder draft: ${e.message}`);
+  }
+
+  // Track for auto-archive (same as draft flow)
+  addPendingArchiveThread_(thread.getId());
+
+  // Return URL to the sent message
+  return `https://mail.google.com/mail/u/0/#sent/${sentMessage.id}`;
+}
+
+/**
+ * Add a thread ID to the pending archive list (stored in Script Properties)
+ * These threads will be archived on next email refresh once Last=ME
+ */
+function addPendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+
+  if (!pending.includes(threadId)) {
+    pending.push(threadId);
+    props.setProperty('pendingArchiveThreads', JSON.stringify(pending));
+  }
+}
+
+/**
+ * Get pending archive thread IDs
+ */
+function getPendingArchiveThreads_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  return JSON.parse(pendingJson);
+}
+
+/**
+ * Remove a thread ID from pending archive list (after archiving)
+ */
+function removePendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+  const updated = pending.filter(id => id !== threadId);
+  props.setProperty('pendingArchiveThreads', JSON.stringify(updated));
+}
+
+/**
+ * Check and archive threads that were responded to via Email Response
+ * Called during email refresh - archives threads where Last=ME
+ * Also swaps waiting/me label to waiting/customer
+ * Returns true if any threads were archived (to trigger refresh)
+ */
+function checkAndArchivePendingThreads_() {
+  const pendingIds = getPendingArchiveThreads_();
+  if (pendingIds.length === 0) return false;
+
+  Logger.log(`Checking ${pendingIds.length} pending archive threads...`);
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  let archivedCount = 0;
+
+  // Get labels for swap (02.waiting/me → 02.waiting/customer)
+  const waitingMeLabel = GmailApp.getUserLabelByName('02.waiting/me');
+  const waitingCustomerLabel = GmailApp.getUserLabelByName('02.waiting/customer');
+
+  for (const threadId of pendingIds) {
+    try {
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        // Thread no longer exists, remove from pending
+        removePendingArchiveThread_(threadId);
+        continue;
+      }
+
+      const messages = thread.getMessages();
+      if (messages.length === 0) continue;
+
+      const lastMessage = messages[messages.length - 1];
+      const lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if I sent the last message
+      if (lastSender.includes(myEmail)) {
+        Logger.log(`Archiving thread ${threadId} - Last sender is ME`);
+
+        // Swap labels: remove waiting/me, add waiting/customer
+        if (waitingMeLabel) {
+          thread.removeLabel(waitingMeLabel);
+          Logger.log(`Removed 02.waiting/me label from thread ${threadId}`);
+        }
+        if (waitingCustomerLabel) {
+          thread.addLabel(waitingCustomerLabel);
+          Logger.log(`Added 02.waiting/customer label to thread ${threadId}`);
+        }
+
+        thread.moveToArchive();
+        removePendingArchiveThread_(threadId);
+        archivedCount++;
+      }
+    } catch (e) {
+      Logger.log(`Error checking thread ${threadId}: ${e.message}`);
+      // Remove from pending to avoid repeated errors
+      removePendingArchiveThread_(threadId);
+    }
+  }
+
+  if (archivedCount > 0) {
+    Logger.log(`Archived ${archivedCount} threads (labels swapped to waiting/customer)`);
+    SpreadsheetApp.getActive().toast(`Archived ${archivedCount} sent email(s)`, '📬 Auto-Archive', 3);
+  }
+
+  return archivedCount > 0;
+}
+
+/**
+ * Check if there's a future meeting today for the current vendor
+ * Returns warning message if found, null otherwise
+ */
+function checkForFutureMeetingToday_() {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    if (!listSh) return null;
+
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex) return null;
+
+    const listRow = currentIndex + 1; // +1 for header row
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+    if (!vendor) return null;
+
+    // Get contact emails for calendar search
+    const contactEmails = [];
+    // Try to get from cached/stored data first, or just search by vendor name
+
+    // Get meetings for this vendor
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    const meetings = meetingsResult.meetings || [];
+
+    // Find meetings that are today but in the future
+    const now = new Date();
+    const futureMeetingsToday = meetings.filter(m => {
+      if (!m.isToday || m.isPast) return false;
+      // Double-check: meeting start time is in the future
+      if (m.startTime && m.startTime > now) return true;
+      return false;
+    });
+
+    if (futureMeetingsToday.length > 0) {
+      const meetingList = futureMeetingsToday.map(m => `• ${m.title} at ${m.time}`).join('\n');
+      return `You have a meeting with ${vendor} later today:\n\n${meetingList}`;
+    }
+
+    return null;
+  } catch (e) {
+    Logger.log(`Error checking for future meetings: ${e.message}`);
+    return null; // Don't block on errors
+  }
+}
+
+/**
+ * Main function to handle email response generation
+ */
+function generateEmailResponse_(responseType) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return; // User cancelled
+      }
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread
+    const emailData = getSelectedEmailThread_();
+
+    // Show directions dialog
+    const extraDirections = showDirectionsDialog_(responseType);
+    if (extraDirections === null) {
+      return; // User cancelled
+    }
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+
+    // Get full thread content and context
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude (no draft yet)
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      responseType,
+      extraDirections,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision or draft creation
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: responseType,
+      originalDirections: extraDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview - draft only created when user confirms
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Show the draft preview dialog with revision option
+ * Draft is only created when user clicks "Create Draft"
+ */
+function showDraftPreviewDialog_(responseBody, threadId) {
+  const ui = SpreadsheetApp.getUi();
+
+  // Build Gmail thread URL
+  const threadUrl = threadId ? `https://mail.google.com/mail/u/0/#inbox/${threadId}` : '';
+
+  // Safely escape the response for embedding in HTML
+  const escapedResponse = responseBody
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\n/g, '<br>');
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_blank">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
+    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      font-size: 13px;
+      max-height: 180px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .revision-section {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .revision-section.show { display: block; }
+    .revision-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
+  <div class="buttons">
+    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft</button>
+    <button id="sendBtn" class="btn btn-primary" style="background: #34a853;" onclick="doSendNow()">Send Now</button>
+    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+  </div>
+  <div id="previewContent" class="preview">${escapedResponse}</div>
+
+  <div id="revisionSection" class="revision-section">
+    <div class="revision-label">What would you like to change?</div>
+    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add actual scheduling link, make it shorter...">
+    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+  </div>
+
+  <div id="loadingMsg" class="loading" style="display:none;"></div>
+
+  <script>
+    function doCreateDraft() {
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Creating draft...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(url) {
+          window.open(url, '_blank');
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .createDraftFromPreview();
+    }
+
+    function doSendNow() {
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Sending email...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(url) {
+          alert('Email sent!');
+          if (url) window.open(url, '_blank');
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .sendEmailFromPreview();
+    }
+
+    function doShowRevision() {
+      document.getElementById('revisionSection').classList.add('show');
+      document.getElementById('revisionInput').focus();
+    }
+
+    function doRegenerate() {
+      var feedback = document.getElementById('revisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('regenerateBtn').disabled = true;
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newResponse) {
+          var el = document.getElementById('previewContent');
+          var safe = newResponse.replace(/&/g, '&amp;');
+          safe = safe.replace(/[<]/g, '&lt;');
+          safe = safe.replace(/[>]/g, '&gt;');
+          safe = safe.replace(/\\n/g, '<br>');
+          el.innerHTML = safe;
+          document.getElementById('revisionInput').value = '';
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('revisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseEmailDraft(feedback);
+    }
+
+    document.getElementById('revisionInput').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') doRegenerate();
+    });
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(600);
+
+  ui.showModalDialog(htmlOutput, 'Email Response');
+}
+
+/**
+ * Create draft from the previewed response (no underscore - must be callable from client)
+ */
+function createDraftFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Creating Gmail draft...', '📧 Creating Draft', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft
+  const draftUrl = createDraftAndGetUrl_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  return draftUrl;
+}
+
+/**
+ * Send email directly from the previewed response (no underscore - must be callable from client)
+ * Creates a draft for proper threading, then immediately sends it
+ */
+function sendEmailFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Sending email...', '📧 Sending', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft (for proper threading), then send it
+  const sentUrl = createAndSendEmail_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  ss.toast('Email sent!', '✅ Sent', 3);
+
+  return sentUrl;
+}
+
+/**
+ * Revise the email response based on user feedback (no underscore - must be callable from client)
+ * Returns the new response body to update the dialog in-place
+ */
+function reviseEmailDraft(feedback) {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Regenerating with your feedback...', '🤖 AI Working', 5);
+
+  // Get the thread again
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Get thread content
+  const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+  // Build revision directions combining original + feedback about previous response
+  const revisionDirections = `Previous draft was:
+---
+${context.previousResponse}
+---
+
+User feedback on that draft: ${feedback}
+
+Please generate an improved version addressing this feedback.`;
+
+  // Generate new response
+  const responseBody = generateEmailWithClaude_(
+    threadContent,
+    thread.getFirstMessageSubject(),
+    context.responseType,
+    revisionDirections,
+    lastSenderIsMe
+  );
+
+  // Update stored context with new response
+  context.previousResponse = responseBody;
+  PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(context));
+
+  ss.toast('Done! Review updated response.', '✅', 3);
+
+  // Return the new response - dialog will update in-place
+  return responseBody;
+}
+
+// Menu item functions for each response type
+function emailResponseColdFollowUp() {
+  generateEmailResponse_('Cold Outreach - Follow Up');
+}
+
+function emailResponseScheduleCall() {
+  generateEmailResponse_('Schedule a Call');
+}
+
+function emailResponsePaymentFollowUp() {
+  generateEmailResponse_('Payment/Invoice Follow Up');
+}
+
+function emailResponseGeneralFollowUp() {
+  generateEmailResponse_('General Follow Up');
+}
+
+function emailResponseCheckAffiliate() {
+  generateEmailResponse_('Check Affiliate');
+}
+
+/**
+ * Generic URL Response - respond to any Gmail thread via URL
+ * Prompts for Gmail URL, reads the thread, then generates a response
+ */
+function genericUrlResponse() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Step 1: Get the Gmail URL
+    const urlResult = ui.prompt(
+      '🔗 Generic URL Response',
+      'Paste the Gmail conversation URL:',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (urlResult.getSelectedButton() !== ui.Button.OK) {
+      return; // User cancelled
+    }
+
+    const gmailUrl = urlResult.getResponseText().trim();
+    if (!gmailUrl) {
+      ui.alert('Error', 'Please provide a Gmail URL.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Step 2: Extract thread ID from URL
+    const threadId = extractThreadIdFromGmailUrl_(gmailUrl);
+    if (!threadId) {
+      ui.alert('Error', 'Could not extract thread ID from URL.\n\nExpected format:\nhttps://mail.google.com/mail/u/0/#inbox/THREAD_ID', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast('Fetching email thread...', '📧 Reading Email', 2);
+
+    // Step 3: Get the thread using Gmail API (handles URL-style thread IDs)
+    let thread;
+    let actualThreadId = threadId;
+
+    try {
+      // First try the Gmail Advanced Service which handles URL-style IDs
+      const threadData = Gmail.Users.Threads.get('me', threadId, { format: 'metadata' });
+      actualThreadId = threadData.id;
+      thread = GmailApp.getThreadById(actualThreadId);
+    } catch (apiError) {
+      // Fallback to direct GmailApp (in case it's already a valid ID)
+      try {
+        thread = GmailApp.getThreadById(threadId);
+        actualThreadId = thread.getId();
+      } catch (e) {
+        ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.\n\nDetails: ' + apiError.message, ui.ButtonSet.OK);
+        return;
+      }
+    }
+
+    if (!thread) {
+      ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.', ui.ButtonSet.OK);
+      return;
+    }
+
+    const subject = thread.getFirstMessageSubject();
+
+    // Step 4: Read the thread content
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+    // Step 5: Show the thread summary and ask for directions
+    const messages = thread.getMessages();
+    const lastMessage = messages[messages.length - 1];
+    const lastSender = lastMessage.getFrom();
+    const lastDate = lastMessage.getDate();
+
+    const directionsResult = ui.prompt(
+      '📧 Generic URL Response',
+      `Thread: "${subject}"\nLast message from: ${lastSender}\nDate: ${lastDate.toLocaleDateString()}\n\nWhat kind of response do you want to send?\n(e.g., "follow up on pricing", "schedule a call", "ask for status update")`,
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (directionsResult.getSelectedButton() !== ui.Button.OK) {
+      return; // User cancelled
+    }
+
+    const directions = directionsResult.getResponseText().trim();
+    if (!directions) {
+      ui.alert('Error', 'Please provide directions for the response.', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Step 6: Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      subject,
+      'Generic URL Response',
+      directions,
+      lastSenderIsMe
+    );
+
+    // Step 7: Store context for revision/draft creation
+    const revisionContext = {
+      threadId: actualThreadId,
+      responseType: 'Generic URL Response',
+      originalDirections: directions,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Step 8: Show preview dialog
+    showDraftPreviewDialog_(responseBody, actualThreadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Extract thread ID from various Gmail URL formats
+ * Supports: inbox, sent, label, search, thread URLs
+ */
+function extractThreadIdFromGmailUrl_(url) {
+  if (!url) return null;
+
+  // Common Gmail URL patterns:
+  // https://mail.google.com/mail/u/0/#inbox/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#sent/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#label/SomeLabel/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#search/query/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+
+  // Thread IDs are alphanumeric (not just hex) - typically 20+ chars
+  const patterns = [
+    /#(?:inbox|sent|all|starred|drafts|spam|trash)\/([A-Za-z0-9_-]+)$/,
+    /#label\/[^\/]+\/([A-Za-z0-9_-]+)$/,
+    /#search\/[^\/]+\/([A-Za-z0-9_-]+)$/,
+    /#[^\/]+\/([A-Za-z0-9_-]+)$/,  // Generic fallback
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1] && match[1].length >= 10) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function emailResponseCustom() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return;
+      }
+    }
+
+    // Single combined prompt for custom response
+    const result = ui.prompt(
+      '✍️ Custom Response',
+      'What do you want to say or accomplish with this response?\n\n(e.g., "follow up on pricing we discussed", "ask when they can hop on a call", "check if they got the contract")',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (result.getSelectedButton() !== ui.Button.OK) {
+      return;
+    }
+
+    const customDirections = result.getResponseText().trim();
+    if (!customDirections) {
+      return;
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread
+    const emailData = getSelectedEmailThread_();
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+
+    // Get full thread content and context
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude - use directions as both type and extra directions
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Custom Response',
+      customDirections,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision or draft creation
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Custom Response',
+      originalDirections: customDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Email Response: Missed Meeting
+ * Gets highlighted meeting from UPCOMING MEETINGS and generates follow-up
+ */
+function emailResponseMissedMeeting() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('Error', 'Battle Station sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  try {
+    // Get the selected cell/row to find the highlighted meeting
+    const selection = bsSh.getActiveRange();
+    const selectedRow = selection.getRow();
+
+    // Read data from the selected row to find meeting info
+    const rowData = bsSh.getRange(selectedRow, 1, 1, 4).getValues()[0];
+    const meetingTitle = String(rowData[0] || '').trim();
+    const meetingDate = String(rowData[1] || '').trim();
+    const meetingTime = String(rowData[2] || '').trim();
+
+    // Validate we have meeting data
+    if (!meetingTitle || !meetingDate) {
+      ui.alert('Error', 'Please highlight a meeting row in the UPCOMING MEETINGS section.\n\nThe row should have the meeting title, date, and time.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Check if this looks like a meeting row (not a header)
+    if (meetingTitle.includes('UPCOMING MEETINGS') || meetingTitle === 'Meeting' || meetingTitle === 'Type') {
+      ui.alert('Error', 'Please highlight a specific meeting row, not the header.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Get current vendor
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex || !listSh) {
+      ui.alert('Error', 'Could not determine current vendor.', ui.ButtonSet.OK);
+      return;
+    }
+    const listRow = currentIndex + 1;
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+    // Get selected email thread (to reply to)
+    ss.toast('Getting selected email...', '📧 Missed Meeting', 2);
+    const emailData = getSelectedEmailThread_();
+
+    // Build directions for Claude with meeting context
+    const meetingContext = `The meeting "${meetingTitle}" was scheduled for ${meetingDate} at ${meetingTime}.\n\nWe waited but the contact didn't show up. We understand things come up, so we want to send a friendly follow-up to reschedule.\n\nInclude Andy's scheduling link for them to book a new time: https://calendar.app.google/68Fk8pb9mUokSiaW8`;
+
+    ss.toast('Reading email thread...', '📧 Missed Meeting', 2);
+
+    // Get full thread content
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Missed Meeting Follow Up',
+      meetingContext,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Missed Meeting Follow Up',
+      originalDirections: meetingContext,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/************************************************************
+ * CANNED RESPONSES
+ * Pre-written email templates without Claude processing
+ ************************************************************/
+
+/**
+ * Canned Response: Referral Program
+ */
+function cannedResponseReferralProgram() {
+  generateCannedResponse_('REFERRAL_PROGRAM', 'Referral Program');
+}
+
+/**
+ * Canned Response: Initial Call Follow-up
+ */
+function cannedResponseInitialCallFollowup() {
+  generateCannedResponse_('INITIAL_CALL_FOLLOWUP', 'Initial Call Follow-up');
+}
+
+/**
+ * Get contacts for the current vendor from the Battle Station sheet
+ * Returns array of contact names
+ */
+function getContactsForCurrentVendor_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  if (!bsSh) return [];
+
+  const contacts = [];
+  const data = bsSh.getDataRange().getValues();
+
+  // Find CONTACTS section and extract names
+  let inContactsSection = false;
+  for (let i = 0; i < data.length; i++) {
+    const cellA = String(data[i][0] || '').trim();
+
+    // Check if we're entering CONTACTS section
+    if (cellA.includes('CONTACTS')) {
+      inContactsSection = true;
+      continue;
+    }
+
+    // Check if we're leaving CONTACTS section (hit another section header)
+    if (inContactsSection && (cellA.includes('UPCOMING MEETINGS') || cellA.includes('BOX DOCUMENTS') ||
+        cellA.includes('GOOGLE DRIVE') || cellA.includes('CRYSTAL BALL') || cellA === '')) {
+      // Empty row might just be spacing, but major headers signal end
+      if (cellA.includes('UPCOMING') || cellA.includes('BOX') || cellA.includes('GOOGLE') || cellA.includes('CRYSTAL')) {
+        break;
+      }
+    }
+
+    // Extract contact names (they appear in column A after CONTACTS header)
+    if (inContactsSection && cellA && !cellA.includes(':') && !cellA.startsWith('📧') &&
+        !cellA.startsWith('📞') && !cellA.startsWith('💼')) {
+      // This looks like a contact name
+      contacts.push(cellA);
+    }
+  }
+
+  return contacts;
+}
+
+/**
+ * TEST: Run this function directly to check canned response config
+ */
+function testCannedResponseConfig() {
+  Logger.log('=== Testing Canned Response Config ===');
+  Logger.log('BS_CFG.CANNED_RESPONSE_DOCS = ' + JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS));
+  Logger.log('REFERRAL_PROGRAM docId = ' + (BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS.REFERRAL_PROGRAM : 'CANNED_RESPONSE_DOCS is undefined'));
+  Logger.log('BS_CFG.REFERRAL_CONTRACT_FILE_ID = ' + BS_CFG.REFERRAL_CONTRACT_FILE_ID);
+
+  SpreadsheetApp.getUi().alert('Check View > Logs for output');
+}
+
+/**
+ * Get canned response template from Google Doc
+ * Returns { text: plainText, html: htmlContent } or null if not found
+ */
+function getCannedResponseTemplate_(templateKey) {
+  Logger.log(`Looking for template: ${templateKey}`);
+  Logger.log(`CANNED_RESPONSE_DOCS: ${JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS)}`);
+
+  const docId = BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS[templateKey] : null;
+
+  Logger.log(`Found docId: ${docId}`);
+
+  if (!docId) {
+    Logger.log(`No Google Doc configured for template: ${templateKey}`);
+    return null;
+  }
+
+  try {
+    // Get the document
+    const doc = DocumentApp.openById(docId);
+    const body = doc.getBody();
+
+    // Get plain text for preview
+    const text = body.getText();
+
+    // Build HTML with inline styles directly from document structure
+    // This is more reliable than parsing Google's CSS export (Gmail strips <style> blocks)
+    let html = '';
+    const numChildren = body.getNumChildren();
+
+    for (let i = 0; i < numChildren; i++) {
+      const child = body.getChild(i);
+      const type = child.getType();
+
+      if (type === DocumentApp.ElementType.PARAGRAPH) {
+        const para = child.asParagraph();
+        html += buildParagraphHtml_(para);
+      } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+        const listItem = child.asListItem();
+        const itemHtml = buildListItemHtml_(listItem);
+        html += itemHtml;
+      }
+    }
+
+    return { text, html };
+  } catch (e) {
+    Logger.log(`Error reading template doc ${templateKey}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Build HTML from a paragraph with inline styles
+ */
+function buildParagraphHtml_(para) {
+  const textHtml = buildTextElementsHtml_(para);
+
+  // Check for heading styles
+  const heading = para.getHeading();
+  if (heading === DocumentApp.ParagraphHeading.HEADING1) {
+    return `<p style="font-size:20px;font-weight:bold;margin:16px 0 8px 0;">${textHtml}</p>`;
+  } else if (heading === DocumentApp.ParagraphHeading.HEADING2) {
+    return `<p style="font-size:16px;font-weight:bold;margin:14px 0 6px 0;">${textHtml}</p>`;
+  } else if (heading === DocumentApp.ParagraphHeading.HEADING3) {
+    return `<p style="font-size:14px;font-weight:bold;margin:12px 0 4px 0;">${textHtml}</p>`;
+  }
+
+  // Empty paragraph = line break
+  if (!textHtml.trim()) {
+    return '<br>';
+  }
+
+  return `<p style="margin:0 0 8px 0;">${textHtml}</p>`;
+}
+
+/**
+ * Build HTML from a list item with inline styles
+ */
+function buildListItemHtml_(listItem) {
+  const textHtml = buildTextElementsHtml_(listItem);
+  const nestingLevel = listItem.getNestingLevel();
+  const indent = 20 + (nestingLevel * 20);
+  return `<p style="margin:0 0 4px ${indent}px;">• ${textHtml}</p>`;
+}
+
+/**
+ * Build HTML from text elements with inline styles for bold, italic, underline
+ */
+function buildTextElementsHtml_(element) {
+  let html = '';
+  const text = element.getText();
+  if (!text) return '';
+
+  // Get the text element to check formatting
+  const numChildren = element.getNumChildren();
+
+  if (numChildren === 0) {
+    // Simple text without children - check if element itself has formatting
+    return escapeHtml_(text);
+  }
+
+  // Process each child (usually Text elements)
+  for (let i = 0; i < numChildren; i++) {
+    const child = element.getChild(i);
+    if (child.getType() === DocumentApp.ElementType.TEXT) {
+      html += buildTextRunHtml_(child.asText());
+    }
+  }
+
+  return html;
+}
+
+/**
+ * Build HTML from a Text element, handling formatting runs
+ */
+function buildTextRunHtml_(textElement) {
+  const text = textElement.getText();
+  if (!text) return '';
+
+  let html = '';
+  let i = 0;
+
+  while (i < text.length) {
+    // Get formatting at this position
+    const isBold = textElement.isBold(i);
+    const isItalic = textElement.isItalic(i);
+    const isUnderline = textElement.isUnderline(i);
+    const link = textElement.getLinkUrl(i);
+    const fontSize = textElement.getFontSize(i);
+    const bgColor = textElement.getBackgroundColor(i);
+
+    // Find end of this formatting run
+    let j = i + 1;
+    while (j < text.length) {
+      if (textElement.isBold(j) !== isBold ||
+          textElement.isItalic(j) !== isItalic ||
+          textElement.isUnderline(j) !== isUnderline ||
+          textElement.getLinkUrl(j) !== link ||
+          textElement.getFontSize(j) !== fontSize ||
+          textElement.getBackgroundColor(j) !== bgColor) {
+        break;
+      }
+      j++;
+    }
+
+    // Get and escape the text for this run
+    let runText = escapeHtml_(text.substring(i, j));
+
+    // Apply formatting with inline styles
+    let styles = [];
+    if (isBold) styles.push('font-weight:bold');
+    if (isItalic) styles.push('font-style:italic');
+    if (isUnderline) styles.push('text-decoration:underline');
+    // Add font size if different from default (11pt)
+    if (fontSize && fontSize !== 11) {
+      styles.push(`font-size:${fontSize}pt`);
+    }
+    // Add background color if set
+    if (bgColor) {
+      styles.push(`background-color:${bgColor}`);
+    }
+
+    if (styles.length > 0) {
+      runText = `<span style="${styles.join(';')}">${runText}</span>`;
+    }
+
+    // Wrap in link if needed
+    if (link) {
+      runText = `<a href="${link}" style="color:#1a73e8">${runText}</a>`;
+    }
+
+    html += runText;
+    i = j;
+  }
+
+  return html;
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml_(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Main function to handle canned response generation
+ * Shows dialog for contact selection, then creates draft
+ */
+function generateCannedResponse_(templateKey, templateName) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return;
+      }
+    }
+
+    // Get template from Google Doc
+    const templateData = getCannedResponseTemplate_(templateKey);
+    if (!templateData) {
+      ui.alert('Error', `Template "${templateKey}" not configured.\n\nPlease set up a Google Doc with the template and add its ID to CANNED_RESPONSE_DOCS in the config.`, ui.ButtonSet.OK);
+      return;
+    }
+    const template = templateData.text; // Use plain text for preview
+
+    // Get current vendor
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex || !listSh) {
+      ui.alert('Error', 'Could not determine current vendor.', ui.ButtonSet.OK);
+      return;
+    }
+    const listRow = currentIndex + 1;
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+    // Get contacts for this vendor
+    const contacts = getContactsForCurrentVendor_();
+
+    // Try to get selected email thread (optional - can create fresh draft if none)
+    ss.toast('Checking for selected email...', '📨 Canned Response', 2);
+    let emailData = null;
+    let threadId = null;
+    try {
+      emailData = getSelectedEmailThread_();
+      threadId = emailData.threadId;
+    } catch (e) {
+      // No email selected - will create fresh draft
+      Logger.log('No email selected, will create fresh draft: ' + e.message);
+    }
+
+    // Show contact selection dialog
+    // Extract first names only for dropdown
+    const contactOptions = contacts.length > 0
+      ? contacts.map(c => {
+          const firstName = c.split(' ')[0]; // Get first name only
+          return `<option value="${escapeHtml_(firstName)}">${escapeHtml_(c)} (${escapeHtml_(firstName)})</option>`;
+        }).join('')
+      : '<option value="">No contacts found</option>';
+
+    const replyInfo = threadId
+      ? `<div class="info reply-info">📧 Replying to: <strong>${escapeHtml_(emailData.subject || 'Selected email')}</strong></div>`
+      : '<div class="info new-info">📝 No email selected - will create a NEW draft</div>';
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_blank">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    select, input {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 15px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    .buttons { display: flex; gap: 10px; margin-top: 15px; }
+    .btn {
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      max-height: 250px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+    }
+    .info { color: #5f6368; font-size: 12px; margin-bottom: 10px; }
+    .reply-info { color: #1a73e8; }
+    .new-info { color: #f9a825; }
+    #status { margin-top: 10px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="header">📨 ${escapeHtml_(templateName)}</div>
+  <div class="info">Vendor: <strong>${escapeHtml_(vendor)}</strong></div>
+  ${replyInfo}
+
+  <label for="contactSelect">Select Contact (first name will be used):</label>
+  <select id="contactSelect" onchange="updatePreview()">
+    ${contactOptions}
+  </select>
+
+  <label for="customContact">Or enter custom first name:</label>
+  <input type="text" id="customContact" placeholder="Enter first name..." oninput="updatePreview()">
+
+  <div class="preview" id="previewBox"></div>
+
+  <div class="buttons">
+    <button class="btn btn-primary" id="createBtn" onclick="createDraft()">✉️ Create Draft</button>
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+  </div>
+  <div id="status"></div>
+
+  <script>
+    const template = ${JSON.stringify(template)};
+    const vendor = ${JSON.stringify(vendor)};
+    const threadId = ${JSON.stringify(threadId)};
+    const templateKey = ${JSON.stringify(templateKey)};
+
+    function getContactName() {
+      const custom = document.getElementById('customContact').value.trim();
+      if (custom) return custom.split(' ')[0]; // First name only
+      const select = document.getElementById('contactSelect');
+      return select.value || 'there';
+    }
+
+    function updatePreview() {
+      const contactName = getContactName();
+      let preview = template
+        .replace(/<CONTACT_NAME>/g, contactName)
+        .replace(/<VENDOR_NAME>/g, vendor);
+      document.getElementById('previewBox').textContent = preview;
+    }
+
+    function createDraft() {
+      const btn = document.getElementById('createBtn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      btn.textContent = '⏳ Creating...';
+      status.textContent = 'Creating draft...';
+      status.style.color = '#666';
+
+      const contactName = getContactName();
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result && result.success) {
+            status.textContent = '✅ Draft created! Opening...';
+            status.style.color = 'green';
+            // Open draft in new tab
+            if (result.draftUrl) {
+              window.open(result.draftUrl, '_blank');
+            }
+            setTimeout(function() {
+              google.script.host.close();
+            }, 500);
+          } else {
+            status.textContent = '❌ Error: ' + (result ? result.error : 'Unknown error');
+            status.style.color = 'red';
+            btn.disabled = false;
+            btn.textContent = '✉️ Create Draft';
+          }
+        })
+        .withFailureHandler(function(error) {
+          status.textContent = '❌ Error: ' + error.message;
+          status.style.color = 'red';
+          btn.disabled = false;
+          btn.textContent = '✉️ Create Draft';
+        })
+        .createCannedResponseDraft(threadId, templateKey, contactName, vendor);
+    }
+
+    // Initial preview
+    updatePreview();
+  </script>
+</body>
+</html>`;
+
+    const htmlOutput = HtmlService.createHtmlOutput(html)
+      .setWidth(650)
+      .setHeight(750);
+    ui.showModalDialog(htmlOutput, 'Canned Response');
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Create draft from canned response template
+ * Called from dialog
+ * If threadId is null, creates a fresh draft instead of a reply
+ */
+function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
+  try {
+    // Get template from Google Doc (with HTML formatting)
+    const templateData = getCannedResponseTemplate_(templateKey);
+    if (!templateData) {
+      return { success: false, error: 'Template not configured. Please set up a Google Doc.' };
+    }
+
+    // Replace placeholders in both plain text and HTML
+    let plainBody = templateData.text
+      .replace(/<CONTACT_NAME>/g, contactName)
+      .replace(/<VENDOR_NAME>/g, vendor);
+
+    let htmlBody = templateData.html
+      .replace(/&lt;CONTACT_NAME&gt;/g, contactName)
+      .replace(/&lt;VENDOR_NAME&gt;/g, vendor)
+      .replace(/<CONTACT_NAME>/g, contactName)
+      .replace(/<VENDOR_NAME>/g, vendor);
+
+    // Get Gmail signature and append it
+    const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+    let signature = '';
+    try {
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Append signature to body
+    if (signature) {
+      plainBody += '\n\n' + signature.replace(/<[^>]*>/g, ''); // Strip HTML for plain text
+      htmlBody += '<br><br>' + signature;
+    }
+
+    // Get attachment if configured for this template
+    let attachments = [];
+    let attachmentFileId = null;
+    if (templateKey === 'REFERRAL_PROGRAM' && BS_CFG.REFERRAL_CONTRACT_FILE_ID) {
+      attachmentFileId = BS_CFG.REFERRAL_CONTRACT_FILE_ID;
+    } else if (templateKey === 'INITIAL_CALL_FOLLOWUP' && BS_CFG.INITIAL_CALL_FOLLOWUP_FILE_ID) {
+      attachmentFileId = BS_CFG.INITIAL_CALL_FOLLOWUP_FILE_ID;
+    }
+
+    if (attachmentFileId) {
+      try {
+        const file = DriveApp.getFileById(attachmentFileId);
+        attachments.push(file.getBlob());
+        Logger.log('Attached file: ' + file.getName());
+      } catch (e) {
+        Logger.log('Could not attach file: ' + e.message);
+      }
+    }
+
+    let draftUrl;
+
+    if (threadId) {
+      // Reply to existing thread - use Gmail API for proper threading and quoted content
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        return { success: false, error: 'Email thread not found' };
+      }
+
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+
+      // Build the quoted original message
+      const lastMsgDate = lastMessage.getDate();
+      const lastMsgFrom = lastMessage.getFrom();
+      const lastMsgBody = lastMessage.getBody() || '';
+
+      // Format date for quote header
+      const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+      // Helper to escape HTML special characters
+      const escapeHtml = (text) => {
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      };
+
+      // Build quoted message using Gmail's standard format
+      const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+      const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+      // Full email body: template + signature + quoted message
+      let fullBodyHtml = `<div dir="ltr">${htmlBody}</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+      // Step 1: Create placeholder draft for threading headers
+      const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+      const draftMsg = draftReply.getMessage();
+      const draftId = draftReply.getId();
+
+      // Get threading headers from the ACTUAL messages in the thread (not the draft)
+      // Draft messages may not have headers accessible via getHeader(), so we get them from the real messages
+      // This is CRITICAL for proper email threading - without these headers, Gmail creates a new thread
+
+      // Get Message-ID from the last message - this becomes our In-Reply-To
+      const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+
+      // Build References header from all messages in the thread
+      const allMessageIds = [];
+      for (const msg of messages) {
+        const msgId = msg.getHeader('Message-ID');
+        if (msgId) {
+          allMessageIds.push(msgId);
+        }
+      }
+      const referencesHeader = allMessageIds.join(' ');
+
+      // Use the last message's ID for In-Reply-To
+      const inReplyTo = lastMessageId;
+      const references = referencesHeader;
+
+      Logger.log(`Canned Response - Threading headers:`);
+      Logger.log(`  In-Reply-To: ${inReplyTo || '(empty)'}`);
+      Logger.log(`  References: ${references || '(empty)'}`);
+      Logger.log(`  Total messages in thread: ${messages.length}`);
+
+      // Get subject from thread
+      let subject = thread.getFirstMessageSubject();
+      if (!subject.toLowerCase().startsWith('re:')) {
+        subject = 'Re: ' + subject;
+      }
+
+      // Build recipients from last message
+      const lastFrom = lastMessage.getFrom();
+      const lastTo = lastMessage.getTo() || '';
+      const lastCc = lastMessage.getCc() || '';
+      const allRecipients = [lastFrom, lastTo, lastCc].filter(r => r).join(', ');
+
+      // Extract email addresses, exclude ourselves and profitise emails (they go in CC/BCC)
+      const emailRegex = /[\w.-]+@[\w.-]+\.\w+/g;
+      const allEmails = allRecipients.match(emailRegex) || [];
+      const toEmails = [];
+      allEmails.forEach(email => {
+        const lowerEmail = email.toLowerCase();
+        if (lowerEmail !== myEmail &&
+            !lowerEmail.includes('sales@profitise.com') &&
+            !lowerEmail.includes('aden@profitise.com') &&
+            !toEmails.includes(lowerEmail)) {
+          toEmails.push(email);
+        }
+      });
+      const toRecipients = toEmails.join(', ') || lastFrom;
+
+      // Build raw email with headers
+      let rawHeaders = `From: ${myEmail}\r\n`;
+      rawHeaders += `To: ${toRecipients}\r\n`;
+      rawHeaders += `Cc: aden@profitise.com\r\n`;
+      rawHeaders += `Bcc: sales@profitise.com\r\n`;
+      rawHeaders += `Subject: ${subject}\r\n`;
+      if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
+      if (references) rawHeaders += `References: ${references}\r\n`;
+      rawHeaders += `MIME-Version: 1.0\r\n`;
+
+      // Handle attachments with MIME multipart
+      if (attachments.length > 0) {
+        const boundary = 'boundary_' + Utilities.getUuid();
+        rawHeaders += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+
+        let mimeBody = `--${boundary}\r\n`;
+        mimeBody += `Content-Type: text/html; charset="UTF-8"\r\n`;
+        mimeBody += `Content-Transfer-Encoding: base64\r\n\r\n`;
+        // Encode HTML content as base64 for proper UTF-8 handling
+        mimeBody += Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes()) + '\r\n';
+
+        attachments.forEach(blob => {
+          mimeBody += `--${boundary}\r\n`;
+          mimeBody += `Content-Type: ${blob.getContentType()}; name="${blob.getName()}"\r\n`;
+          mimeBody += `Content-Disposition: attachment; filename="${blob.getName()}"\r\n`;
+          mimeBody += `Content-Transfer-Encoding: base64\r\n\r\n`;
+          mimeBody += Utilities.base64Encode(blob.getBytes()) + '\r\n';
+        });
+        mimeBody += `--${boundary}--`;
+
+        // Convert full message to UTF-8 bytes for proper encoding
+        const rawEmail = rawHeaders + mimeBody;
+        const updateResource = {
+          message: {
+            raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),
+            threadId: thread.getId()
+          }
+        };
+        const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+        draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
+      } else {
+        rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+
+        // Convert full message to UTF-8 bytes for proper encoding of special characters
+        const rawEmail = rawHeaders + fullBodyHtml;
+        const updateResource = {
+          message: {
+            raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),
+            threadId: thread.getId()
+          }
+        };
+        const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+        draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
+      }
+
+      // Track this thread for auto-archive after sending
+      addPendingArchiveThread_(thread.getId());
+      Logger.log(`Added thread ${thread.getId()} to pending archive list (canned response)`);
+
+    } else {
+      // Create fresh draft (no reply)
+      const subject = `Referral Partnership - ${vendor}`;
+      const options = {
+        cc: 'aden@profitise.com',
+        bcc: 'sales@profitise.com',
+        htmlBody: htmlBody
+      };
+      if (attachments.length > 0) {
+        options.attachments = attachments;
+      }
+
+      const draft = GmailApp.createDraft('', subject, plainBody, options);
+      const draftId = draft.getMessage().getId();
+      draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+    }
+
+    SpreadsheetApp.getActive().toast('Draft created! Opening in Gmail...', '✅ Draft Ready', 3);
+
+    return { success: true, draftUrl: draftUrl };
+  } catch (e) {
+    Logger.log(`Error creating canned response draft: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/************************************************************
+ * CONTACT DISCOVERY FROM GMAIL
+ * Searches Gmail for potential new contacts or updated info
+ * based on domains of existing contacts
+ ************************************************************/
+
+/**
+ * Discover potential new contacts or updates from Gmail
+ * Searches for emails from the same domains as existing contacts
+ */
+function discoverContactsFromGmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 2).getValue() || '';
+
+  ss.toast('Analyzing contacts and searching Gmail...', '🔍 Contact Discovery', 5);
+
+  // Get existing contacts for this vendor
+  const contactData = getVendorContacts_(vendor, listRow);
+  const existingContacts = contactData.contacts || [];
+
+  // Extract unique domains from existing contacts
+  const domains = new Set();
+  const existingEmails = new Set();
+  const existingPhones = new Set();
+
+  for (const contact of existingContacts) {
+    if (contact.email) {
+      existingEmails.add(contact.email.toLowerCase());
+      const domain = contact.email.split('@')[1];
+      if (domain && !isGenericDomain_(domain)) {
+        domains.add(domain.toLowerCase());
+      }
+    }
+    if (contact.phone) {
+      // Normalize phone to just digits for comparison
+      const normalizedPhone = contact.phone.replace(/\D/g, '');
+      if (normalizedPhone.length >= 10) {
+        existingPhones.add(normalizedPhone.slice(-10)); // Last 10 digits
+      }
+    }
+  }
+
+  // Also extract domain from source/website field
+  if (source) {
+    const sourceDomain = extractDomainFromSource_(source);
+    if (sourceDomain && !isGenericDomain_(sourceDomain)) {
+      domains.add(sourceDomain.toLowerCase());
+      Logger.log(`Added source domain: ${sourceDomain}`);
+    }
+  }
+
+  // Also try to extract domain from vendor name (e.g., "HomeFix" -> "homefix.com")
+  const vendorDomain = guessVendorDomain_(vendor);
+  if (vendorDomain && !isGenericDomain_(vendorDomain)) {
+    domains.add(vendorDomain.toLowerCase());
+    Logger.log(`Added guessed vendor domain: ${vendorDomain}`);
+  }
+
+  if (domains.size === 0) {
+    ui.alert('No domains found to search. Add a contact with a company email or update the source field.');
+    return;
+  }
+
+  Logger.log(`=== CONTACT DISCOVERY ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Existing contacts: ${existingContacts.length}`);
+  Logger.log(`Domains to search: ${[...domains].join(', ') || '(none - searching specific emails)'}`);
+  Logger.log(`Existing emails: ${[...existingEmails].join(', ')}`);
+
+  // Search Gmail for emails from these domains
+  const potentialNewContacts = [];
+  const potentialUpdates = [];
+  const emailsSearched = new Set();
+
+  // If we have company domains, search by domain
+  // Helper to extract all emails from a header field (handles "Name <email>, Name2 <email2>" format)
+  const extractEmailsFromField = (field) => {
+    if (!field) return [];
+    const results = [];
+
+    // Preprocess: normalize whitespace (replace newlines, tabs, multiple spaces with single space)
+    const normalized = field.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+    // Split by comma (but be careful of commas in quoted names)
+    const parts = normalized.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+
+      // Try to match "Name" <email> or Name <email> format
+      const angleMatch = trimmed.match(/^(?:"?([^"<]+)"?\s*)?<([^>]+)>$/);
+      if (angleMatch) {
+        let name = angleMatch[1] ? angleMatch[1].trim() : '';
+        const email = angleMatch[2].toLowerCase().trim();
+
+        // Validate email has proper format (at least 2 chars before @, valid domain)
+        if (email.includes('@')) {
+          const [localPart, domain] = email.split('@');
+          // Skip if local part is too short (likely malformed) or domain looks incomplete
+          if (localPart && localPart.length >= 2 && domain && domain.includes('.')) {
+            results.push({ name, email });
+          } else {
+            Logger.log(`Skipping malformed email from header: "${email}" (parsed from: "${trimmed}")`);
+          }
+        }
+        continue;
+      }
+
+      // Try standalone email
+      const emailOnlyMatch = trimmed.match(/^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/);
+      if (emailOnlyMatch) {
+        const email = emailOnlyMatch[1].toLowerCase();
+        const [localPart] = email.split('@');
+        // Validate local part is reasonable length
+        if (localPart && localPart.length >= 2) {
+          results.push({ name: '', email });
+        } else {
+          Logger.log(`Skipping malformed standalone email: "${email}"`);
+        }
+      }
+    }
+    return results;
+  };
+
+  // Helper to clean contact name - only allow letters, spaces, hyphens, apostrophes
+  const cleanContactName = (name) => {
+    if (!name) return '';
+    // Remove any non-name characters (keep letters, spaces, hyphens, apostrophes)
+    let cleaned = name.replace(/[^a-zA-Z\s\-']/g, '').trim();
+    // Collapse multiple spaces
+    cleaned = cleaned.replace(/\s+/g, ' ');
+    // Capitalize first letter of each word
+    cleaned = cleaned.replace(/\b\w/g, c => c.toUpperCase());
+    return cleaned;
+  };
+
+  for (const domain of domains) {
+    ss.toast(`Searching emails with @${domain}...`, '🔍 Scanning', 3);
+
+    try {
+      // Search for emails involving this domain (from OR to)
+      const query = `{from:@${domain} to:@${domain} cc:@${domain}}`;
+      const threads = GmailApp.search(query, 0, 50); // Get up to 50 threads
+
+      Logger.log(`Found ${threads.length} threads involving @${domain}`);
+
+      for (const thread of threads) {
+        const messages = thread.getMessages();
+
+        for (const message of messages) {
+          const from = message.getFrom() || '';
+          const to = message.getTo() || '';
+          const cc = message.getCc() || '';
+          const body = message.getPlainBody() || '';
+          const date = message.getDate();
+
+          // Extract all email addresses from From, To, and CC fields
+          const allAddresses = [
+            ...extractEmailsFromField(from),
+            ...extractEmailsFromField(to),
+            ...extractEmailsFromField(cc)
+          ];
+
+          for (const addr of allAddresses) {
+            const email = addr.email;
+
+            // Skip if we've already processed this email address
+            if (emailsSearched.has(email)) continue;
+            emailsSearched.add(email);
+
+            // Only consider contacts from the vendor's domains (not internal or other external)
+            const emailDomain = email.split('@')[1];
+            if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
+
+            // Use extracted name or derive from email, then clean it
+            const rawName = addr.name || email.split('@')[0].replace(/[._]/g, ' ');
+            const name = cleanContactName(rawName);
+
+            // Check if this is a new contact
+            if (!existingEmails.has(email)) {
+              // Try to find signature info for this contact (only reliable for senders)
+              let phones = [];
+              let jobTitle = '';
+
+              // If this person sent a message, try to extract from their signature
+              if (from.toLowerCase().includes(email)) {
+                const signature = body.slice(-500);
+                phones = extractPhoneNumbers_(signature);
+                jobTitle = extractJobTitle_(signature, name);
+              }
+
+              potentialNewContacts.push({
+                name: name,
+                email: email,
+                phone: phones.length > 0 ? phones[0] : '',
+                jobTitle: jobTitle,
+                lastSeen: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+                domain: domain
+              });
+
+              Logger.log(`Potential new contact: ${name} <${email}> - ${jobTitle || 'no title'}`);
+            } else {
+              // Existing contact - check for phone updates and job title (only from their sent messages)
+              if (!from.toLowerCase().includes(email)) continue;
+
+              const signature = body.slice(-500);
+              const phones = extractPhoneNumbers_(signature);
+              const jobTitle = extractJobTitle_(signature, name);
+
+              // Check for job title updates
+              const existingContact = existingContacts.find(c =>
+                c.email && c.email.toLowerCase() === email
+              );
+
+              if (existingContact && jobTitle && !existingContact.notes?.includes(jobTitle)) {
+                potentialUpdates.push({
+                  name: existingContact.name,
+                  email: email,
+                  updateType: 'jobTitle',
+                  currentValue: existingContact.notes || '(none)',
+                  newValue: jobTitle,
+                  foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                });
+                Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+              }
+
+              for (const phone of phones) {
+                const normalized = phone.replace(/\D/g, '').slice(-10);
+                if (normalized.length === 10 && !existingPhones.has(normalized)) {
+                  // Found a new phone number for an existing contact
+                  if (existingContact) {
+                    potentialUpdates.push({
+                      name: existingContact.name,
+                      email: email,
+                      updateType: 'phone',
+                      currentValue: existingContact.phone || '(none)',
+                      newValue: phone,
+                      foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                    });
+
+                    Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      Logger.log(`Error searching domain ${domain}: ${e.message}`);
+    }
+  }
+
+  // If no company domains were found, search for specific existing email addresses
+  // This allows us to find updates (job titles, phones) for contacts with generic domains
+  if (domains.size === 0 && existingEmails.size > 0) {
+    ss.toast('Searching for existing contacts in Gmail...', '🔍 Scanning', 3);
+
+    for (const email of existingEmails) {
+      if (emailsSearched.has(email)) continue;
+      emailsSearched.add(email);
+
+      try {
+        // Search for emails from this specific address
+        const query = `from:${email}`;
+        const threads = GmailApp.search(query, 0, 20);
+
+        Logger.log(`Found ${threads.length} threads from ${email}`);
+
+        // Find the existing contact for this email
+        const existingContact = existingContacts.find(c => c.email && c.email.toLowerCase() === email);
+        if (!existingContact) continue;
+
+        for (const thread of threads) {
+          const messages = thread.getMessages();
+
+          for (const message of messages) {
+            const from = message.getFrom() || '';
+            const body = message.getPlainBody() || '';
+            const date = message.getDate();
+
+            // Make sure this message is from the contact we're searching for
+            const msgEmailMatch = from.match(/<([^>]+)>/) || [null, from.trim()];
+            const msgEmail = msgEmailMatch[1].toLowerCase();
+            if (msgEmail !== email) continue;
+
+            // Extract info from signature
+            const signature = body.slice(-500);
+
+            // Check for job title update
+            if (!existingContact.name?.includes('|')) {
+              const jobTitle = extractJobTitle_(signature, existingContact.name);
+              if (jobTitle && jobTitle.length > 3) {
+                // Check if we already have this update
+                const existingUpdate = potentialUpdates.find(u =>
+                  u.email === email && u.updateType === 'jobTitle'
+                );
+                if (!existingUpdate) {
+                  potentialUpdates.push({
+                    contactId: existingContact.id,
+                    name: existingContact.name,
+                    email: email,
+                    updateType: 'jobTitle',
+                    currentValue: '(none)',
+                    newValue: jobTitle,
+                    foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                  });
+                  Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+                }
+              }
+            }
+
+            // Check for phone update
+            if (!existingContact.phone) {
+              const phones = extractPhoneNumbers_(signature);
+              if (phones.length > 0) {
+                const phone = phones[0];
+                const normalizedNewPhone = phone.replace(/\D/g, '').slice(-10);
+                if (!existingPhones.has(normalizedNewPhone)) {
+                  const existingUpdate = potentialUpdates.find(u =>
+                    u.email === email && u.updateType === 'phone'
+                  );
+                  if (!existingUpdate) {
+                    potentialUpdates.push({
+                      contactId: existingContact.id,
+                      name: existingContact.name,
+                      email: email,
+                      updateType: 'phone',
+                      currentValue: '(none)',
+                      newValue: phone,
+                      foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                    });
+                    Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        Logger.log(`Error searching email ${email}: ${e.message}`);
+      }
+    }
+  }
+
+  // Sort results
+  potentialNewContacts.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen)); // Most recent first
+  potentialUpdates.sort((a, b) => b.foundIn.localeCompare(a.foundIn));
+
+  // Get Monday.com IDs for linking contacts
+  const mondayItemId = contactData.mondayItemId;
+  const boardId = contactData.boardId;
+
+  // Prepare data for the dialog
+  const dialogData = {
+    vendor: vendor,
+    mondayItemId: mondayItemId,
+    boardId: boardId,
+    domains: [...domains],
+    existingContacts: existingContacts,
+    potentialNewContacts: potentialNewContacts.slice(0, 20),
+    potentialUpdates: potentialUpdates.slice(0, 20)
+  };
+
+  // Build results HTML with interactive elements
+  let html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 10px; }
+      h2 { color: #1a73e8; margin-top: 20px; margin-bottom: 10px; }
+      h3 { color: #333; margin-top: 15px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f8f9fa; font-weight: bold; }
+      tr:nth-child(even) { background-color: #f9f9f9; }
+      .new-contact { background-color: #e8f5e9; }
+      .update { background-color: #fff3e0; }
+      .none { color: #666; font-style: italic; }
+      .summary { background: #f0f0f0; padding: 10px; border-radius: 5px; margin-bottom: 15px; }
+      .btn { padding: 8px 16px; margin: 5px; cursor: pointer; border: none; border-radius: 4px; font-size: 13px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      .btn-primary:hover { background: #1557b0; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-secondary { background: #ff9800; color: white; }
+      .btn-secondary:hover { background: #f57c00; }
+      .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
+      .checkbox-cell { width: 30px; text-align: center; }
+      .job-title { color: #666; font-size: 12px; }
+      .status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
+      .status-success { background: #d4edda; color: #155724; }
+      .status-error { background: #f8d7da; color: #721c24; }
+    </style>
+
+    <h2>📇 Contact Discovery for ${escapeHtml_(vendor)}</h2>
+
+    <div class="summary">
+      <strong>Searched:</strong> ${domains.size > 0 ? [...domains].map(d => '@' + d).join(', ') : 'Specific email addresses (no company domains)'}<br>
+      <strong>Existing contacts:</strong> ${existingContacts.length}<br>
+      <strong>Potential new contacts found:</strong> ${potentialNewContacts.length}<br>
+      <strong>Potential updates found:</strong> ${potentialUpdates.length}
+    </div>
+
+    <div id="statusMsg"></div>
+  `;
+
+  // New contacts section with checkboxes
+  html += `<h3>🆕 Potential New Contacts (${potentialNewContacts.length})</h3>`;
+
+  if (potentialNewContacts.length === 0) {
+    html += `<p class="none">No new contacts discovered.</p>`;
+  } else {
+    html += `
+      <div style="margin-bottom: 10px;">
+        <button class="btn btn-primary" onclick="addSelectedContacts()" id="addBtn">➕ Add Selected to Monday.com</button>
+        <label style="margin-left: 15px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> Select All</label>
+      </div>
+      <table id="newContactsTable">
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Phone</th><th>Job Title</th><th>Last Seen</th></tr>
+    `;
+    for (let i = 0; i < Math.min(potentialNewContacts.length, 20); i++) {
+      const contact = potentialNewContacts[i];
+      html += `
+        <tr class="new-contact">
+          <td class="checkbox-cell"><input type="checkbox" class="contact-cb" data-index="${i}"></td>
+          <td>${escapeHtml_(contact.name)}</td>
+          <td>${escapeHtml_(contact.email)}</td>
+          <td>${contact.phone || '<span class="none">-</span>'}</td>
+          <td class="job-title">${contact.jobTitle ? escapeHtml_(contact.jobTitle) : '<span class="none">-</span>'}</td>
+          <td>${contact.lastSeen}</td>
+        </tr>
+      `;
+    }
+    html += `</table>`;
+    if (potentialNewContacts.length > 20) {
+      html += `<p class="none">...and ${potentialNewContacts.length - 20} more</p>`;
+    }
+  }
+
+  // Updates section (phone and job title)
+  const phoneUpdates = potentialUpdates.filter(u => u.updateType === 'phone');
+  const titleUpdates = potentialUpdates.filter(u => u.updateType === 'jobTitle');
+
+  html += `<h3>📝 Potential Updates (${potentialUpdates.length})</h3>`;
+
+  if (potentialUpdates.length === 0) {
+    html += `<p class="none">No updates discovered.</p>`;
+  } else {
+    html += `
+      <div style="margin-bottom: 10px;">
+        <button class="btn btn-secondary" onclick="applySelectedUpdates()" id="updateBtn">📝 Apply Selected Updates</button>
+        <label style="margin-left: 15px;"><input type="checkbox" id="selectAllUpdates" onchange="toggleSelectAllUpdates()"> Select All</label>
+      </div>
+      <table id="updatesTable">
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Field</th><th>Current</th><th>New Value</th><th>Found</th></tr>
+    `;
+    for (let i = 0; i < Math.min(potentialUpdates.length, 20); i++) {
+      const update = potentialUpdates[i];
+      const typeLabel = update.updateType === 'phone' ? '📱 Phone' : '💼 Job Title';
+      html += `
+        <tr class="update">
+          <td class="checkbox-cell"><input type="checkbox" class="update-cb" data-index="${i}"></td>
+          <td>${escapeHtml_(update.name)}</td>
+          <td>${escapeHtml_(update.email)}</td>
+          <td>${typeLabel}</td>
+          <td>${escapeHtml_(update.currentValue)}</td>
+          <td><strong>${escapeHtml_(update.newValue)}</strong></td>
+          <td>${update.foundIn}</td>
+        </tr>
+      `;
+    }
+    html += `</table>`;
+    if (potentialUpdates.length > 20) {
+      html += `<p class="none">...and ${potentialUpdates.length - 20} more</p>`;
+    }
+  }
+
+  html += `
+    <h3>👤 Existing Contacts</h3>
+    <table>
+      <tr><th>Name</th><th>Email</th><th>Phone</th><th>Type</th><th>Status</th></tr>
+  `;
+  for (const contact of existingContacts) {
+    html += `
+      <tr>
+        <td>${escapeHtml_(contact.name || '')}</td>
+        <td>${escapeHtml_(contact.email || '')}</td>
+        <td>${escapeHtml_(contact.phone || '')}</td>
+        <td>${escapeHtml_(contact.contactType || '')}</td>
+        <td>${escapeHtml_(contact.status || '')}</td>
+      </tr>
+    `;
+  }
+  html += `</table>`;
+
+  // Add Done button for hard refresh
+  html += `
+    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
+      <button id="done-btn" class="btn btn-primary" style="padding: 10px 30px;">
+        ✓ Done - Refresh View
+      </button>
+    </div>
+  `;
+
+  // Add JavaScript for interactivity
+  html += `
+    <script>
+      const dialogData = ${JSON.stringify(dialogData)};
+
+      function toggleSelectAll() {
+        const selectAll = document.getElementById('selectAll').checked;
+        document.querySelectorAll('.contact-cb').forEach(cb => cb.checked = selectAll);
+      }
+
+      function addSelectedContacts() {
+        const selected = [];
+        document.querySelectorAll('.contact-cb:checked').forEach(cb => {
+          const idx = parseInt(cb.dataset.index);
+          selected.push(dialogData.potentialNewContacts[idx]);
+        });
+
+        if (selected.length === 0) {
+          alert('Please select at least one contact to add.');
+          return;
+        }
+
+        document.getElementById('addBtn').disabled = true;
+        document.getElementById('addBtn').textContent = 'Adding...';
+        document.getElementById('statusMsg').innerHTML = '<div class="status-msg">Adding ' + selected.length + ' contact(s)...</div>';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-success">' + result + '</div>';
+            document.getElementById('addBtn').textContent = '✓ Done';
+            // Uncheck added contacts
+            document.querySelectorAll('.contact-cb:checked').forEach(cb => {
+              cb.checked = false;
+              cb.closest('tr').style.opacity = '0.5';
+            });
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-error">Error: ' + error.message + '</div>';
+            document.getElementById('addBtn').disabled = false;
+            document.getElementById('addBtn').textContent = '➕ Add Selected to Monday.com';
+          })
+          .addContactsToMonday(selected, dialogData.mondayItemId, dialogData.boardId);
+      }
+
+      function toggleSelectAllUpdates() {
+        const selectAll = document.getElementById('selectAllUpdates').checked;
+        document.querySelectorAll('.update-cb').forEach(cb => cb.checked = selectAll);
+      }
+
+      function applySelectedUpdates() {
+        const selected = [];
+        document.querySelectorAll('.update-cb:checked').forEach(cb => {
+          const idx = parseInt(cb.dataset.index);
+          selected.push(dialogData.potentialUpdates[idx]);
+        });
+
+        if (selected.length === 0) {
+          alert('Please select at least one update to apply.');
+          return;
+        }
+
+        document.getElementById('updateBtn').disabled = true;
+        document.getElementById('updateBtn').textContent = 'Applying...';
+        document.getElementById('statusMsg').innerHTML = '<div class="status-msg">Applying ' + selected.length + ' update(s)...</div>';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-success">' + result + '</div>';
+            document.getElementById('updateBtn').textContent = '✓ Done';
+            // Uncheck applied updates
+            document.querySelectorAll('.update-cb:checked').forEach(cb => {
+              cb.checked = false;
+              cb.closest('tr').style.opacity = '0.5';
+            });
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-error">Error: ' + error.message + '</div>';
+            document.getElementById('updateBtn').disabled = false;
+            document.getElementById('updateBtn').textContent = '📝 Apply Selected Updates';
+          })
+          .applyContactUpdates(selected, dialogData.existingContacts);
+      }
+
+      // Done button - trigger hard refresh and close dialog
+      document.getElementById('done-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = '⏳ Refreshing...';
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(e) {
+            alert('Refresh failed: ' + e.message);
+            google.script.host.close();
+          })
+          .battleStationHardRefresh();
+      });
+    </script>
+  `;
+
+  // Show dialog
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(900)
+    .setHeight(700);
+
+  ui.showModalDialog(htmlOutput, '📇 Contact Discovery');
+
+  // Store the last run date for this vendor
+  const props = PropertiesService.getScriptProperties();
+  const lastRunKey = `BS_CONTACT_DISCOVERY_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  props.setProperty(lastRunKey, today);
+
+  Logger.log(`Contact discovery complete: ${potentialNewContacts.length} new, ${potentialUpdates.length} updates`);
+}
+
+/**
+ * Add contacts to Monday.com from the Contact Discovery dialog
+ * @param {Array} contacts - Array of contact objects with name, email, phone, jobTitle
+ * @param {string} vendorItemId - Monday.com item ID of the vendor
+ * @param {string} vendorBoardId - Monday.com board ID of the vendor (Buyers or Affiliates)
+ * @returns {string} Success message
+ */
+function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const contactsBoardId = BS_CFG.CONTACTS_BOARD_ID;
+
+  Logger.log(`=== ADDING CONTACTS TO MONDAY.COM ===`);
+  Logger.log(`Adding ${contacts.length} contact(s)`);
+  Logger.log(`Vendor item: ${vendorItemId} on board ${vendorBoardId}`);
+
+  const createdContactIds = [];
+  const errors = [];
+
+  for (const contact of contacts) {
+    try {
+      // Build column values JSON - Monday.com requires specific formats for each column type
+      const columnValues = {};
+
+      // Email column - Monday.com email column format
+      if (contact.email) {
+        columnValues['email_mkrk53z4'] = { email: contact.email, text: contact.email };
+      }
+
+      // Phone column - Monday.com phone column format
+      if (contact.phone) {
+        const phoneDigits = contact.phone.replace(/\D/g, '');
+        if (phoneDigits.length >= 10) {
+          columnValues['phone_mkrkzxq2'] = { phone: phoneDigits, countryShortName: 'US' };
+        }
+      }
+
+      // Job Title column - text field
+      if (contact.jobTitle) {
+        columnValues['text_mkz5rj9h'] = contact.jobTitle;
+      }
+
+      const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
+
+      // Create the contact item
+      const createMutation = `
+        mutation {
+          create_item (
+            board_id: ${contactsBoardId},
+            item_name: "${contact.name.replace(/"/g, '\\"')}",
+            column_values: ${columnValuesJson}
+          ) {
+            id
+            name
+          }
+        }
+      `;
+
+      Logger.log(`Creating contact: ${contact.name}`);
+
+      const createResult = mondayApiRequest_(createMutation, apiToken);
+
+      if (createResult.errors && createResult.errors.length > 0) {
+        Logger.log(`Error creating contact ${contact.name}: ${createResult.errors[0].message}`);
+        errors.push(`${contact.name}: ${createResult.errors[0].message}`);
+        continue;
+      }
+
+      if (createResult.data?.create_item?.id) {
+        const newContactId = createResult.data.create_item.id;
+        createdContactIds.push(newContactId);
+        Logger.log(`Created contact ${contact.name} with ID: ${newContactId}`);
+      }
+
+    } catch (e) {
+      Logger.log(`Exception creating contact ${contact.name}: ${e.message}`);
+      errors.push(`${contact.name}: ${e.message}`);
+    }
+  }
+
+  // Link created contacts to the vendor item
+  if (createdContactIds.length > 0 && vendorItemId && vendorBoardId) {
+    try {
+      // Determine which contacts column to use based on vendor board
+      const contactsColumnId = vendorBoardId === BS_CFG.BUYERS_BOARD_ID
+        ? BS_CFG.BUYERS_CONTACTS_COLUMN
+        : BS_CFG.AFFILIATES_CONTACTS_COLUMN;
+
+      // Get existing linked contacts first
+      const existingQuery = `
+        query {
+          items(ids: [${vendorItemId}]) {
+            column_values(ids: ["${contactsColumnId}"]) {
+              ... on BoardRelationValue {
+                linked_item_ids
+              }
+            }
+          }
+        }
+      `;
+
+      const existingResult = mondayApiRequest_(existingQuery, apiToken);
+      let existingIds = [];
+
+      if (existingResult.data?.items?.[0]?.column_values?.[0]?.linked_item_ids) {
+        existingIds = existingResult.data.items[0].column_values[0].linked_item_ids;
+      }
+
+      // Combine existing and new contact IDs
+      const allContactIds = [...existingIds, ...createdContactIds];
+
+      // Update the board relation column with all contact IDs
+      const linkValue = JSON.stringify({ item_ids: allContactIds });
+      const escapedLinkValue = linkValue.replace(/"/g, '\\"');
+
+      const linkMutation = `
+        mutation {
+          change_column_value (
+            board_id: ${vendorBoardId},
+            item_id: ${vendorItemId},
+            column_id: "${contactsColumnId}",
+            value: "${escapedLinkValue}"
+          ) { id }
+        }
+      `;
+
+      Logger.log(`Linking ${createdContactIds.length} new contacts to vendor`);
+      const linkResult = mondayApiRequest_(linkMutation, apiToken);
+
+      if (linkResult.errors && linkResult.errors.length > 0) {
+        Logger.log(`Error linking contacts: ${linkResult.errors[0].message}`);
+        errors.push(`Linking: ${linkResult.errors[0].message}`);
+      } else {
+        Logger.log(`Successfully linked contacts to vendor`);
+      }
+
+    } catch (e) {
+      Logger.log(`Exception linking contacts: ${e.message}`);
+      errors.push(`Linking: ${e.message}`);
+    }
+  }
+
+  // Build result message
+  if (errors.length > 0) {
+    if (createdContactIds.length > 0) {
+      return `Added ${createdContactIds.length} contact(s) with ${errors.length} error(s): ${errors.join('; ')}`;
+    } else {
+      throw new Error(`Failed to add contacts: ${errors.join('; ')}`);
+    }
+  }
+
+  return `Successfully added ${createdContactIds.length} contact(s) to Monday.com and linked to vendor!`;
+}
+
+/**
+ * Apply updates to existing contacts in Monday.com
+ * @param {Array} updates - Array of update objects with name, email, updateType, newValue
+ * @param {Array} existingContacts - Array of existing contact objects to find contact IDs
+ * @returns {string} Success message
+ */
+function applyContactUpdates(updates, existingContacts) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const contactsBoardId = BS_CFG.CONTACTS_BOARD_ID;
+
+  Logger.log(`=== APPLYING CONTACT UPDATES ===`);
+  Logger.log(`Applying ${updates.length} update(s)`);
+
+  // First, we need to find the contact item IDs by searching the contacts board
+  // Query contacts board to get item IDs for matching emails
+  const emails = updates.map(u => u.email.toLowerCase());
+  const uniqueEmails = [...new Set(emails)];
+
+  Logger.log(`Looking up contacts for emails: ${uniqueEmails.join(', ')}`);
+
+  // Query to find contact items
+  const searchQuery = `
+    query {
+      boards(ids: [${contactsBoardId}]) {
+        items_page(limit: 500) {
+          items {
+            id
+            name
+            column_values(ids: ["email_mkrk53z4", "phone_mkrkzxq2"]) {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const searchResult = mondayApiRequest_(searchQuery, apiToken);
+  const contactMap = new Map(); // email -> { id, name, phone }
+
+  if (searchResult.data?.boards?.[0]?.items_page?.items) {
+    for (const item of searchResult.data.boards[0].items_page.items) {
+      const emailCol = item.column_values.find(c => c.id === 'email_mkrk53z4');
+      const phoneCol = item.column_values.find(c => c.id === 'phone_mkrkzxq2');
+      if (emailCol?.text) {
+        contactMap.set(emailCol.text.toLowerCase(), {
+          id: item.id,
+          name: item.name,
+          phone: phoneCol?.text || ''
+        });
+      }
+    }
+  }
+
+  Logger.log(`Found ${contactMap.size} contacts in Monday.com`);
+
+  const successCount = { phone: 0, jobTitle: 0 };
+  const errors = [];
+
+  for (const update of updates) {
+    const contact = contactMap.get(update.email.toLowerCase());
+    if (!contact) {
+      Logger.log(`Contact not found for email: ${update.email}`);
+      errors.push(`${update.name}: contact not found`);
+      continue;
+    }
+
+    try {
+      if (update.updateType === 'phone') {
+        // Update phone column - Monday.com requires JSON format for phone columns
+        const phoneDigits = update.newValue.replace(/\D/g, '');
+        const phoneJson = JSON.stringify({ phone: phoneDigits, countryShortName: 'US' });
+
+        const mutation = `
+          mutation {
+            change_column_value (
+              board_id: ${contactsBoardId},
+              item_id: ${contact.id},
+              column_id: "phone_mkrkzxq2",
+              value: ${JSON.stringify(phoneJson)}
+            ) { id }
+          }
+        `;
+
+        Logger.log(`Updating phone for ${update.name} (${contact.id}): ${phoneDigits}`);
+        const result = mondayApiRequest_(mutation, apiToken);
+
+        if (result.errors && result.errors.length > 0) {
+          Logger.log(`Error updating phone: ${result.errors[0].message}`);
+          errors.push(`${update.name} phone: ${result.errors[0].message}`);
+        } else {
+          successCount.phone++;
+          Logger.log(`Successfully updated phone for ${update.name}`);
+        }
+
+      } else if (update.updateType === 'jobTitle') {
+        // Update the dedicated Job Title column (text_mkz5rj9h)
+        let titleOnly = update.newValue;
+        if (titleOnly.includes('|')) {
+          titleOnly = titleOnly.split('|').pop().trim();
+        }
+        // Strip any leading/trailing asterisks or special chars from signatures
+        titleOnly = titleOnly.replace(/^[\*\s]+|[\*\s]+$/g, '').trim();
+
+        const escapedTitle = titleOnly.replace(/"/g, '\\"');
+
+        const mutation = `
+          mutation {
+            change_column_value (
+              board_id: ${contactsBoardId},
+              item_id: ${contact.id},
+              column_id: "text_mkz5rj9h",
+              value: "\\"${escapedTitle}\\""
+            ) { id }
+          }
+        `;
+
+        Logger.log(`Updating job title for ${update.name} (${contact.id}): ${titleOnly}`);
+        const result = mondayApiRequest_(mutation, apiToken);
+
+        if (result.errors && result.errors.length > 0) {
+          Logger.log(`Error updating job title: ${result.errors[0].message}`);
+          errors.push(`${update.name} title: ${result.errors[0].message}`);
+        } else {
+          successCount.jobTitle++;
+          Logger.log(`Successfully updated job title for ${update.name}`);
+        }
+      }
+
+    } catch (e) {
+      Logger.log(`Exception updating ${update.name}: ${e.message}`);
+      errors.push(`${update.name}: ${e.message}`);
+    }
+  }
+
+  // Build result message
+  const parts = [];
+  if (successCount.phone > 0) parts.push(`${successCount.phone} phone update(s)`);
+  if (successCount.jobTitle > 0) parts.push(`${successCount.jobTitle} job title update(s)`);
+
+  if (errors.length > 0) {
+    if (parts.length > 0) {
+      return `Applied ${parts.join(', ')} with ${errors.length} error(s): ${errors.slice(0, 3).join('; ')}`;
+    } else {
+      throw new Error(`Failed to apply updates: ${errors.join('; ')}`);
+    }
+  }
+
+  return `Successfully applied ${parts.join(' and ')}!`;
+}
+
+/**
+ * Check if an email sender is a system/bounce message (not a real person)
+ */
+function isSystemOrBounceEmail_(sender) {
+  if (!sender) return false;
+  const lowerSender = sender.toLowerCase();
+
+  // Common system/bounce email patterns
+  const systemPatterns = [
+    'mailer-daemon',
+    'postmaster',
+    'mail delivery subsystem',
+    'noreply',
+    'no-reply',
+    'do-not-reply',
+    'donotreply',
+    'bounce',
+    'auto-reply',
+    'autoreply',
+    'automated',
+    'notification@',
+    'notifications@',
+    'alert@',
+    'alerts@',
+    'system@',
+    'daemon@'
+  ];
+
+  return systemPatterns.some(pattern => lowerSender.includes(pattern));
+}
+
+/**
+ * Check if a domain is a generic email provider (not company-specific)
+ */
+function isGenericDomain_(domain) {
+  const genericDomains = [
+    'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
+    'icloud.com', 'me.com', 'mac.com', 'msn.com', 'live.com',
+    'protonmail.com', 'proton.me', 'zoho.com', 'ymail.com',
+    'mail.com', 'email.com', 'inbox.com', 'fastmail.com'
+  ];
+  return genericDomains.includes(domain.toLowerCase());
+}
+
+/**
+ * Extract domain from a source/website field
+ * Handles: URLs, domains with www, plain domains
+ */
+function extractDomainFromSource_(source) {
+  if (!source) return null;
+
+  // Ensure source is a string (could be Date, Number, etc. from spreadsheet)
+  const sourceStr = String(source);
+  if (!sourceStr || sourceStr === 'undefined' || sourceStr === 'null') return null;
+
+  let domain = sourceStr.trim().toLowerCase();
+
+  // Remove protocol (http://, https://)
+  domain = domain.replace(/^https?:\/\//, '');
+
+  // Remove www.
+  domain = domain.replace(/^www\./, '');
+
+  // Remove path and query string (everything after first /)
+  domain = domain.split('/')[0];
+
+  // Remove port if present
+  domain = domain.split(':')[0];
+
+  // Basic validation: should have at least one dot and no spaces
+  if (!domain.includes('.') || domain.includes(' ')) {
+    return null;
+  }
+
+  return domain;
+}
+
+/**
+ * Try to guess a company domain from the vendor name
+ * e.g., "HomeFix" -> "homefix.com", "ABC Supply" -> "abcsupply.com"
+ */
+function guessVendorDomain_(vendor) {
+  if (!vendor) return null;
+
+  // Remove common suffixes like LLC, Inc, Corp, etc.
+  let cleaned = vendor
+    .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Co\.?|Ltd\.?|Limited|Corporation|Company)$/i, '')
+    .trim();
+
+  // Remove special characters and spaces, convert to lowercase
+  cleaned = cleaned
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase();
+
+  if (cleaned.length < 2) return null;
+
+  return cleaned + '.com';
+}
+
+/**
+ * Extract phone numbers from text (signature, body, etc.)
+ */
+function extractPhoneNumbers_(text) {
+  if (!text) return [];
+
+  // Blacklisted phone numbers (our company numbers - should not be picked up as contact info)
+  const blacklistedPhones = [
+    '8884004868',  // Profitise main line
+    '18884004868', // With country code
+  ];
+
+  // Regex patterns for various phone formats
+  const patterns = [
+    /\b(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\b/g,           // 123-456-7890, 123.456.7890, 123 456 7890
+    /\b\((\d{3})\)\s*(\d{3})[-.\s]?(\d{4})\b/g,       // (123) 456-7890
+    /\b(\d{3})[-.\s](\d{4})\b/g,                       // 456-7890 (7 digit)
+    /\+1[-.\s]?(\d{3})[-.\s]?(\d{3})[-.\s]?(\d{4})\b/g // +1 123-456-7890
+  ];
+
+  const phones = new Set();
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      // Normalize to just digits
+      const digits = match[0].replace(/\D/g, '');
+      if (digits.length >= 10) {
+        const last10 = digits.slice(-10);
+
+        // Skip blacklisted numbers
+        if (blacklistedPhones.includes(last10) || blacklistedPhones.includes(digits)) {
+          continue;
+        }
+
+        // Format nicely
+        const formatted = `(${last10.slice(0,3)}) ${last10.slice(3,6)}-${last10.slice(6)}`;
+        phones.add(formatted);
+      }
+    }
+  }
+
+  return [...phones];
+}
+
+/**
+ * Extract job title from email signature
+ * Looks for common job title patterns near the person's name
+ */
+function extractJobTitle_(text, name) {
+  if (!text || !name) return '';
+
+  // Common job title keywords - these should START the title or be key parts
+  const titleKeywords = [
+    'Director', 'Manager', 'President', 'VP', 'Vice President', 'CEO', 'CFO', 'COO', 'CTO', 'CMO',
+    'Owner', 'Partner', 'Principal', 'Founder', 'Co-Founder',
+    'Coordinator', 'Specialist', 'Analyst', 'Associate',
+    'Executive', 'Administrator', 'Supervisor', 'Lead', 'Head',
+    'Representative', 'Consultant', 'Advisor', 'Counsel',
+    'Engineer', 'Developer', 'Architect', 'Designer',
+    'Regional', 'National', 'Senior', 'Junior', 'Chief'
+  ];
+
+  // Phrases that indicate this is NOT a job title (confidentiality notices, email content, etc.)
+  const excludePhrases = [
+    'responsible for delivery',
+    'intended recipient',
+    'confidential',
+    'dissemination',
+    'strictly prohibited',
+    'received this',
+    'notify us',
+    'delete it',
+    'phone call',
+    'let me know',
+    'ready to',
+    'buying from',
+    'get started',
+    'employee or agent',
+    'click here',
+    'unsubscribe',
+    'view in browser'
+  ];
+
+  // Helper function to check if line is valid job title candidate
+  const isValidTitleLine = (line) => {
+    const lowerLine = line.toLowerCase();
+
+    // Skip empty or too long lines (real job titles are usually under 50 chars)
+    if (!line || line.length > 50 || line.length < 5) return false;
+
+    // Skip lines starting with quote markers, bullets, or asterisks
+    if (/^[>\*\-•\[]/.test(line.trim())) return false;
+
+    // Skip lines with email addresses, URLs, or phone patterns in context
+    if (line.includes('@') || line.includes('http') || line.includes('www.')) return false;
+
+    // Skip lines containing exclusion phrases
+    for (const phrase of excludePhrases) {
+      if (lowerLine.includes(phrase)) return false;
+    }
+
+    // Must contain at least one title keyword
+    let hasKeyword = false;
+    for (const keyword of titleKeywords) {
+      if (lowerLine.includes(keyword.toLowerCase())) {
+        hasKeyword = true;
+        break;
+      }
+    }
+    if (!hasKeyword) return false;
+
+    // Title should be mostly letters and spaces (at least 85% alphanumeric)
+    const alphaRatio = (line.match(/[a-zA-Z\s,&]/g) || []).length / line.length;
+    if (alphaRatio < 0.85) return false;
+
+    return true;
+  };
+
+  const firstName = name.split(/\s+/)[0];
+  const lines = text.split(/[\n\r]+/);
+
+  // First pass: look for title right after the person's name
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // If this line contains the person's name
+    if (line.toLowerCase().includes(firstName.toLowerCase()) && line.length < 100) {
+      // Check if there's a pipe separator with title after name (e.g., "John Smith | Director of Sales")
+      if (line.includes('|')) {
+        const parts = line.split('|');
+        for (let j = 1; j < parts.length; j++) {
+          const part = parts[j].trim();
+          if (isValidTitleLine(part)) {
+            return part;
+          }
+        }
+      }
+
+      // Check the next line for a title
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim();
+        if (isValidTitleLine(nextLine)) {
+          return nextLine;
+        }
+      }
+    }
+  }
+
+  // Second pass: look for standalone title lines near the top (signature block area)
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    const line = lines[i].trim();
+    if (isValidTitleLine(line)) {
+      return line;
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/************************************************************
+ * TASK STATUS ANALYSIS FROM EMAILS
+ * Uses Claude to analyze emails and suggest task status updates
+ ************************************************************/
+
+/**
+ * Analyze emails to suggest task status updates
+ * Uses AI to determine if tasks should be updated based on email content
+ */
+function analyzeTasksFromEmails() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 2).getValue() || '';
+
+  ss.toast('Fetching emails and tasks...', '🤖 Task Analysis', 3);
+
+  // Get vendor info including status
+  const contactData = getVendorContacts_(vendor, listRow);
+  const vendorStatus = contactData.liveStatus || 'Unknown';
+  const hasContacts = (contactData.contacts || []).length > 0;
+  const hasPhonexaLink = !!contactData.phonexaLink;
+
+  // Get ALL emails from vendor's Gmail sublabel (not filtered search)
+  // This gives full context including processed/dealt-with emails
+  const emails = getAllEmailsFromVendorLabel_(listRow, 50);
+  if (!emails || emails.length === 0) {
+    ui.alert('No emails found in vendor label.');
+    return;
+  }
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow);
+  const openTasks = tasks.filter(t => !t.isDone);
+
+  if (openTasks.length === 0) {
+    ui.alert('No open tasks found for this vendor.');
+    return;
+  }
+
+  ss.toast('Analyzing with Claude AI...', '🤖 Task Analysis', 5);
+
+  // Get task analysis settings from Settings sheet
+  const taskSettings = getTaskAnalysisSettings_();
+
+  // Build email summaries with content snippets (most recent first, limit to 25 for full context)
+  // Also build a map of email index to thread ID for linking
+  const emailThreadMap = {};
+  const emailSummaries = emails.slice(0, 25).map((e, i) => {
+    // Handle labels - could be array or string
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || '');
+    // Include snippet for context (truncate if too long)
+    const snippet = (e.snippet || '').substring(0, 300);
+    const msgCount = e.messageCount ? ` [${e.messageCount} msgs in thread]` : '';
+    // Store thread ID for linking
+    emailThreadMap[i + 1] = e.threadId;
+    return `EMAIL ${i + 1} (${e.date})${msgCount}:
+Subject: ${e.subject}
+From: ${e.from || 'Unknown'}
+Labels: ${labelsStr}
+Preview: ${snippet}
+---`;
+  }).join('\n\n');
+
+  // Build task list with custom instructions from settings
+  const taskList = openTasks.map((t, i) => {
+    // Extract base task name (without vendor suffix) for matching settings
+    const baseTaskName = t.subject.replace(/ - [^-]+$/, '').trim().toLowerCase();
+    const customInstruction = taskSettings.taskInstructions[baseTaskName] || '';
+    const instructionNote = customInstruction ? `\n   [LOOK FOR: ${customInstruction}]` : '';
+    return `${i + 1}. "${t.subject}" - Status: ${t.status}${t.taskDate ? ` (Date: ${t.taskDate})` : ''}${instructionNote}`;
+  }).join('\n');
+
+  // Build general instructions section
+  let customGuidance = '';
+  if (taskSettings.generalInstructions) {
+    customGuidance = `\nCUSTOM GUIDANCE FROM USER:\n${taskSettings.generalInstructions}\n`;
+  }
+
+  // Build the prompt
+  const prompt = `You are analyzing a vendor's email thread and their monday.com onboarding tasks to suggest status updates.
+
+VENDOR: ${vendor}
+VENDOR STATUS: ${vendorStatus}
+HAS CONTACTS IN MONDAY.COM: ${hasContacts ? 'Yes' : 'No'}
+HAS PHONEXA LINK: ${hasPhonexaLink ? 'Yes' : 'No'}
+
+CURRENT OPEN TASKS:
+${taskList}
+
+POSSIBLE TASK STATUSES:
+- "Waiting on Profitise" - We need to do something
+- "Waiting on Client" - We're waiting for them to do something
+- "Waiting on Phonexa" - We're waiting for Phonexa (our platform team) to do something
+- "Done" - Task is complete
+
+RECENT EMAILS (most recent first):
+${emailSummaries}
+${customGuidance}
+IMPORTANT CONTEXT:
+- Pay close attention to any [LOOK FOR: ...] notes on tasks - these are custom instructions from the user
+- Onboarding tasks are typically done in a linear sequence
+- If later tasks are being worked on, earlier tasks may already be complete
+- Look for evidence in emails that suggests task status changes:
+  * If we sent them something and are waiting for response → "Waiting on Client"
+  * If they requested something and we haven't done it → "Waiting on Profitise"
+  * If we mention Phonexa needs to do something → "Waiting on Phonexa"
+  * If something is confirmed done in emails → "Done"
+
+Analyze the emails and provide your recommendations in this EXACT format:
+
+TASK UPDATES:
+[For each task that should change status, use this format:]
+- "Task Name" → New Status
+  Reason: [Brief explanation based on email evidence]
+
+NO CHANGE NEEDED:
+[List any tasks where current status seems correct]
+
+SUMMARY:
+[2-3 sentences summarizing what's happening with this vendor based on emails]`;
+
+  // Call Claude API
+  const response = callClaudeAPI_(prompt, claudeApiKey);
+
+  if (response.error) {
+    ui.alert(`Claude API Error: ${response.error}`);
+    return;
+  }
+
+  Logger.log(`=== TASK ANALYSIS ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Open tasks: ${openTasks.length}`);
+  Logger.log(`Emails analyzed: ${Math.min(emails.length, 15)}`);
+  Logger.log(`Claude response: ${response.content}`);
+
+  // Parse Claude's response to extract suggested updates
+  let suggestedUpdates = parseTaskSuggestions_(response.content, openTasks);
+  Logger.log(`Parsed ${suggestedUpdates.length} suggested updates (before filtering)`);
+
+  // Filter out suggestions where status isn't actually changing
+  suggestedUpdates = suggestedUpdates.filter(u => u.currentStatus !== u.newStatus);
+  Logger.log(`After filtering same-status: ${suggestedUpdates.length} updates`);
+
+  // Store task data for the dialog to use
+  const taskDataForDialog = openTasks.map(t => ({
+    itemId: t.itemId,
+    statusColumnId: t.statusColumnId,
+    subject: t.subject,
+    currentStatus: t.status
+  }));
+  PropertiesService.getUserProperties().setProperty('taskAnalysisData', JSON.stringify(taskDataForDialog));
+
+  // Build suggested updates HTML with Apply buttons
+  const allStatuses = ['Waiting on Profitise', 'Waiting on Client', 'Waiting on Phonexa', 'Done'];
+
+  // Helper to linkify "EMAIL X" references in reason text
+  const linkifyEmailRefs = (text) => {
+    return escapeHtml_(text).replace(/EMAIL\s*(\d+)/gi, (match, num) => {
+      const threadId = emailThreadMap[parseInt(num)];
+      if (threadId) {
+        return `<a href="https://mail.google.com/mail/u/0/#inbox/${threadId}" target="_blank" style="color: #1a73e8;">EMAIL ${num}</a>`;
+      }
+      return match;
+    });
+  };
+
+  let updatesHtml = '';
+  if (suggestedUpdates.length > 0) {
+    updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
+    for (const update of suggestedUpdates) {
+      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}${BS_CFG.MONDAY_TERM_COLUMNS}`;
+      const statusBg = getStatusColor_(update.newStatus);
+
+      // Build alternative status buttons (exclude current and suggested)
+      const altStatuses = allStatuses.filter(s =>
+        s !== update.currentStatus && s !== update.newStatus
+      );
+      const escapedTaskName = escapeHtml_(update.taskName).replace(/'/g, "\\'");
+      const altButtonsHtml = altStatuses.map(s => {
+        const bg = getStatusColor_(s);
+        return `<button class="alt-btn" style="background: ${bg};" onclick="applyOverride('${update.itemId}', '${update.statusColumnId}', '${s}', '${escapedTaskName}', this)">${s}</button>`;
+      }).join('');
+
+      updatesHtml += `
+        <div class="update-row" id="update-${update.itemId}">
+          <div class="update-task">
+            <a href="${taskLink}" target="_blank" class="task-link">🔗 ${escapeHtml_(update.taskName)}</a>
+          </div>
+          <div class="update-change">
+            <span class="old-status">${escapeHtml_(update.currentStatus)}</span> →
+            <span style="background: ${statusBg}; padding: 2px 6px; border-radius: 3px;">${escapeHtml_(update.newStatus)}</span>
+          </div>
+          <div class="update-reason"><em>Reason:</em> ${linkifyEmailRefs(update.reason)}</div>
+          <div class="update-actions">
+            <button class="apply-btn" onclick="applyUpdate('${update.itemId}', '${update.statusColumnId}', '${escapeHtml_(update.newStatus)}', this)">✓ Apply</button>
+            <button class="skip-btn" onclick="skipUpdate('${escapedTaskName}', '${escapeHtml_(update.currentStatus)}', this)">✗ Skip</button>
+            ${altButtonsHtml}
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    updatesHtml = '<h3 style="color: #666; margin-top: 15px;">✓ No status changes suggested</h3><p style="color: #888; font-size: 13px;">All tasks appear to have appropriate statuses based on the email history.</p>';
+  }
+
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      h3 { margin-top: 20px; margin-bottom: 10px; }
+      .summary-box { background: #f8f9fa; padding: 12px; border-radius: 5px; margin-bottom: 15px; }
+      .update-row { background: #fff; border: 1px solid #ddd; padding: 12px; margin-bottom: 10px; border-radius: 5px; }
+      .update-row.applied { background: #e8f5e9; border-color: #4caf50; }
+      .update-row.skipped { background: #f5f5f5; opacity: 0.6; }
+      .update-task { font-weight: bold; margin-bottom: 5px; }
+      .update-change { margin-bottom: 5px; }
+      .update-reason { color: #666; font-size: 12px; margin-bottom: 8px; }
+      .update-actions { display: flex; gap: 8px; }
+      .apply-btn { background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+      .apply-btn:hover { background: #45a049; }
+      .apply-btn:disabled { background: #ccc; cursor: not-allowed; }
+      .skip-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+      .skip-btn:hover { background: #eee; }
+      .alt-btn { color: #333; border: 1px solid #ccc; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+      .alt-btn:hover { opacity: 0.8; }
+      .alt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .old-status { color: #666; text-decoration: line-through; }
+      .task-link { color: #1a73e8; text-decoration: none; }
+      .task-link:hover { text-decoration: underline; }
+      .task-list { background: #fafafa; padding: 10px; margin-top: 15px; border-radius: 5px; }
+      .task-item { padding: 5px 0; border-bottom: 1px solid #eee; }
+      .summary-section { background: #f0f7ff; padding: 12px; border-radius: 5px; margin-top: 15px; }
+      .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; }
+      .status-msg.success { background: #e8f5e9; color: #2e7d32; display: block; }
+      .status-msg.error { background: #ffebee; color: #c62828; display: block; }
+    </style>
+
+    <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
+
+    <div class="summary-box">
+      <strong>Analyzed:</strong> ${Math.min(emails.length, 25)} emails from label (${emails.length} total), ${openTasks.length} open tasks
+    </div>
+
+    <div id="status-message" class="status-msg"></div>
+
+    ${updatesHtml}
+
+    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
+      <button id="done-btn" style="background: #1a73e8; color: white; border: none; padding: 10px 30px; border-radius: 5px; font-size: 14px; cursor: pointer;">
+        ✓ Done - Refresh View
+      </button>
+    </div>
+
+    <script>
+      function applyUpdate(itemId, statusColumnId, newStatus, btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Updating...';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              btn.textContent = '✓ Applied';
+              btn.parentElement.parentElement.classList.add('applied');
+              showStatus('Updated: ' + newStatus, 'success');
+            } else {
+              btn.textContent = '✗ Failed';
+              btn.disabled = false;
+              showStatus('Error: ' + result.error, 'error');
+            }
+          })
+          .withFailureHandler(function(error) {
+            btn.textContent = '✗ Failed';
+            btn.disabled = false;
+            showStatus('Error: ' + error.message, 'error');
+          })
+          .updateTaskStatus(itemId, statusColumnId, newStatus);
+      }
+
+      function skipUpdate(taskName, currentStatus, btn) {
+        var reason = prompt('Why are you skipping this suggestion?\\n\\nThis will be saved to Settings for future reference.');
+        if (reason === null) return; // Cancelled
+
+        // Save skip reason to Settings
+        if (reason && reason.trim() !== '') {
+          google.script.run
+            .withFailureHandler(function(e) { console.log('Failed to save skip reason: ' + e); })
+            .saveStatusOverride(taskName, 'SKIP (keep ' + currentStatus + ')', reason);
+        }
+
+        btn.parentElement.parentElement.classList.add('skipped');
+        btn.parentElement.innerHTML = '<em>Skipped</em>';
+      }
+
+      function applyOverride(itemId, statusColumnId, newStatus, taskName, btn) {
+        var comment = prompt('Why is "' + newStatus + '" more appropriate?\\n\\nThis will be saved to Settings for future reference.');
+        if (comment === null) return; // Cancelled
+
+        btn.disabled = true;
+        btn.textContent = '⏳...';
+
+        // First save the override comment to Settings
+        if (comment && comment.trim() !== '') {
+          google.script.run
+            .withFailureHandler(function(e) { console.log('Failed to save override: ' + e); })
+            .saveStatusOverride(taskName, newStatus, comment);
+        }
+
+        // Then apply the status update
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              btn.textContent = '✓ Applied';
+              btn.parentElement.parentElement.classList.add('applied');
+              showStatus('Override applied: ' + newStatus, 'success');
+            } else {
+              btn.textContent = '✗ Failed';
+              btn.disabled = false;
+              showStatus('Error: ' + result.error, 'error');
+            }
+          })
+          .withFailureHandler(function(error) {
+            btn.textContent = '✗ Failed';
+            btn.disabled = false;
+            showStatus('Error: ' + error.message, 'error');
+          })
+          .updateTaskStatus(itemId, statusColumnId, newStatus);
+      }
+
+      function showStatus(message, type) {
+        var el = document.getElementById('status-message');
+        el.textContent = message;
+        el.className = 'status-msg ' + type;
+        setTimeout(function() { el.className = 'status-msg'; }, 5000);
+      }
+
+      // Done button - trigger hard refresh and close dialog
+      document.getElementById('done-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = '⏳ Refreshing...';
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(e) {
+            alert('Refresh failed: ' + e.message);
+            google.script.host.close();
+          })
+          .battleStationHardRefresh();
+      });
+    </script>
+  `;
+
+  // Show dialog
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(850)
+    .setHeight(750);
+
+  ui.showModalDialog(htmlOutput, '🤖 Task Status Analysis');
+}
+
+/**
+ * Parse Claude's response to extract task update suggestions
+ */
+function parseTaskSuggestions_(claudeResponse, openTasks) {
+  const suggestions = [];
+
+  // Match patterns like: - "Task Name" → New Status
+  const updatePattern = /-\s*"([^"]+)"\s*→\s*(Waiting on Client|Waiting on Profitise|Waiting on Phonexa|Done)/gi;
+
+  // Also capture the reason that follows
+  const lines = claudeResponse.split('\n');
+  let currentUpdate = null;
+
+  for (const line of lines) {
+    const match = line.match(/-\s*"([^"]+)"\s*→\s*(Waiting on Client|Waiting on Profitise|Waiting on Phonexa|Done)/i);
+    if (match) {
+      // Find the matching task to get itemId and statusColumnId
+      const taskName = match[1];
+      const newStatus = match[2];
+
+      const matchingTask = openTasks.find(t =>
+        t.subject.toLowerCase().includes(taskName.toLowerCase()) ||
+        taskName.toLowerCase().includes(t.subject.replace(/ - [^-]+$/, '').toLowerCase())
+      );
+
+      if (matchingTask) {
+        currentUpdate = {
+          taskName: matchingTask.subject,
+          itemId: matchingTask.itemId,
+          statusColumnId: matchingTask.statusColumnId,
+          currentStatus: matchingTask.status,
+          newStatus: newStatus,
+          reason: ''
+        };
+        suggestions.push(currentUpdate);
+      }
+    } else if (currentUpdate && line.toLowerCase().includes('reason:')) {
+      // Extract reason
+      currentUpdate.reason = line.replace(/.*reason:\s*/i, '').trim();
+    }
+  }
+
+  return suggestions;
+}
+
+/**
+ * Get background color for a status
+ */
+function getStatusColor_(status) {
+  const statusLower = (status || '').toLowerCase();
+  if (statusLower.includes('client')) return '#fff2cc';
+  if (statusLower.includes('profitise')) return '#e3f2fd';
+  if (statusLower.includes('phonexa')) return '#ffcdd2';
+  if (statusLower === 'done') return '#c8e6c9';
+  return '#f5f5f5';
+}
+
+/**
+ * Update a task's status in Monday.com (called from dialog)
+ */
+function updateTaskStatus(itemId, statusColumnId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  Logger.log(`Updating task ${itemId} status to: ${newStatus}`);
+
+  // Monday.com status columns use label values, need to format as JSON
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value (
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_id: "${statusColumnId}",
+        value: "${escapedValue}"
+      ) { id }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: mutation }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    Logger.log(`Monday.com response: ${JSON.stringify(result)}`);
+
+    if (result.errors && result.errors.length > 0) {
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Save a status override comment to Settings sheet columns S and T (Task Analysis Settings)
+ * Appends the feedback to the existing "What to Look For" value for the matching task
+ */
+function saveStatusOverride(taskName, chosenStatus, comment) {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    Logger.log('Settings sheet not found, cannot save override');
+    return;
+  }
+
+  // Column S = 19 (Task Name), Column T = 20 (What to Look For)
+  const colS = 19;
+  const colT = 20;
+
+  const data = settingsSh.getDataRange().getValues();
+  const taskNameLower = taskName.toLowerCase();
+  let matchedRow = -1;
+  let inSection = false;
+
+  // Find the task row in "Task Analysis Settings" section
+  for (let i = 0; i < data.length; i++) {
+    const cellS = String(data[i][colS - 1] || '').trim();
+
+    // Check for section header
+    if (cellS.toLowerCase() === 'task analysis settings') {
+      inSection = true;
+      continue;
+    }
+
+    if (!inSection) continue;
+
+    // Skip column header row
+    if (cellS.toLowerCase() === 'task name') continue;
+
+    // Exit section on empty row
+    if (cellS === '' && String(data[i][colT - 1] || '').trim() === '') {
+      break;
+    }
+
+    // Check if this row matches our task (partial match)
+    if (cellS !== '' && taskNameLower.includes(cellS.toLowerCase())) {
+      matchedRow = i + 1; // 1-indexed
+      break;
+    }
+  }
+
+  if (matchedRow === -1) {
+    Logger.log(`Task not found in Settings: ${taskName}`);
+    return;
+  }
+
+  // Append feedback to existing value in column T
+  const existingValue = String(settingsSh.getRange(matchedRow, colT).getValue() || '');
+  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM/dd');
+  const feedback = `[${timestamp}: ${chosenStatus}] ${comment}`;
+
+  const newValue = existingValue
+    ? `${existingValue}; ${feedback}`
+    : feedback;
+
+  settingsSh.getRange(matchedRow, colT).setValue(newValue);
+
+  Logger.log(`Appended override feedback to row ${matchedRow}: "${feedback}"`);
+}
+
+/************************************************************
+ * TASK STATUS UPDATE FUNCTIONS
+ * Update monday.com task statuses directly from the interface
+ ************************************************************/
+
+/**
+ * Task status options for monday.com
+ */
+const TASK_STATUS_OPTIONS = [
+  { label: 'Waiting on Phonexa', value: 'Waiting on Phonexa' },
+  { label: 'Waiting on Client', value: 'Waiting on Client' },
+  { label: 'Waiting on Profitise', value: 'Waiting on Profitise' },
+  { label: 'Done', value: 'Done' }
+];
+
+/**
+ * Open dialog to select tasks and update their status
+ */
+function openTaskStatusDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 3);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done tasks by default (but show all in dialog)
+  const activeTasks = tasks.filter(t => t.status !== 'Done');
+
+  // Build HTML dialog
+  const htmlContent = buildTaskStatusDialogHtml_(vendor, tasks);
+
+  const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
+    .setWidth(600)
+    .setHeight(750);
+
+  ui.showModalDialog(htmlOutput, `📋 Update Task Status - ${vendor}`);
+}
+
+/**
+ * Build HTML for task status dialog
+ */
+function buildTaskStatusDialogHtml_(vendor, tasks) {
+  const taskRows = tasks.map((task, idx) => {
+    const isDone = task.status === 'Done';
+    const rowClass = isDone ? 'task-done' : '';
+
+    return `
+      <tr class="${rowClass}">
+        <td><input type="checkbox" name="task_${idx}" value="${task.itemId}"></td>
+        <td class="task-name">${escapeHtml_(task.subject)}</td>
+        <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const statusOptions = TASK_STATUS_OPTIONS.map(opt =>
+    `<option value="${opt.value}">${opt.label}</option>`
+  ).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <base target="_top">
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; }
+        h3 { margin-top: 0; color: #1a73e8; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f3f3f3; font-weight: bold; }
+        .task-done { color: #999; }
+        .task-done td { text-decoration: line-through; }
+        .task-name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .task-status { font-size: 12px; color: #666; }
+        .controls { margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; }
+        select { padding: 8px; font-size: 14px; width: 200px; }
+        button { padding: 10px 20px; font-size: 14px; cursor: pointer; margin-right: 10px; }
+        .btn-primary { background: #1a73e8; color: white; border: none; border-radius: 4px; }
+        .btn-primary:hover { background: #1557b0; }
+        .btn-secondary { background: #f1f3f4; color: #333; border: 1px solid #ddd; border-radius: 4px; }
+        .btn-select { font-size: 12px; padding: 4px 8px; margin-right: 5px; }
+        .selection-controls { margin-bottom: 10px; }
+        .status-label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .info { color: #666; font-size: 12px; margin-bottom: 15px; }
+      </style>
+    </head>
+    <body>
+      <h3>Select Tasks to Update</h3>
+      <p class="info">Select the tasks you want to update, then choose a new status.</p>
+
+      <div class="selection-controls">
+        <button type="button" class="btn-select btn-secondary" onclick="selectAll()">Select All</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectNone()">Select None</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectActive()">Select Active Only</button>
+      </div>
+
+      <form id="taskForm">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 30px;"></th>
+              <th>Task</th>
+              <th style="width: 150px;">Current Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${taskRows}
+          </tbody>
+        </table>
+
+        <div class="controls">
+          <label class="status-label">New Status:</label>
+          <select id="newStatus" name="newStatus">
+            ${statusOptions}
+          </select>
+        </div>
+
+        <div class="controls">
+          <button type="button" class="btn-primary" onclick="submitForm()">Update Selected Tasks</button>
+          <button type="button" class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
+        </div>
+      </form>
+
+      <script>
+        function selectAll() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        }
+
+        function selectNone() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        }
+
+        function selectActive() {
+          document.querySelectorAll('tr').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (cb) {
+              cb.checked = !row.classList.contains('task-done');
+            }
+          });
+        }
+
+        function submitForm() {
+          const selectedTaskIds = [];
+          document.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+            selectedTaskIds.push(cb.value);
+          });
+
+          if (selectedTaskIds.length === 0) {
+            alert('Please select at least one task to update.');
+            return;
+          }
+
+          const newStatus = document.getElementById('newStatus').value;
+
+          // Close dialog immediately, update happens in background
+          google.script.host.close();
+
+          // Fire and forget - update runs in background
+          google.script.run.updateTaskStatusesFromDialog(selectedTaskIds, newStatus);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Helper to escape HTML
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Called from dialog to update multiple task statuses
+ */
+function updateTaskStatusesFromDialog(taskIds, newStatus) {
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast(`Updating ${taskIds.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+  const errors = [];
+
+  for (const taskId of taskIds) {
+    const result = updateMondayTaskStatus_(taskId, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+      errors.push(result.error);
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s)`, '✅ Done', 3);
+
+    // Hard refresh to capture the changes
+    Utilities.sleep(1000);
+    battleStationHardRefresh();
+
+    return { success: true };
+  } else {
+    const errorMsg = `Updated ${successCount} task(s), ${errorCount} failed: ${errors.slice(0, 3).join(', ')}`;
+    return { success: false, error: errorMsg };
+  }
+}
+
+/**
+ * Update a single monday.com task's status
+ * @param {string} taskId - The monday.com item ID
+ * @param {string} newStatus - The new status label
+ * @returns {object} { success: boolean, error?: string }
+ */
+function updateMondayTaskStatus_(taskId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Status column value must be JSON with "label" key
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value(
+        board_id: ${boardId},
+        item_id: ${taskId},
+        column_id: "status",
+        value: "${escapedValue}"
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    const result = mondayApiRequest_(mutation, apiToken);
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`Monday API error for task ${taskId}: ${result.errors[0].message}`);
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      Logger.log(`Successfully updated task ${taskId} to "${newStatus}"`);
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task ${taskId}: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Phonexa"
+ */
+function setTaskStatusWaitingPhonexa() {
+  setAllActiveTasksToStatus_('Waiting on Phonexa');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Client"
+ */
+function setTaskStatusWaitingClient() {
+  setAllActiveTasksToStatus_('Waiting on Client');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Profitise"
+ */
+function setTaskStatusWaitingProfitise() {
+  setAllActiveTasksToStatus_('Waiting on Profitise');
+}
+
+/**
+ * Quick action: Set all active tasks to "Done"
+ */
+function setTaskStatusDone() {
+  setAllActiveTasksToStatus_('Done');
+}
+
+/**
+ * Set all active (non-Done) tasks for current vendor to a specific status
+ */
+function setAllActiveTasksToStatus_(newStatus) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 2);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done tasks
+  const activeTasks = tasks.filter(t => t.status !== 'Done');
+
+  if (activeTasks.length === 0) {
+    ui.alert('No Active Tasks', `All tasks for "${vendor}" are already marked as Done.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // No confirmation - just do the update
+  ss.toast(`Updating ${activeTasks.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const task of activeTasks) {
+    const result = updateMondayTaskStatus_(task.itemId, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s) to "${newStatus}"`, '✅ Done', 3);
+  } else {
+    ui.alert('Partial Update', `Updated ${successCount} task(s), ${errorCount} failed.`, ui.ButtonSet.OK);
+  }
+
+  // Hard refresh to capture the changes
+  Utilities.sleep(1000);
+  battleStationHardRefresh();
 }
