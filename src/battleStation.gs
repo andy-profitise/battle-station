@@ -11458,21 +11458,20 @@ function battleStationSummarizeToNotes() {
     }
   }
 
-  const prompt = `You are summarizing vendor activity for a relationship manager's notes at Profitise (lead generation).
+  const prompt = `You are writing vendor notes for Andy, a relationship manager at Profitise (lead generation).
 
 Vendor: ${vendor}
 Status: ${status}
-Current notes: ${currentNotes || '(none)'}
 
 Recent unsnoozed emails (${unsnoozed.length} threads):
 ${emailContext || '(no emails)'}
 
-Write a 2-3 sentence summary of what's currently happening with this vendor. Focus on:
-- What actions are pending or needed
-- Any outstanding issues or requests
-- The general state of the relationship
-
-Keep it concise and factual. Do NOT repeat information already in the existing notes.`;
+Write 2-3 sentences summarizing the current state of this vendor in natural language from Andy's perspective. Key rules:
+- If the latest message was OUTBOUND (from Andy/Profitise), summarize what Andy said or did — e.g. "Sent message to [contact] about X. Waiting for their response."
+- If the latest message was INBOUND, summarize what the vendor said and what Andy needs to do next.
+- Be factual and conversational, not corporate or action-item-ish.
+- This REPLACES all previous notes, so capture the full current picture concisely.
+- Do NOT include labels like "Action needed:" or bullet points. Just natural sentences.`;
 
   try {
     const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 500 });
@@ -11484,10 +11483,8 @@ Keep it concise and factual. Do NOT repeat information already in the existing n
 
     const summary = response.content.trim();
 
-    // Append summary to existing notes
-    const updatedNotes = currentNotes
-      ? `${currentNotes}\n\n${summary}`
-      : summary;
+    // Replace notes entirely
+    const updatedNotes = summary;
 
     // Update the List sheet
     listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(updatedNotes);
