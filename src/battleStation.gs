@@ -6610,7 +6610,7 @@ Write a 2-3 sentence summary of what's currently happening with this vendor. Foc
 - Any outstanding issues or requests
 - The general state of the relationship
 
-Format: Start with today's date as [YYYY-MM-DD], then the summary. Keep it concise and factual. Do NOT repeat information already in the existing notes.`;
+Keep it concise and factual. Do NOT repeat information already in the existing notes.`;
 
   try {
     const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 500 });
