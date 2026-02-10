@@ -227,41 +227,43 @@ const BS_CFG = {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
-  // Main A(I)DEN menu - setup, sync, actions
+  // A(I)DEN menu - AI-powered features only
   ui.createMenu('⚡ A(I)DEN')
-    .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
-    .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
-    .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
-    .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
-    .addSeparator()
     .addItem('🧠 Smart Briefing (What to do next)', 'battleStationSmartBriefing')
     .addItem('💡 Generate Insights (This Vendor)', 'battleStationGenerateInsights')
     .addItem('🎯 Goal-Aligned Insights (All Vendors)', 'battleStationGoalInsights')
+    .addSeparator()
     .addItem('📝 Summarize & Update Notes (Claude)', 'battleStationSummarizeToNotes')
     .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
+    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addToUi();
+
+  // Email Actions menu - reply templates + email management
+  ui.createMenu('📧 Email Actions')
+    .addItem('🔄 Cold Outreach - Follow Up', 'emailResponseColdFollowUp')
+    .addItem('📅 Schedule a Call', 'emailResponseScheduleCall')
+    .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
+    .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
+    .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
+    .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
+    .addItem('✍️ Custom Response...', 'emailResponseCustom')
+    .addItem('🔗 Generic URL Response...', 'genericUrlResponse')
     .addSeparator()
-    .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
+    .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
+    .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
+    .addSeparator()
+    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('📧 Open Gmail Search (00.received)', 'battleStationOpenGmailReceived')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
     .addSeparator()
-    .addItem('📧 Manage Email Rules', 'battleStationManageEmailRules')
-    .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
-    .addSeparator()
-    .addItem('🎯 Manage Goals', 'battleStationManageGoals')
-    .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
-    .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
-    .addItem('🔌 Set Claude Proxy (Max Sub)', 'battleStationSetClaudeProxy')
-    .addToUi();
-
-  // Refresh menu - refresh current vendor view
-  ui.createMenu('🔄 Refresh')
-    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
-    .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
-    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
-    .addItem('💥 Hardest Refresh (Reset All Caches)', 'battleStationHardestRefresh')
-    .addSeparator()
-    .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
+    .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
+    .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
+    .addItem('📤 Send to Aden', 'sendToAden')
+    .addItem('📥 Archive Email', 'archiveSelectedEmail')
+    .addItem('⚰️ Bury Email', 'burySelectedEmail')
     .addToUi();
 
   // Navigation menu - movement and traversal
@@ -287,42 +289,37 @@ function onOpen() {
     .addItem('⚙️ Set Deep Link URL...', 'setDeepLinkBaseUrl')
     .addToUi();
 
-  // Email Response Templates menu
-  ui.createMenu('📧 Email Responses')
-    .addItem('🔄 Cold Outreach - Follow Up', 'emailResponseColdFollowUp')
-    .addItem('📅 Schedule a Call', 'emailResponseScheduleCall')
-    .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
-    .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
-    .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
-    .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
-    .addItem('✍️ Custom Response...', 'emailResponseCustom')
-    .addItem('🔗 Generic URL Response...', 'genericUrlResponse')
+  // Refresh menu - refresh current vendor view
+  ui.createMenu('🔄 Refresh')
+    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
+    .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
+    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addItem('💥 Hardest Refresh (Reset All Caches)', 'battleStationHardestRefresh')
     .addSeparator()
-    .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
-    .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
-    .addSeparator()
-    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
-    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
-    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
-    .addSeparator()
-    .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
-    .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
-    .addItem('📤 Send to Aden', 'sendToAden')
-    .addItem('📥 Archive Email', 'archiveSelectedEmail')
-    .addItem('⚰️ Bury Email', 'burySelectedEmail')
+    .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
     .addToUi();
 
-  // Chat OCR menu - find vendors from chat screenshots/text
-  ui.createMenu('💬 Chat OCR')
-    .addItem('📷 Upload Image / Paste Text', 'openVendorOcrUpload')
-    .addItem('⚙️ Setup OCR Settings', 'setupOcrSettings')
-    .addItem('🧹 Clear OCR Tracking', 'clearAllOcrDetectedVendors')
-    .addToUi();
-
-  // Tasks menu - update monday.com task statuses
-  ui.createMenu('📋 Tasks')
+  // Settings menu - setup, config, tools
+  ui.createMenu('⚙️ Settings')
+    .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
+    .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
+    .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
+    .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
+    .addSeparator()
+    .addItem('📧 Manage Email Rules', 'battleStationManageEmailRules')
+    .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
+    .addSeparator()
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
-    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
+    .addSeparator()
+    .addItem('📷 Chat OCR - Upload Image / Paste Text', 'openVendorOcrUpload')
+    .addItem('⚙️ Chat OCR - Setup Settings', 'setupOcrSettings')
+    .addItem('🧹 Chat OCR - Clear Tracking', 'clearAllOcrDetectedVendors')
+    .addSeparator()
+    .addItem('🎯 Manage Goals', 'battleStationManageGoals')
+    .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
+    .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
+    .addItem('🔌 Set Claude Proxy (Max Sub)', 'battleStationSetClaudeProxy')
     .addToUi();
 
   // Check for pending vendor from URL deep link
