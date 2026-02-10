@@ -11242,11 +11242,13 @@ function battleStationSmartBriefing() {
     let latestSubject = '';
     let latestLabels = '';
     let latestContent = '';
+    let latestDate = new Date(0); // epoch for sorting
     try {
       const latestThread = group.threads[0];
       latestSubject = latestThread.getFirstMessageSubject();
       latestLabels = group.labels[0].join(', ');
       const msgs = latestThread.getMessages();
+      latestDate = msgs[msgs.length - 1].getDate();
       latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
     } catch (e) { /* skip if thread fetch fails */ }
 
@@ -11258,7 +11260,8 @@ function battleStationSmartBriefing() {
       overdueCount: overdueCount,
       latestSubject: latestSubject,
       latestLabels: latestLabels,
-      latestContent: latestContent
+      latestContent: latestContent,
+      latestDate: latestDate
     });
 
     if (vi % 5 === 0) {
@@ -11270,6 +11273,9 @@ function battleStationSmartBriefing() {
     ui.alert('No active vendor communications found to analyze.');
     return;
   }
+
+  // Sort by latest update ascending — vendors waiting longest appear first
+  vendorSummaries.sort((a, b) => a.latestDate - b.latestDate);
 
   ss.toast(`Analyzing ${vendorSummaries.length} vendors with Claude...`, '🧠 Processing', 15);
 
