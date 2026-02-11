@@ -264,6 +264,7 @@ function onOpen() {
     .addItem('📤 Send to Aden', 'sendToAden')
     .addItem('📥 Archive Email', 'archiveSelectedEmail')
     .addItem('⚰️ Bury Email', 'burySelectedEmail')
+    .addItem('⬇️ Unprioritize Email', 'unprioritizeSelectedEmail')
     .addToUi();
 
   // Navigation menu - movement and traversal
@@ -8484,6 +8485,41 @@ function burySelectedEmail() {
     }
 
     ss.toast(`Buried "${emailData.subject}" — removed ${removedCount} label${removedCount !== 1 ? 's' : ''}`, '⚰️ Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Remove the 01.priority/1 label from the selected email
+ */
+function unprioritizeSelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    const thread = emailData.thread;
+    const labels = thread.getLabels();
+    const priorityLabel = labels.find(l => l.getName() === '01.priority/1');
+
+    if (!priorityLabel) {
+      ss.toast(`"${emailData.subject}" doesn't have the 01.priority/1 label`, '⬇️ Unprioritize', 3);
+      return;
+    }
+
+    thread.removeLabel(priorityLabel);
+    ss.toast(`Removed priority from "${emailData.subject}"`, '⬇️ Done', 3);
 
     Utilities.sleep(500);
     battleStationQuickRefreshUntilChanged();
