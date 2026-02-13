@@ -14594,9 +14594,9 @@ function discoverContactsFromGmail() {
 
               // If this person sent a message, try to extract from their signature
               if (from.toLowerCase().includes(email)) {
-                const signature = body.slice(-500);
-                phones = extractPhoneNumbers_(signature);
-                jobTitle = extractJobTitle_(signature, name);
+                const sigText = getSignatureText_(message);
+                phones = extractPhoneNumbers_(sigText);
+                jobTitle = extractJobTitle_(sigText, name);
               }
 
               potentialNewContacts.push({
@@ -14613,9 +14613,11 @@ function discoverContactsFromGmail() {
               // Existing contact - check for phone updates and job title (only from their sent messages)
               if (!from.toLowerCase().includes(email)) continue;
 
-              const signature = body.slice(-500);
-              const phones = extractPhoneNumbers_(signature);
-              const jobTitle = extractJobTitle_(signature, name);
+              const sigText = getSignatureText_(message);
+              Logger.log(`[Discovery] Processing existing contact ${email}, signature text (last 200): "${sigText.slice(-200)}"`);
+              const phones = extractPhoneNumbers_(sigText);
+              Logger.log(`[Discovery] Phones found: ${phones.length > 0 ? phones.join(', ') : 'none'}`);
+              const jobTitle = extractJobTitle_(sigText, name);
 
               // Check for job title updates
               const existingContact = existingContacts.find(c =>
@@ -14694,8 +14696,8 @@ function discoverContactsFromGmail() {
             const msgEmail = msgEmailMatch[1].toLowerCase();
             if (msgEmail !== email) continue;
 
-            // Extract info from signature
-            const signature = body.slice(-500);
+            // Extract info from signature (try HTML body too for rich signatures)
+            const signature = getSignatureText_(message);
 
             // Check for job title update
             if (!existingContact.name?.includes('|')) {
@@ -15433,6 +15435,35 @@ function guessVendorDomain_(vendor) {
 /**
  * Extract phone numbers from text (signature, body, etc.)
  */
+/**
+ * Extract signature text from a Gmail message
+ * Tries plain body first, falls back to HTML body with tags stripped
+ * for rich HTML signatures (images, styled text) that getPlainBody() mangles
+ */
+function getSignatureText_(message) {
+  // Try plain body first - last 1000 chars to capture signatures after short messages
+  const plainBody = message.getPlainBody() || '';
+  const plainSig = plainBody.slice(-1000);
+
+  // Also get HTML body, strip tags, and extract last 1000 chars
+  const htmlBody = message.getBody() || '';
+  const strippedHtml = htmlBody
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(p|div|tr|td|th|li)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#\d+;/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const htmlSig = strippedHtml.slice(-1000);
+
+  // Return both combined so extractors can find data in either
+  return plainSig + '\n' + htmlSig;
+}
+
 function extractPhoneNumbers_(text) {
   if (!text) return [];
 
