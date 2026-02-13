@@ -8484,7 +8484,10 @@ function burySelectedEmail() {
       }
     }
 
-    ss.toast(`Buried "${emailData.subject}" — removed ${removedCount} label${removedCount !== 1 ? 's' : ''}`, '⚰️ Done', 3);
+    // Also archive to remove from Inbox
+    thread.moveToArchive();
+
+    ss.toast(`Buried "${emailData.subject}" — removed ${removedCount} label${removedCount !== 1 ? 's' : ''} + archived`, '⚰️ Done', 3);
 
     Utilities.sleep(500);
     battleStationQuickRefreshUntilChanged();
