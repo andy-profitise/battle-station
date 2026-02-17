@@ -12256,7 +12256,7 @@ Key info:
 
 CRITICAL STYLE RULES - You must follow these:
 - Write like a real human, not like an AI assistant
-- NEVER use em dashes (—), semicolons to join clauses, or other LLM tell-tale punctuation. Use regular dashes (-) or rewrite the sentence instead
+- NEVER use dashes (— or -) to join clauses or thoughts. LLMs overuse "clause - clause" patterns and it's an obvious tell. Use periods to make separate sentences instead
 - NEVER use phrases like "Perfect!", "Absolutely!", "Great question!", "I'd be happy to", "Hope this helps!", "I wanted to", "Just wanted to"
 - NEVER start with enthusiastic affirmations - just get to the point
 - Be direct, professional, casual-friendly (not corporate-stiff)
