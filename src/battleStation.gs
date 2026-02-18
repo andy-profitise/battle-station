@@ -248,6 +248,7 @@ function onOpen() {
     .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
     .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
     .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
+    .addItem('🎭 Current Sentiment', 'emailResponseCurrentSentiment')
     .addItem('✍️ Custom Response...', 'emailResponseCustom')
     .addItem('🔗 Generic URL Response...', 'genericUrlResponse')
     .addSeparator()
@@ -13339,6 +13340,130 @@ function emailResponseGeneralFollowUp() {
 
 function emailResponseCheckAffiliate() {
   generateEmailResponse_('Check Affiliate');
+}
+
+/**
+ * Email Response: Current Sentiment
+ * One sentiment for Buyers, one for Affiliates (stored in Script Properties).
+ * Shows/sets the sentiment, then drafts a response using it.
+ */
+function emailResponseCurrentSentiment() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 3).getValue() || '';
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+  const boardLabel = isAffiliate ? 'Affiliates' : 'Buyers';
+  const propKey = isAffiliate ? 'SENTIMENT_AFFILIATES' : 'SENTIMENT_BUYERS';
+
+  // Read stored sentiment for this board type
+  const props = PropertiesService.getScriptProperties();
+  const currentSentiment = props.getProperty(propKey) || '';
+
+  // Show current sentiment or prompt to set one
+  let sentiment;
+  if (currentSentiment) {
+    const result = ui.prompt(
+      `🎭 ${boardLabel} Sentiment`,
+      `Current ${boardLabel} Sentiment:\n"${currentSentiment}"\n\nChange sentiment (or leave blank to keep current):`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (result.getSelectedButton() !== ui.Button.OK) return;
+    const newSentiment = result.getResponseText().trim();
+    sentiment = newSentiment || currentSentiment;
+  } else {
+    const result = ui.prompt(
+      `🎭 Set ${boardLabel} Sentiment`,
+      `No sentiment set for ${boardLabel}.\n\nEnter current sentiment (e.g., "Prioritizing traffic-based partners", "Looking for high-volume buyers in roofing"):`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (result.getSelectedButton() !== ui.Button.OK) return;
+    sentiment = result.getResponseText().trim();
+    if (!sentiment) {
+      ui.alert('No sentiment entered.');
+      return;
+    }
+  }
+
+  // Save updated sentiment
+  if (sentiment !== currentSentiment) {
+    props.setProperty(propKey, sentiment);
+  }
+
+  // Now proceed with email response flow
+  try {
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) return;
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+    const emailData = getSelectedEmailThread_();
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    // Get last message summary
+    const msgs = emailData.thread.getMessages();
+    const lastMsg = msgs[msgs.length - 1];
+    const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+    const lastDate = lastMsg.getDate().toLocaleDateString();
+    const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+    const lastMsgSummary = `Last message from: ${lastFrom} (${lastDate})\n\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+
+    // Prompt for additional directions with sentiment shown
+    const dirResult = ui.prompt(
+      `🎭 ${boardLabel} Sentiment Response`,
+      `${boardLabel} Sentiment: "${sentiment}"\nVendor: ${vendor}\n\n${lastMsgSummary}\n\n---\nAny additional directions? (optional)`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (dirResult.getSelectedButton() !== ui.Button.OK) return;
+
+    const extraDirs = dirResult.getResponseText().trim();
+    const sentimentDirections = `CURRENT ${boardLabel.toUpperCase()} SENTIMENT: "${sentiment}". This is Andy's current approach/priority for all ${boardLabel.toLowerCase()}.${extraDirs ? ' Additional directions: ' + extraDirs : ''} Write the response reflecting this sentiment naturally without quoting it directly.`;
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Current Sentiment',
+      sentimentDirections,
+      lastSenderIsMe
+    );
+
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Current Sentiment',
+      originalDirections: sentimentDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
 }
 
 /**
