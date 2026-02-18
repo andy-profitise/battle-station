@@ -16203,10 +16203,11 @@ function saveStatusOverride(taskName, chosenStatus, comment) {
  * Task status options for monday.com
  */
 const TASK_STATUS_OPTIONS = [
+  { label: 'Waiting on Profitise', value: 'Waiting on Profitise' },
   { label: 'Waiting on Phonexa', value: 'Waiting on Phonexa' },
   { label: 'Waiting on Client', value: 'Waiting on Client' },
-  { label: 'Waiting on Profitise', value: 'Waiting on Profitise' },
-  { label: 'Done', value: 'Done' }
+  { label: 'Done', value: 'Done' },
+  { label: 'Abandoned', value: 'Abandoned' }
 ];
 
 /**
