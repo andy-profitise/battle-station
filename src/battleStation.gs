@@ -2251,7 +2251,7 @@ function loadVendorData(vendorIndex, options) {
       // - Otherwise: just show status
       let statusDisplay = task.status;
       if (task.isDone && task.lastUpdated) {
-        statusDisplay = `Done - ${task.lastUpdated}`;
+        statusDisplay = `${task.status} - ${task.lastUpdated}`;
       } else if (task.taskDate && !task.isDone) {
         statusDisplay = `${task.status} - ${task.taskDate}`;
       }
@@ -3442,7 +3442,7 @@ function getTasksForVendor_(vendor, listRow) {
       lastUpdated: lastUpdated,
       created: createdFormatted,
       project: projectName || `Group: ${groupTitle}`,
-      isDone: (status.toLowerCase() === 'done'),
+      isDone: (status.toLowerCase() === 'done' || status.toLowerCase() === 'abandoned'),
 
       // Sorting fields
       groupId: groupId,
@@ -15807,7 +15807,7 @@ SUMMARY:
   PropertiesService.getUserProperties().setProperty('taskAnalysisData', JSON.stringify(taskDataForDialog));
 
   // Build suggested updates HTML with Apply buttons
-  const allStatuses = ['Waiting on Profitise', 'Waiting on Client', 'Waiting on Phonexa', 'Done'];
+  const allStatuses = ['Waiting on Profitise', 'Waiting on Client', 'Waiting on Phonexa', 'Done', 'Abandoned'];
 
   // Helper to linkify "EMAIL X" references in reason text
   const linkifyEmailRefs = (text) => {
@@ -16069,6 +16069,7 @@ function getStatusColor_(status) {
   if (statusLower.includes('profitise')) return '#e3f2fd';
   if (statusLower.includes('phonexa')) return '#ffcdd2';
   if (statusLower === 'done') return '#c8e6c9';
+  if (statusLower === 'abandoned') return '#d7ccc8';
   return '#f5f5f5';
 }
 
@@ -16242,8 +16243,8 @@ function openTaskStatusDialog() {
     return;
   }
 
-  // Filter to non-Done tasks by default (but show all in dialog)
-  const activeTasks = tasks.filter(t => t.status !== 'Done');
+  // Filter to non-Done/Abandoned tasks by default (but show all in dialog)
+  const activeTasks = tasks.filter(t => t.status !== 'Done' && t.status !== 'Abandoned');
 
   // Build HTML dialog
   const htmlContent = buildTaskStatusDialogHtml_(vendor, tasks);
@@ -16260,7 +16261,7 @@ function openTaskStatusDialog() {
  */
 function buildTaskStatusDialogHtml_(vendor, tasks) {
   const taskRows = tasks.map((task, idx) => {
-    const isDone = task.status === 'Done';
+    const isDone = task.status === 'Done' || task.status === 'Abandoned';
     const rowClass = isDone ? 'task-done' : '';
 
     return `
@@ -16542,11 +16543,11 @@ function setAllActiveTasksToStatus_(newStatus) {
     return;
   }
 
-  // Filter to non-Done tasks
-  const activeTasks = tasks.filter(t => t.status !== 'Done');
+  // Filter to non-Done/Abandoned tasks
+  const activeTasks = tasks.filter(t => t.status !== 'Done' && t.status !== 'Abandoned');
 
   if (activeTasks.length === 0) {
-    ui.alert('No Active Tasks', `All tasks for "${vendor}" are already marked as Done.`, ui.ButtonSet.OK);
+    ui.alert('No Active Tasks', `All tasks for "${vendor}" are already Done or Abandoned.`, ui.ButtonSet.OK);
     return;
   }
 
