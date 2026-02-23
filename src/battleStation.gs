@@ -7376,10 +7376,21 @@ function callClaudeAPI_(prompt, apiKey, options) {
   // Direct Anthropic API
   const url = 'https://api.anthropic.com/v1/messages';
 
+  // Build message content - supports optional image for multimodal requests
+  let userContent;
+  if (options.image) {
+    userContent = [
+      { type: 'image', source: { type: 'base64', media_type: options.image.mediaType, data: options.image.base64 } },
+      { type: 'text', text: prompt }
+    ];
+  } else {
+    userContent = prompt;
+  }
+
   const payload = {
     model: options.model || 'claude-sonnet-4-20250514',
     max_tokens: options.maxTokens || 2000,
-    messages: [{ role: 'user', content: prompt }]
+    messages: [{ role: 'user', content: userContent }]
   };
   if (options.system) {
     payload.system = options.system;
@@ -7437,7 +7448,16 @@ function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
   if (options.system) {
     messages.push({ role: 'system', content: options.system });
   }
-  messages.push({ role: 'user', content: prompt });
+
+  // Support multimodal image input
+  if (options.image) {
+    messages.push({ role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:${options.image.mediaType};base64,${options.image.base64}` } },
+      { type: 'text', text: prompt }
+    ]});
+  } else {
+    messages.push({ role: 'user', content: prompt });
+  }
 
   const payload = {
     model: model,
