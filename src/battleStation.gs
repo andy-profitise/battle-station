@@ -7376,10 +7376,21 @@ function callClaudeAPI_(prompt, apiKey, options) {
   // Direct Anthropic API
   const url = 'https://api.anthropic.com/v1/messages';
 
+  // Build message content - supports optional image for multimodal requests
+  let userContent;
+  if (options.image) {
+    userContent = [
+      { type: 'image', source: { type: 'base64', media_type: options.image.mediaType, data: options.image.base64 } },
+      { type: 'text', text: prompt }
+    ];
+  } else {
+    userContent = prompt;
+  }
+
   const payload = {
     model: options.model || 'claude-sonnet-4-20250514',
     max_tokens: options.maxTokens || 2000,
-    messages: [{ role: 'user', content: prompt }]
+    messages: [{ role: 'user', content: userContent }]
   };
   if (options.system) {
     payload.system = options.system;
@@ -7437,7 +7448,16 @@ function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
   if (options.system) {
     messages.push({ role: 'system', content: options.system });
   }
-  messages.push({ role: 'user', content: prompt });
+
+  // Support multimodal image input
+  if (options.image) {
+    messages.push({ role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:${options.image.mediaType};base64,${options.image.base64}` } },
+      { type: 'text', text: prompt }
+    ]});
+  } else {
+    messages.push({ role: 'user', content: prompt });
+  }
 
   const payload = {
     model: model,
@@ -12550,13 +12570,16 @@ function createDraftAndGetUrl_(thread, responseBody) {
   if (references) rawHeaders += `References: ${references}\r\n`;
   rawHeaders += `MIME-Version: 1.0\r\n`;
   rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n`;
+  rawHeaders += `Content-Transfer-Encoding: base64\r\n`;
   rawHeaders += `\r\n`;
+
+  // Base64-encode the HTML body separately to preserve non-ASCII characters (smart quotes, etc.)
+  const htmlBase64 = Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes());
 
   const updateResource = {
     message: {
-      // Use proper UTF-8 encoding for special characters in signature
-      raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawHeaders + fullBodyHtml).getBytes()),
-      threadId: thread.getId()  // Also explicitly set threadId
+      raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawHeaders + htmlBase64).getBytes()),
+      threadId: thread.getId()
     }
   };
 
@@ -12760,16 +12783,22 @@ function createAndSendEmail_(thread, responseBody) {
   rawMessage += `MIME-Version: 1.0\r\n`;
   rawMessage += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`;
   rawMessage += `\r\n`;
+  // Base64-encode each part to preserve non-ASCII characters (smart quotes, etc.)
+  const plainBase64 = Utilities.base64Encode(Utilities.newBlob(responseBody).getBytes());
+  const htmlBase64 = Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes());
+
   rawMessage += `--${boundary}\r\n`;
-  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n\r\n`;
-  rawMessage += responseBody + '\r\n';
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n`;
+  rawMessage += `Content-Transfer-Encoding: base64\r\n\r\n`;
+  rawMessage += plainBase64 + '\r\n';
   rawMessage += `--${boundary}\r\n`;
-  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
-  rawMessage += fullBodyHtml + '\r\n';
+  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n`;
+  rawMessage += `Content-Transfer-Encoding: base64\r\n\r\n`;
+  rawMessage += htmlBase64 + '\r\n';
   rawMessage += `--${boundary}--`;
 
   // Encode for Gmail API
-  const encodedMessage = Utilities.base64EncodeWebSafe(rawMessage);
+  const encodedMessage = Utilities.base64EncodeWebSafe(Utilities.newBlob(rawMessage).getBytes());
 
   // Send the message using Gmail API
   const sentMessage = Gmail.Users.Messages.send(
@@ -14481,10 +14510,12 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
         const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
         draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
       } else {
-        rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n\r\n`;
+        rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n`;
+        rawHeaders += `Content-Transfer-Encoding: base64\r\n\r\n`;
 
-        // Convert full message to UTF-8 bytes for proper encoding of special characters
-        const rawEmail = rawHeaders + fullBodyHtml;
+        // Base64-encode HTML body to preserve non-ASCII characters (smart quotes, etc.)
+        const htmlBase64 = Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes());
+        const rawEmail = rawHeaders + htmlBase64;
         const updateResource = {
           message: {
             raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),

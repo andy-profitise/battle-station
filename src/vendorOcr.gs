@@ -17,9 +17,6 @@
  ************************************************************/
 
 const OCR_CFG = {
-  // Cloud Vision API endpoint
-  VISION_API_URL: 'https://vision.googleapis.com/v1/images:annotate',
-
   // Minimum confidence for OCR text (0-1)
   MIN_CONFIDENCE: 0.6,
 
@@ -135,55 +132,31 @@ function processOcrImage(imageData, fileName) {
  * @returns {string} Extracted text from the image
  */
 function extractTextFromImage_(imageData) {
-  // Remove data URL prefix if present (e.g., "data:image/png;base64,")
+  // Detect media type and strip data URL prefix
+  let mediaType = 'image/png';
+  const mediaMatch = imageData.match(/^data:(image\/[a-z]+);base64,/);
+  if (mediaMatch) {
+    mediaType = mediaMatch[1];
+  }
   const base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
 
-  // Build the Vision API request
-  const requestBody = {
-    requests: [{
-      image: {
-        content: base64Data
-      },
-      features: [{
-        type: 'TEXT_DETECTION',
-        maxResults: 10
-      }]
-    }]
-  };
+  // Use Claude's multimodal vision to extract text
+  const apiKey = getClaudeApiKey_();
+  const result = callClaudeAPI_(
+    'Extract all text from this image exactly as it appears. Return only the extracted text, nothing else. Do not add commentary or formatting.',
+    apiKey,
+    {
+      image: { base64: base64Data, mediaType: mediaType },
+      maxTokens: 4000
+    }
+  );
 
-  // Get OAuth token for authenticated request
-  const token = ScriptApp.getOAuthToken();
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      'Authorization': 'Bearer ' + token
-    },
-    payload: JSON.stringify(requestBody),
-    muteHttpExceptions: true
-  };
-
-  const response = UrlFetchApp.fetch(OCR_CFG.VISION_API_URL, options);
-  const responseCode = response.getResponseCode();
-  const responseText = response.getContentText();
-
-  if (responseCode !== 200) {
-    Logger.log(`Vision API Error (${responseCode}): ${responseText}`);
-    throw new Error(`Vision API error: ${responseText.substring(0, 200)}`);
+  if (result.error) {
+    Logger.log(`Claude OCR Error: ${result.error}`);
+    throw new Error(`Claude API error: ${result.error}`);
   }
 
-  const result = JSON.parse(responseText);
-
-  // Extract the full text annotation
-  const annotations = result.responses?.[0]?.textAnnotations;
-
-  if (!annotations || annotations.length === 0) {
-    return '';
-  }
-
-  // First annotation contains the full extracted text
-  return annotations[0].description || '';
+  return result.content || '';
 }
 
 
