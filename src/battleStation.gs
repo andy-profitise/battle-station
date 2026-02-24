@@ -4354,29 +4354,39 @@ function getAllGDriveVendorFolders_() {
   const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
   const folders = [];
 
-  try {
-    const parentFolder = DriveApp.getFolderById(parentFolderId);
-    const folderIterator = parentFolder.getFolders();
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const parentFolder = DriveApp.getFolderById(parentFolderId);
+      const folderIterator = parentFolder.getFolders();
 
-    while (folderIterator.hasNext()) {
-      const folder = folderIterator.next();
-      folders.push({
-        id: folder.getId(),
-        name: folder.getName(),
-        nameLower: folder.getName().toLowerCase(),
-        url: folder.getUrl()
-      });
+      while (folderIterator.hasNext()) {
+        const folder = folderIterator.next();
+        folders.push({
+          id: folder.getId(),
+          name: folder.getName(),
+          nameLower: folder.getName().toLowerCase(),
+          url: folder.getUrl()
+        });
+      }
+
+      Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
+
+      // Cache for future lookups (within same session)
+      setCachedData_('gdrive_folders', 'all', folders);
+
+      return folders;
+    } catch (e) {
+      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${e.message}`);
+      if (attempt < maxRetries) {
+        Logger.log(`Retrying in ${attempt * 2} seconds...`);
+        Utilities.sleep(attempt * 2000);
+        folders.length = 0; // Clear any partial results
+      } else {
+        Logger.log('All retries exhausted for Google Drive folders');
+        return [];
+      }
     }
-
-    Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
-
-    // Cache for future lookups (within same session)
-    setCachedData_('gdrive_folders', 'all', folders);
-
-    return folders;
-  } catch (e) {
-    Logger.log(`Error fetching Google Drive folders: ${e.message}`);
-    return [];
   }
 }
 
