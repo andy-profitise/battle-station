@@ -1129,6 +1129,7 @@ function loadVendorData(vendorIndex, options) {
   let gDriveFolderFound = false;
   let gDriveFolderUrl = null;
   let gDriveMatchedOn = '';
+  let gDriveError = null;
 
   if (!isFastMode) {
   // Track row where Upcoming Meetings starts (for Box Documents alignment)
@@ -1858,6 +1859,7 @@ function loadVendorData(vendorIndex, options) {
 
       } catch (e) {
         Logger.log(`Google Drive search error: ${e.message}`);
+        gDriveError = e.message;
       }
     }
   }
@@ -1929,7 +1931,18 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(gDriveRow, 24);
   gDriveRow++;
   
-  if (!gDriveFolderFound) {
+  if (gDriveError) {
+    // API error - show error so user knows it's not "no folder"
+    bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+      .setValue('⚠️ Google Drive error — try refreshing')
+      .setFontStyle('italic')
+      .setFontColor('#c5221f')
+      .setBackground('#fce8e6')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(gDriveRow, 25);
+    gDriveRow++;
+  } else if (!gDriveFolderFound) {
     // No folder found - show link to create
     const vendorsFolderUrl = `https://drive.google.com/drive/folders/${BS_CFG.GDRIVE_VENDORS_FOLDER_ID}`;
     bsSh.getRange(gDriveRow, 6, 1, 4).merge()
@@ -4354,29 +4367,39 @@ function getAllGDriveVendorFolders_() {
   const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
   const folders = [];
 
-  try {
-    const parentFolder = DriveApp.getFolderById(parentFolderId);
-    const folderIterator = parentFolder.getFolders();
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const parentFolder = DriveApp.getFolderById(parentFolderId);
+      const folderIterator = parentFolder.getFolders();
 
-    while (folderIterator.hasNext()) {
-      const folder = folderIterator.next();
-      folders.push({
-        id: folder.getId(),
-        name: folder.getName(),
-        nameLower: folder.getName().toLowerCase(),
-        url: folder.getUrl()
-      });
+      while (folderIterator.hasNext()) {
+        const folder = folderIterator.next();
+        folders.push({
+          id: folder.getId(),
+          name: folder.getName(),
+          nameLower: folder.getName().toLowerCase(),
+          url: folder.getUrl()
+        });
+      }
+
+      Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
+
+      // Cache for future lookups (within same session)
+      setCachedData_('gdrive_folders', 'all', folders);
+
+      return folders;
+    } catch (e) {
+      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${e.message}`);
+      if (attempt < maxRetries) {
+        Logger.log(`Retrying in ${attempt * 2} seconds...`);
+        Utilities.sleep(attempt * 2000);
+        folders.length = 0; // Clear any partial results
+      } else {
+        Logger.log('All retries exhausted for Google Drive folders');
+        return [];
+      }
     }
-
-    Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
-
-    // Cache for future lookups (within same session)
-    setCachedData_('gdrive_folders', 'all', folders);
-
-    return folders;
-  } catch (e) {
-    Logger.log(`Error fetching Google Drive folders: ${e.message}`);
-    return [];
   }
 }
 
@@ -4413,19 +4436,20 @@ function getGDriveFilesForVendor_(vendorName) {
     let vendorFolderUrl = null;
 
     for (const folder of allFolders) {
-      // Check if folder contains the exact vendor name (case-insensitive)
-      if (folder.nameLower.includes(cleanVendorName)) {
+      // Check if folder contains the vendor name OR vendor contains the folder name (case-insensitive)
+      if (folder.nameLower.includes(cleanVendorName) || cleanVendorName.includes(folder.nameLower)) {
         vendorFolder = DriveApp.getFolderById(folder.id);
         vendorFolderUrl = folder.url;
-        Logger.log(`Match found: "${folder.name}"`);
+        Logger.log(`Match found: "${folder.name}" (vendor: "${vendorName}")`);
         break;
       }
 
-      // Also accept if it contains the name without suffix
-      if (nameWithoutSuffix !== cleanVendorName && folder.nameLower.includes(nameWithoutSuffix)) {
+      // Also try without suffix
+      if (nameWithoutSuffix !== cleanVendorName &&
+          (folder.nameLower.includes(nameWithoutSuffix) || nameWithoutSuffix.includes(folder.nameLower))) {
         vendorFolder = DriveApp.getFolderById(folder.id);
         vendorFolderUrl = folder.url;
-        Logger.log(`Match found (without suffix): "${folder.name}"`);
+        Logger.log(`Match found (without suffix): "${folder.name}" (vendor: "${vendorName}")`);
         break;
       }
     }
@@ -11818,7 +11842,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
 
   const htmlOutput = HtmlService.createHtmlOutput(html)
     .setWidth(550)
-    .setHeight(500);
+    .setHeight(600);
   ui.showModalDialog(htmlOutput, '📝 Summary Preview');
 }
 
