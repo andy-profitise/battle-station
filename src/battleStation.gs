@@ -1812,15 +1812,18 @@ function loadVendorData(vendorIndex, options) {
         gDriveFiles = result.files || [];
         gDriveFolderFound = result.folderFound || false;
         gDriveFolderUrl = result.folderUrl || null;
+        if (result.error) gDriveError = result.error;
         if (gDriveFolderFound) gDriveMatchedOn = vendor;
 
-        // Only try Other Name(s) if NO FOLDER was found (not just empty folder)
-        if (!gDriveFolderFound && contactData.otherName) {
+        // Only try Other Name(s) if NO FOLDER was found and no API error (not just empty folder)
+        if (!gDriveFolderFound && !gDriveError && contactData.otherName) {
           // First try the full Other Name value (in case it's like "Profitise, LLC")
           Logger.log(`No GDrive folder for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
           const fullResult = getGDriveFilesForVendor_(contactData.otherName);
 
-          if (fullResult.folderFound) {
+          if (fullResult.error) {
+            gDriveError = fullResult.error;
+          } else if (fullResult.folderFound) {
             gDriveFiles = fullResult.files || [];
             gDriveFolderFound = true;
             gDriveFolderUrl = fullResult.folderUrl || null;
@@ -1838,6 +1841,10 @@ function loadVendorData(vendorIndex, options) {
               }
               Logger.log(`Searching GDrive for: "${altName}"`);
               const altResult = getGDriveFilesForVendor_(altName);
+              if (altResult.error) {
+                gDriveError = altResult.error;
+                break;
+              }
               if (altResult.folderFound) {
                 gDriveFiles = altResult.files || [];
                 gDriveFolderFound = true;
@@ -4397,7 +4404,7 @@ function getAllGDriveVendorFolders_() {
         folders.length = 0; // Clear any partial results
       } else {
         Logger.log('All retries exhausted for Google Drive folders');
-        return [];
+        return { folders: [], error: e.message };
       }
     }
   }
@@ -4429,7 +4436,15 @@ function getGDriveFilesForVendor_(vendorName) {
       .trim();
 
     // Get all vendor folders from cache (batch operation)
-    const allFolders = getAllGDriveVendorFolders_();
+    const allFoldersResult = getAllGDriveVendorFolders_();
+
+    // Check if it's the error format from exhausted retries
+    if (allFoldersResult && allFoldersResult.error) {
+      Logger.log(`Google Drive API error: ${allFoldersResult.error}`);
+      return { files: [], folderFound: false, folderUrl: null, error: allFoldersResult.error };
+    }
+
+    const allFolders = Array.isArray(allFoldersResult) ? allFoldersResult : (allFoldersResult.folders || []);
 
     // Match locally - no API calls needed!
     let vendorFolder = null;
