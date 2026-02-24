@@ -7,12 +7,12 @@
  *
  * FEATURES:
  * - Upload images via file picker
- * - Google Cloud Vision API for OCR
+ * - Claude multimodal vision for text extraction (OCR)
  * - Fuzzy matching against known vendor list
  * - Display matched vendors with confidence scores
  *
  * REQUIREMENTS:
- * - Cloud Vision API enabled in Google Cloud Console
+ * - Claude API key or proxy configured
  * - Script has external request permission (already in manifest)
  ************************************************************/
 
@@ -122,13 +122,13 @@ function processOcrImage(imageData, fileName) {
 
 
 /************************************************************
- * CLOUD VISION API - OCR TEXT EXTRACTION
+ * CLAUDE VISION - OCR TEXT EXTRACTION
  ************************************************************/
 
 /**
- * Extract text from an image using Google Cloud Vision API
+ * Extract text from an image using Claude's multimodal vision
  *
- * @param {string} imageData - Base64 encoded image data (without data URL prefix)
+ * @param {string} imageData - Base64 encoded image data (with or without data URL prefix)
  * @returns {string} Extracted text from the image
  */
 function extractTextFromImage_(imageData) {
@@ -1260,7 +1260,7 @@ Examples:
   <!-- IMAGE UPLOAD TAB -->
   <div id="imageTab" class="tab-content">
     <div class="hint-box">
-      ⚠️ Requires Cloud Vision API enabled in Google Cloud Console.
+      Uses Claude AI vision to extract text from screenshots.
     </div>
 
     <div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
