@@ -11633,32 +11633,269 @@ Write 2-3 sentences summarizing the current state of this vendor in natural lang
 
     const summary = response.content.trim();
 
-    // Replace notes entirely
-    const updatedNotes = summary;
+    // Store context for revision
+    const summaryContext = {
+      vendor: vendor,
+      listRow: listRow,
+      currentNotes: currentNotes,
+      status: status,
+      emailContext: emailContext,
+      unsnoozedCount: unsnoozed.length,
+      summary: summary
+    };
+    PropertiesService.getUserProperties().setProperty('summaryPreviewContext', JSON.stringify(summaryContext));
 
-    // Update the List sheet
-    listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(updatedNotes);
+    // Show preview dialog
+    showSummaryPreviewDialog_(vendor, currentNotes, summary);
 
-    // Update monday.com
-    const result = updateMondayComNotesForVendor_(vendor, updatedNotes, listRow);
-
-    if (result.success) {
-      ss.toast(`Notes updated for ${vendor}`, '✅ Summary Added', 3);
-
-      // Update the notes cell on the Battle Station sheet
-      for (let i = 5; i < 50; i++) {
-        const label = String(bsSh.getRange(i, 1).getValue() || '');
-        if (label.indexOf('📝 NOTES') !== -1) {
-          bsSh.getRange(i + 1, 1).setValue(updatedNotes);
-          break;
-        }
-      }
-    } else {
-      ss.toast(`List updated but monday.com sync failed: ${result.error}`, '⚠️ Partial', 5);
-    }
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
   }
+}
+
+/**
+ * Show summary preview dialog with Save, Revise, and Edit options
+ */
+function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
+  const ui = SpreadsheetApp.getUi();
+
+  const escapeHtml = (text) => {
+    return (text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/\n/g, '<br>');
+  };
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 10px; }
+    .subheader { color: #5f6368; font-size: 12px; margin-bottom: 15px; }
+    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-success { background: #34a853; color: white; }
+    .btn-success:hover { background: #2d8f47; }
+    .btn-success:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .current-notes {
+      background: #fff3e0;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: #666;
+      max-height: 60px;
+      overflow-y: auto;
+    }
+    .current-label { font-size: 11px; color: #999; margin-bottom: 4px; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 13px;
+      max-height: 150px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .revision-section {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .revision-section.show { display: block; }
+    .revision-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="header">📝 Summary Preview — ${escapeHtml(vendor)}</div>
+  ${currentNotes ? `<div class="current-label">Current notes:</div><div class="current-notes">${escapeHtml(currentNotes)}</div>` : ''}
+  <div class="subheader">New summary:</div>
+  <div id="previewContent" class="preview">${escapeHtml(summary)}</div>
+
+  <div class="buttons" style="margin-top: 15px;">
+    <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Notes</button>
+    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div id="revisionSection" class="revision-section">
+    <div class="revision-label">What should be changed?</div>
+    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., mention the call we scheduled, make it shorter, we're actually waiting on them...">
+    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+  </div>
+
+  <div id="loadingMsg" class="loading" style="display:none;"></div>
+
+  <script>
+    function doSave() {
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Saving notes...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .saveSummaryFromPreview();
+    }
+
+    function doShowRevision() {
+      document.getElementById('revisionSection').classList.add('show');
+      document.getElementById('revisionInput').focus();
+    }
+
+    function doRegenerate() {
+      var feedback = document.getElementById('revisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('regenerateBtn').disabled = true;
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newSummary) {
+          var el = document.getElementById('previewContent');
+          var safe = newSummary.replace(/&/g, '&amp;');
+          safe = safe.replace(/[<]/g, '&lt;');
+          safe = safe.replace(/[>]/g, '&gt;');
+          safe = safe.replace(/\\n/g, '<br>');
+          el.innerHTML = safe;
+          document.getElementById('revisionInput').value = '';
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('revisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseSummaryDraft(feedback);
+    }
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(550)
+    .setHeight(500);
+  ui.showModalDialog(htmlOutput, '📝 Summary Preview');
+}
+
+/**
+ * Save the summary from the preview dialog to List sheet and monday.com
+ */
+function saveSummaryFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
+  if (!contextRaw) throw new Error('No summary context found. Please regenerate.');
+
+  const context = JSON.parse(contextRaw);
+  const summary = context.summary;
+
+  // Update the List sheet
+  listSh.getRange(context.listRow, BS_CFG.L_NOTES + 1).setValue(summary);
+
+  // Update monday.com
+  const result = updateMondayComNotesForVendor_(context.vendor, summary, context.listRow);
+
+  if (result.success) {
+    ss.toast(`Notes updated for ${context.vendor}`, '✅ Summary Saved', 3);
+  } else {
+    ss.toast(`List updated but monday.com sync failed: ${result.error}`, '⚠️ Partial', 5);
+  }
+
+  // Update the notes cell on the Battle Station sheet
+  for (let i = 5; i < 50; i++) {
+    const label = String(bsSh.getRange(i, 1).getValue() || '');
+    if (label.indexOf('📝 NOTES') !== -1) {
+      bsSh.getRange(i + 1, 1).setValue(summary);
+      break;
+    }
+  }
+}
+
+/**
+ * Revise the summary based on user feedback
+ */
+function reviseSummaryDraft(feedback) {
+  const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
+  if (!contextRaw) throw new Error('No summary context found. Please regenerate.');
+
+  const context = JSON.parse(contextRaw);
+  const apiKey = getClaudeApiKey_();
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You previously wrote this vendor summary:
+"${context.summary}"
+
+For vendor: ${context.vendor} (Status: ${context.status})
+${aiInstructions}
+
+Andy wants you to revise it with this feedback: "${feedback}"
+
+Write the revised 2-3 sentence summary. Same rules as before:
+- Natural language from Andy's perspective
+- Factual and conversational
+- No labels, bullet points, or corporate speak
+- Just output the summary text, nothing else.`;
+
+  const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 500 });
+
+  if (response.error) {
+    throw new Error(`Claude API Error: ${response.error}`);
+  }
+
+  const newSummary = response.content.trim();
+
+  // Update stored context with new summary
+  context.summary = newSummary;
+  PropertiesService.getUserProperties().setProperty('summaryPreviewContext', JSON.stringify(context));
+
+  return newSummary;
 }
 
 /************************************************************
