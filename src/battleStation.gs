@@ -4372,6 +4372,7 @@ function getAllGDriveVendorFolders_() {
 
   Logger.log('Fetching all Google Drive vendor folders (batch operation)...');
   const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
+  Logger.log(`Parent folder ID: ${parentFolderId}`);
   const folders = [];
 
   const maxRetries = 3;
@@ -4397,14 +4398,24 @@ function getAllGDriveVendorFolders_() {
 
       return folders;
     } catch (e) {
-      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${e.message}`);
+      const msg = e.message || '';
+      const isAccessError = /permission|access denied|not found|no item|unable to access/i.test(msg);
+
+      if (isAccessError) {
+        // Permission or missing folder - retrying won't help
+        Logger.log(`Google Drive access error (not retrying): ${msg}`);
+        Logger.log(`Check that folder ID "${parentFolderId}" exists and is accessible`);
+        return { folders: [], error: `Access error: ${msg} (folder ID: ${parentFolderId})` };
+      }
+
+      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${msg}`);
       if (attempt < maxRetries) {
         Logger.log(`Retrying in ${attempt * 2} seconds...`);
         Utilities.sleep(attempt * 2000);
         folders.length = 0; // Clear any partial results
       } else {
         Logger.log('All retries exhausted for Google Drive folders');
-        return { folders: [], error: e.message };
+        return { folders: [], error: msg };
       }
     }
   }
