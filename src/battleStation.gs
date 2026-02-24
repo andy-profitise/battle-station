@@ -4413,19 +4413,20 @@ function getGDriveFilesForVendor_(vendorName) {
     let vendorFolderUrl = null;
 
     for (const folder of allFolders) {
-      // Check if folder contains the exact vendor name (case-insensitive)
-      if (folder.nameLower.includes(cleanVendorName)) {
+      // Check if folder contains the vendor name OR vendor contains the folder name (case-insensitive)
+      if (folder.nameLower.includes(cleanVendorName) || cleanVendorName.includes(folder.nameLower)) {
         vendorFolder = DriveApp.getFolderById(folder.id);
         vendorFolderUrl = folder.url;
-        Logger.log(`Match found: "${folder.name}"`);
+        Logger.log(`Match found: "${folder.name}" (vendor: "${vendorName}")`);
         break;
       }
 
-      // Also accept if it contains the name without suffix
-      if (nameWithoutSuffix !== cleanVendorName && folder.nameLower.includes(nameWithoutSuffix)) {
+      // Also try without suffix
+      if (nameWithoutSuffix !== cleanVendorName &&
+          (folder.nameLower.includes(nameWithoutSuffix) || nameWithoutSuffix.includes(folder.nameLower))) {
         vendorFolder = DriveApp.getFolderById(folder.id);
         vendorFolderUrl = folder.url;
-        Logger.log(`Match found (without suffix): "${folder.name}"`);
+        Logger.log(`Match found (without suffix): "${folder.name}" (vendor: "${vendorName}")`);
         break;
       }
     }
