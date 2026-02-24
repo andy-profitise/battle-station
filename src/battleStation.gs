@@ -11818,7 +11818,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
 
   const htmlOutput = HtmlService.createHtmlOutput(html)
     .setWidth(550)
-    .setHeight(500);
+    .setHeight(600);
   ui.showModalDialog(htmlOutput, '📝 Summary Preview');
 }
 
