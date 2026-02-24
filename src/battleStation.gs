@@ -1129,6 +1129,7 @@ function loadVendorData(vendorIndex, options) {
   let gDriveFolderFound = false;
   let gDriveFolderUrl = null;
   let gDriveMatchedOn = '';
+  let gDriveError = null;
 
   if (!isFastMode) {
   // Track row where Upcoming Meetings starts (for Box Documents alignment)
@@ -1858,6 +1859,7 @@ function loadVendorData(vendorIndex, options) {
 
       } catch (e) {
         Logger.log(`Google Drive search error: ${e.message}`);
+        gDriveError = e.message;
       }
     }
   }
@@ -1929,7 +1931,18 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(gDriveRow, 24);
   gDriveRow++;
   
-  if (!gDriveFolderFound) {
+  if (gDriveError) {
+    // API error - show error so user knows it's not "no folder"
+    bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+      .setValue('⚠️ Google Drive error — try refreshing')
+      .setFontStyle('italic')
+      .setFontColor('#c5221f')
+      .setBackground('#fce8e6')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(gDriveRow, 25);
+    gDriveRow++;
+  } else if (!gDriveFolderFound) {
     // No folder found - show link to create
     const vendorsFolderUrl = `https://drive.google.com/drive/folders/${BS_CFG.GDRIVE_VENDORS_FOLDER_ID}`;
     bsSh.getRange(gDriveRow, 6, 1, 4).merge()
