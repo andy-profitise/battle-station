@@ -131,6 +131,10 @@ const BS_CFG = {
   BUYERS_OTHER_NAME_COLUMN: 'text_mkvkr178',
   AFFILIATES_OTHER_NAME_COLUMN: 'text_mksmcrpw',
 
+  // Current Blocker(s) Column IDs
+  BUYERS_BLOCKERS_COLUMN: 'text_mm0r9srn',
+  AFFILIATES_BLOCKERS_COLUMN: 'text_mm0v3g4s',
+
   // Add to BS_CFG:
   TASKS_PROJECT_COLUMN: 'board_relation_mkqbg3mb',
 
@@ -871,6 +875,7 @@ function loadVendorData(vendorIndex, options) {
   ss.toast('Loading vendor details...', '📊 Loading', 2);
   const contactData = getVendorContacts_(vendor, listRow);
   const mondayNotes = contactData.notes || notes;
+  const mondayBlockers = contactData.blockers || '';
   const contacts = contactData.contacts;
 
   // Cache original notes for auto-save detection on transition
@@ -1915,8 +1920,29 @@ function loadVendorData(vendorIndex, options) {
   }
   
   currentRow += 2;
+
+  // Current Blocker(s) section - only show if there are blockers
+  if (mondayBlockers) {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('🚧 CURRENT BLOCKER(S)')
+      .setBackground('#fff3e0')
+      .setFontWeight('bold')
+      .setFontSize(10)
+      .setFontColor('#e65100')
+      .setHorizontalAlignment('left');
+    bsSh.setRowHeight(currentRow, 24);
+    currentRow++;
+
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue(mondayBlockers)
+      .setWrap(true)
+      .setVerticalAlignment('top')
+      .setBackground('#fff8e1');
+    currentRow++;
+  }
+
   currentRow++;
-  
+
   // Track row where Emails starts (for Google Drive alignment)
   const emailsStartRow = currentRow;
   
@@ -2790,13 +2816,13 @@ function getVendorContacts_(vendor, listRow) {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
   
-  if (!listSh) return { contacts: [], notes: '', phonexaLink: '', lastUpdated: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', mondayItemId: null, boardId: null };
+  if (!listSh) return { contacts: [], notes: '', phonexaLink: '', lastUpdated: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: null, boardId: null };
   
   const apiToken = BS_CFG.MONDAY_API_TOKEN;
   const source = listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '';
   
-  let boardId, notesColumnId, contactsColumnId, phonexaColumnId, liveVerticalsColumnId, otherVerticalsColumnId, liveModalitiesColumnId, statesColumnId, deadStatesColumnId, otherNameColumnId, isAffiliates;
-  
+  let boardId, notesColumnId, contactsColumnId, phonexaColumnId, liveVerticalsColumnId, otherVerticalsColumnId, liveModalitiesColumnId, statesColumnId, deadStatesColumnId, otherNameColumnId, blockersColumnId, isAffiliates;
+
   if (source.toLowerCase().includes('buyer')) {
     boardId = BS_CFG.BUYERS_BOARD_ID;
     notesColumnId = BS_CFG.BUYERS_NOTES_COLUMN;
@@ -2808,6 +2834,7 @@ function getVendorContacts_(vendor, listRow) {
     statesColumnId = BS_CFG.BUYERS_STATES_COLUMN;
     deadStatesColumnId = BS_CFG.BUYERS_DEAD_STATES_COLUMN;
     otherNameColumnId = BS_CFG.BUYERS_OTHER_NAME_COLUMN;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
     isAffiliates = false;
   } else if (source.toLowerCase().includes('affiliate')) {
     boardId = BS_CFG.AFFILIATES_BOARD_ID;
@@ -2820,6 +2847,7 @@ function getVendorContacts_(vendor, listRow) {
     statesColumnId = null; // Affiliates don't have states
     deadStatesColumnId = null; // Affiliates don't have dead states
     otherNameColumnId = BS_CFG.AFFILIATES_OTHER_NAME_COLUMN;
+    blockersColumnId = BS_CFG.AFFILIATES_BLOCKERS_COLUMN;
     isAffiliates = true;
   } else {
     boardId = BS_CFG.BUYERS_BOARD_ID;
@@ -2832,6 +2860,7 @@ function getVendorContacts_(vendor, listRow) {
     statesColumnId = BS_CFG.BUYERS_STATES_COLUMN;
     deadStatesColumnId = BS_CFG.BUYERS_DEAD_STATES_COLUMN;
     otherNameColumnId = BS_CFG.BUYERS_OTHER_NAME_COLUMN;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
     isAffiliates = false;
   }
   
@@ -2844,7 +2873,7 @@ function getVendorContacts_(vendor, listRow) {
   
   if (!itemId) {
     Logger.log('Could not find monday.com item for contacts');
-    return { contacts: [], notes: '', phonexaLink: '', lastUpdated: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', mondayItemId: null, boardId: boardId };
+    return { contacts: [], notes: '', phonexaLink: '', lastUpdated: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: null, boardId: boardId };
   }
   
   let lastUpdated = '';
@@ -2888,9 +2917,9 @@ function getVendorContacts_(vendor, listRow) {
     
     if (!result.data?.items?.[0]) {
       Logger.log('No item data found');
-      return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', mondayItemId: itemId, boardId: boardId };
+      return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: itemId, boardId: boardId };
     }
-    
+
     // Get updated_at from the item (ISO 8601 format)
     const updatedAtRaw = result.data.items[0].updated_at || '';
     if (updatedAtRaw) {
@@ -2914,7 +2943,8 @@ function getVendorContacts_(vendor, listRow) {
     let states = '';
     let deadStates = '';
     let otherName = '';
-    
+    let blockers = '';
+
     for (const col of columnValues) {
       // Get contacts from linked_items (for 2-way board relations)
       if (col.id === contactsColumnId && col.linked_items && col.linked_items.length > 0) {
@@ -2962,6 +2992,11 @@ function getVendorContacts_(vendor, listRow) {
       else if (otherNameColumnId && col.id === otherNameColumnId && col.text) {
         otherName = col.text;
         Logger.log(`Other Name: ${otherName}`);
+      }
+      // Current Blocker(s) column
+      else if (blockersColumnId && col.id === blockersColumnId && col.text) {
+        blockers = col.text;
+        Logger.log(`Current Blocker(s): ${blockers}`);
       }
     }
     
@@ -3025,11 +3060,11 @@ function getVendorContacts_(vendor, listRow) {
     }
     
     Logger.log(`Returning ${contacts.length} contacts`);
-    return { contacts: contacts, notes: notes, phonexaLink: phonexaLink, lastUpdated: lastUpdated, liveStatus: liveStatus, liveVerticals: liveVerticals, otherVerticals: otherVerticals, liveModalities: liveModalities, states: states, deadStates: deadStates, otherName: otherName, mondayItemId: itemId, boardId: boardId };
+    return { contacts: contacts, notes: notes, phonexaLink: phonexaLink, lastUpdated: lastUpdated, liveStatus: liveStatus, liveVerticals: liveVerticals, otherVerticals: otherVerticals, liveModalities: liveModalities, states: states, deadStates: deadStates, otherName: otherName, blockers: blockers, mondayItemId: itemId, boardId: boardId };
     
   } catch (e) {
     Logger.log(`Error fetching contacts: ${e.message}`);
-    return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', mondayItemId: itemId, boardId: boardId };
+    return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: itemId, boardId: boardId };
   }
 }
 
@@ -4372,6 +4407,7 @@ function getAllGDriveVendorFolders_() {
 
   Logger.log('Fetching all Google Drive vendor folders (batch operation)...');
   const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
+  Logger.log(`Parent folder ID: ${parentFolderId}`);
   const folders = [];
 
   const maxRetries = 3;
@@ -4397,14 +4433,24 @@ function getAllGDriveVendorFolders_() {
 
       return folders;
     } catch (e) {
-      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${e.message}`);
+      const msg = e.message || '';
+      const isAccessError = /permission|access denied|not found|no item|unable to access/i.test(msg);
+
+      if (isAccessError) {
+        // Permission or missing folder - retrying won't help
+        Logger.log(`Google Drive access error (not retrying): ${msg}`);
+        Logger.log(`Check that folder ID "${parentFolderId}" exists and is accessible`);
+        return { folders: [], error: `Access error: ${msg} (folder ID: ${parentFolderId})` };
+      }
+
+      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${msg}`);
       if (attempt < maxRetries) {
         Logger.log(`Retrying in ${attempt * 2} seconds...`);
         Utilities.sleep(attempt * 2000);
         folders.length = 0; // Clear any partial results
       } else {
         Logger.log('All retries exhausted for Google Drive folders');
-        return { folders: [], error: e.message };
+        return { folders: [], error: msg };
       }
     }
   }
