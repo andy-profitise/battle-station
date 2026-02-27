@@ -11952,26 +11952,58 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
   </style>
 </head>
 <body>
-  <div class="header">📝 Summary Preview — ${escapeHtml(vendor)}</div>
-  ${currentNotes ? `<div class="current-label">Current notes:</div><div class="current-notes">${escapeHtml(currentNotes)}</div>` : ''}
-  <div class="subheader">New summary:</div>
-  <div id="previewContent" class="preview">${escapeHtml(summary)}</div>
+  <!-- Screen 1: Notes Preview -->
+  <div id="notesScreen">
+    <div class="header">📝 Summary Preview — ${escapeHtml(vendor)}</div>
+    ${currentNotes ? `<div class="current-label">Current notes:</div><div class="current-notes">${escapeHtml(currentNotes)}</div>` : ''}
+    <div class="subheader">New summary:</div>
+    <div id="previewContent" class="preview">${escapeHtml(summary)}</div>
 
-  <div class="buttons" style="margin-top: 15px;">
-    <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Notes</button>
-    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
-    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    <div class="buttons" style="margin-top: 15px;">
+      <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Notes</button>
+      <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    </div>
+
+    <div id="revisionSection" class="revision-section">
+      <div class="revision-label">What should be changed?</div>
+      <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., mention the call we scheduled, make it shorter, we're actually waiting on them...">
+      <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+    </div>
   </div>
 
-  <div id="revisionSection" class="revision-section">
-    <div class="revision-label">What should be changed?</div>
-    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., mention the call we scheduled, make it shorter, we're actually waiting on them...">
-    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+  <!-- Screen 2: Blocker Preview -->
+  <div id="blockerScreen" style="display:none;">
+    <div class="header">🚧 Blocker Preview — ${escapeHtml(vendor)}</div>
+    <div id="blockerCurrentLabel"></div>
+    <div id="blockerCurrentNotes" class="current-notes" style="display:none;"></div>
+    <div class="subheader">Suggested blocker(s):</div>
+    <div id="blockerPreview" class="preview"></div>
+
+    <div class="buttons" style="margin-top: 15px;">
+      <button id="blockerSaveBtn" class="btn btn-success" onclick="doSaveBlockers()">Save Blockers</button>
+      <button id="blockerReviseBtn" class="btn btn-secondary" onclick="doShowBlockerRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Skip</button>
+    </div>
+
+    <div id="blockerRevisionSection" class="revision-section">
+      <div class="revision-label">What should be changed?</div>
+      <input type="text" id="blockerRevisionInput" class="revision-input" placeholder="e.g., add the compliance issue, remove the integration blocker, no blockers...">
+      <button id="blockerRegenerateBtn" class="btn btn-primary" onclick="doRegenerateBlockers()">Regenerate</button>
+    </div>
   </div>
 
   <div id="loadingMsg" class="loading" style="display:none;"></div>
 
   <script>
+    function esc(text) {
+      var s = (text || '').replace(/&/g, '&amp;');
+      s = s.replace(/[<]/g, '&lt;');
+      s = s.replace(/[>]/g, '&gt;');
+      return s.replace(/\\n/g, '<br>');
+    }
+
+    // ========== NOTES SCREEN ==========
     function doSave() {
       document.getElementById('saveBtn').disabled = true;
       document.getElementById('reviseBtn').disabled = true;
@@ -11981,14 +12013,28 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
       google.script.run
         .withSuccessHandler(function() {
           document.getElementById('loadingMsg').textContent = 'Generating blocker summary...';
+
           google.script.run
-            .withSuccessHandler(function() {
-              google.script.host.close();
+            .withSuccessHandler(function(data) {
+              // Transition to blocker screen
+              document.getElementById('notesScreen').style.display = 'none';
+              document.getElementById('blockerScreen').style.display = 'block';
+              document.getElementById('loadingMsg').style.display = 'none';
+
+              if (data.currentBlockers) {
+                document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label">Current blocker(s):</div>';
+                document.getElementById('blockerCurrentNotes').innerHTML = esc(data.currentBlockers);
+                document.getElementById('blockerCurrentNotes').style.display = 'block';
+              } else {
+                document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>';
+              }
+              document.getElementById('blockerPreview').innerHTML = esc(data.suggestedBlockers);
             })
             .withFailureHandler(function() {
+              // If blocker generation fails, just close (notes already saved)
               google.script.host.close();
             })
-            .showBlockersSummaryAfterNotes();
+            .generateBlockerSummary();
         })
         .withFailureHandler(function(err) {
           alert('Error: ' + (err.message || err));
@@ -12018,12 +12064,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
 
       google.script.run
         .withSuccessHandler(function(newSummary) {
-          var el = document.getElementById('previewContent');
-          var safe = newSummary.replace(/&/g, '&amp;');
-          safe = safe.replace(/[<]/g, '&lt;');
-          safe = safe.replace(/[>]/g, '&gt;');
-          safe = safe.replace(/\\n/g, '<br>');
-          el.innerHTML = safe;
+          document.getElementById('previewContent').innerHTML = esc(newSummary);
           document.getElementById('revisionInput').value = '';
           document.getElementById('regenerateBtn').disabled = false;
           document.getElementById('saveBtn').disabled = false;
@@ -12037,6 +12078,61 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
           document.getElementById('loadingMsg').style.display = 'none';
         })
         .reviseSummaryDraft(feedback);
+    }
+
+    // ========== BLOCKER SCREEN ==========
+    function doSaveBlockers() {
+      document.getElementById('blockerSaveBtn').disabled = true;
+      document.getElementById('blockerReviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Saving blockers...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('blockerSaveBtn').disabled = false;
+          document.getElementById('blockerReviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .saveBlockersFromPreview();
+    }
+
+    function doShowBlockerRevision() {
+      document.getElementById('blockerRevisionSection').classList.add('show');
+      document.getElementById('blockerRevisionInput').focus();
+    }
+
+    function doRegenerateBlockers() {
+      var feedback = document.getElementById('blockerRevisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('blockerRegenerateBtn').disabled = true;
+      document.getElementById('blockerSaveBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newBlockers) {
+          document.getElementById('blockerPreview').innerHTML = esc(newBlockers);
+          document.getElementById('blockerRevisionInput').value = '';
+          document.getElementById('blockerRegenerateBtn').disabled = false;
+          document.getElementById('blockerSaveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('blockerRevisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('blockerRegenerateBtn').disabled = false;
+          document.getElementById('blockerSaveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseBlockersDraft(feedback);
     }
   </script>
 </body>
@@ -12130,16 +12226,15 @@ Write the revised 2-3 sentence summary. Same rules as before:
  ************************************************************/
 
 /**
- * Generate blocker summary with Claude and show the preview dialog.
- * Called after notes are saved in the Summarize & Update Notes flow.
+ * Generate blocker summary with Claude and return data to the client dialog.
+ * Called after notes are saved — returns { currentBlockers, suggestedBlockers }
+ * so the dialog can transition to the blocker screen client-side.
  */
-function showBlockersSummaryAfterNotes() {
+function generateBlockerSummary() {
   const ss = SpreadsheetApp.getActive();
-  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  const ui = SpreadsheetApp.getUi();
 
   const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
-  if (!contextRaw) return;
+  if (!contextRaw) throw new Error('No summary context found.');
 
   const context = JSON.parse(contextRaw);
   const vendor = context.vendor;
@@ -12152,7 +12247,7 @@ function showBlockersSummaryAfterNotes() {
   const currentBlockers = contactData.blockers || '';
 
   const apiKey = getClaudeApiKey_();
-  if (!apiKey) return;
+  if (!apiKey) throw new Error('No Claude API key configured.');
 
   const aiInstructions = getAiInstructions_();
 
@@ -12176,201 +12271,26 @@ Based on the emails and current state, suggest what the "Current Blocker(s)" fie
 - Be factual, not speculative.
 - Just output the blocker text, nothing else.`;
 
-  try {
-    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 300 });
+  const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 300 });
 
-    if (response.error) {
-      Logger.log(`Blocker AI error: ${response.error}`);
-      return;
-    }
-
-    const suggestedBlockers = response.content.trim();
-
-    // Store blocker context
-    const blockerContext = {
-      vendor: vendor,
-      listRow: listRow,
-      currentBlockers: currentBlockers,
-      status: context.status,
-      emailContext: context.emailContext,
-      suggestedBlockers: suggestedBlockers
-    };
-    PropertiesService.getUserProperties().setProperty('blockerPreviewContext', JSON.stringify(blockerContext));
-
-    showBlockersPreviewDialog_(vendor, currentBlockers, suggestedBlockers);
-
-  } catch (e) {
-    Logger.log(`Blocker generation error: ${e.message}`);
+  if (response.error) {
+    throw new Error(`Claude API Error: ${response.error}`);
   }
-}
 
-/**
- * Show blocker preview dialog with Save, Revise, and Skip options
- */
-function showBlockersPreviewDialog_(vendor, currentBlockers, suggestedBlockers) {
-  const ui = SpreadsheetApp.getUi();
+  const suggestedBlockers = response.content.trim();
 
-  const escapeHtml = (text) => {
-    return (text || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/\n/g, '<br>');
+  // Store blocker context for save/revise
+  const blockerContext = {
+    vendor: vendor,
+    listRow: listRow,
+    currentBlockers: currentBlockers,
+    status: context.status,
+    emailContext: context.emailContext,
+    suggestedBlockers: suggestedBlockers
   };
+  PropertiesService.getUserProperties().setProperty('blockerPreviewContext', JSON.stringify(blockerContext));
 
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-  <base target="_top">
-  <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    .header { color: #202124; font-size: 16px; margin-bottom: 10px; }
-    .subheader { color: #5f6368; font-size: 12px; margin-bottom: 15px; }
-    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
-    .btn {
-      display: inline-block;
-      padding: 12px 24px;
-      border-radius: 4px;
-      font-size: 14px;
-      cursor: pointer;
-      border: none;
-    }
-    .btn-primary { background: #1a73e8; color: white; }
-    .btn-primary:hover { background: #1557b0; }
-    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
-    .btn-success { background: #34a853; color: white; }
-    .btn-success:hover { background: #2d8f47; }
-    .btn-success:disabled { background: #ccc; cursor: not-allowed; }
-    .btn-secondary { background: #f1f3f4; color: #5f6368; }
-    .btn-secondary:hover { background: #e8eaed; }
-    .current-notes {
-      background: #fff3e0;
-      padding: 10px;
-      border-radius: 6px;
-      margin-bottom: 12px;
-      font-size: 12px;
-      color: #666;
-      max-height: 60px;
-      overflow-y: auto;
-    }
-    .current-label { font-size: 11px; color: #999; margin-bottom: 4px; }
-    .preview {
-      background: #f8f9fa;
-      padding: 15px;
-      border-radius: 8px;
-      font-size: 13px;
-      max-height: 150px;
-      overflow-y: auto;
-      line-height: 1.5;
-    }
-    .revision-section {
-      display: none;
-      margin-top: 15px;
-      padding-top: 15px;
-      border-top: 1px solid #e0e0e0;
-    }
-    .revision-section.show { display: block; }
-    .revision-input {
-      width: 100%;
-      padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      font-size: 13px;
-      margin-bottom: 10px;
-      box-sizing: border-box;
-    }
-    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
-    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
-  </style>
-</head>
-<body>
-  <div class="header">🚧 Blocker Preview — ${escapeHtml(vendor)}</div>
-  ${currentBlockers ? `<div class="current-label">Current blocker(s):</div><div class="current-notes">${escapeHtml(currentBlockers)}</div>` : '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>'}
-  <div class="subheader">Suggested blocker(s):</div>
-  <div id="previewContent" class="preview">${escapeHtml(suggestedBlockers)}</div>
-
-  <div class="buttons" style="margin-top: 15px;">
-    <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Blockers</button>
-    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
-    <button class="btn btn-secondary" onclick="google.script.host.close()">Skip</button>
-  </div>
-
-  <div id="revisionSection" class="revision-section">
-    <div class="revision-label">What should be changed?</div>
-    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add the compliance issue, remove the integration blocker, no blockers...">
-    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
-  </div>
-
-  <div id="loadingMsg" class="loading" style="display:none;"></div>
-
-  <script>
-    function doSave() {
-      document.getElementById('saveBtn').disabled = true;
-      document.getElementById('reviseBtn').disabled = true;
-      document.getElementById('loadingMsg').textContent = 'Saving blockers...';
-      document.getElementById('loadingMsg').style.display = 'block';
-
-      google.script.run
-        .withSuccessHandler(function() {
-          google.script.host.close();
-        })
-        .withFailureHandler(function(err) {
-          alert('Error: ' + (err.message || err));
-          document.getElementById('saveBtn').disabled = false;
-          document.getElementById('reviseBtn').disabled = false;
-          document.getElementById('loadingMsg').style.display = 'none';
-        })
-        .saveBlockersFromPreview();
-    }
-
-    function doShowRevision() {
-      document.getElementById('revisionSection').classList.add('show');
-      document.getElementById('revisionInput').focus();
-    }
-
-    function doRegenerate() {
-      var feedback = document.getElementById('revisionInput').value.trim();
-      if (!feedback) {
-        alert('Please enter what you want to change');
-        return;
-      }
-
-      document.getElementById('regenerateBtn').disabled = true;
-      document.getElementById('saveBtn').disabled = true;
-      document.getElementById('loadingMsg').textContent = 'Regenerating...';
-      document.getElementById('loadingMsg').style.display = 'block';
-
-      google.script.run
-        .withSuccessHandler(function(newBlockers) {
-          var el = document.getElementById('previewContent');
-          var safe = newBlockers.replace(/&/g, '&amp;');
-          safe = safe.replace(/[<]/g, '&lt;');
-          safe = safe.replace(/[>]/g, '&gt;');
-          safe = safe.replace(/\\n/g, '<br>');
-          el.innerHTML = safe;
-          document.getElementById('revisionInput').value = '';
-          document.getElementById('regenerateBtn').disabled = false;
-          document.getElementById('saveBtn').disabled = false;
-          document.getElementById('loadingMsg').style.display = 'none';
-          document.getElementById('revisionInput').focus();
-        })
-        .withFailureHandler(function(err) {
-          alert('Error: ' + (err.message || err));
-          document.getElementById('regenerateBtn').disabled = false;
-          document.getElementById('saveBtn').disabled = false;
-          document.getElementById('loadingMsg').style.display = 'none';
-        })
-        .reviseBlockersDraft(feedback);
-    }
-  </script>
-</body>
-</html>`;
-
-  const htmlOutput = HtmlService.createHtmlOutput(html)
-    .setWidth(550)
-    .setHeight(500);
-  ui.showModalDialog(htmlOutput, '🚧 Blocker Preview');
+  return { currentBlockers: currentBlockers, suggestedBlockers: suggestedBlockers };
 }
 
 /**
