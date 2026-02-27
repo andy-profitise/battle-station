@@ -986,9 +986,12 @@ function loadVendorData(vendorIndex, options) {
   bsSh.getRange(currentRow, 3).setValue('Pref. Comm:').setFontWeight('bold');
   const prefCommCell = bsSh.getRange(currentRow, 4);
   if (chatInfo && chatInfo.label) {
-    const prefCommBoardLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendorForStatus}`;
-    const prefCommFormula = `=HYPERLINK("${prefCommBoardLink}", "${chatInfo.label}")`;
-    prefCommCell.setFormula(prefCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK);
+    if (chatInfo.clickableLink) {
+      const prefCommFormula = `=HYPERLINK("${chatInfo.clickableLink}", "${chatInfo.label}")`;
+      prefCommCell.setFormula(prefCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK);
+    } else {
+      prefCommCell.setValue(chatInfo.label);
+    }
   } else {
     const chatLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.CHAT_LINKS_BOARD_ID}?term=${encodeURIComponent(vendor)}`;
     const addCommFormula = `=HYPERLINK("${chatLinksUrl}", "⚠️ Add in Chat Links →")`;
