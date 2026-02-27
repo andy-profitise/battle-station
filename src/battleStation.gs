@@ -94,6 +94,7 @@ const BS_CFG = {
   TASKS_BOARD_ID: '9007661294',
   CONTACTS_BOARD_ID: '9304296922',
   HELPFUL_LINKS_BOARD_ID: '18389463592',
+  CHAT_LINKS_BOARD_ID: '9333292060',
   
   // monday.com Column IDs
   BUYERS_NOTES_COLUMN: 'text_mkqnvsqh',
@@ -792,13 +793,9 @@ function loadVendorData(vendorIndex, options) {
   const source = vendorData[BS_CFG.L_SOURCE] || '';
   const status = vendorData[BS_CFG.L_STATUS] || '';
   const notes = vendorData[BS_CFG.L_NOTES] || '';
-  const processed = vendorData[BS_CFG.L_PROCESSED] || false;
-  
-  const mondayBoardId = source.toLowerCase().includes('buyer') ? `${BS_CFG.BUYERS_BOARD_ID} (Buyers)` : 
-                        source.toLowerCase().includes('affiliate') ? `${BS_CFG.AFFILIATES_BOARD_ID} (Affiliates)` : 
+  const mondayBoardId = source.toLowerCase().includes('buyer') ? `${BS_CFG.BUYERS_BOARD_ID} (Buyers)` :
+                        source.toLowerCase().includes('affiliate') ? `${BS_CFG.AFFILIATES_BOARD_ID} (Affiliates)` :
                         `${BS_CFG.BUYERS_BOARD_ID} (Buyers - default)`;
-  
-  const processedDisplay = processed ? '✅ Yes (Reviewed)' : '⚠️ No (Needs Review)';
   
   // Clear entire sheet (9 columns now - includes divider)
   const lastRow = bsSh.getMaxRows();
@@ -877,6 +874,9 @@ function loadVendorData(vendorIndex, options) {
   const mondayNotes = contactData.notes || notes;
   const mondayBlockers = contactData.blockers || '';
   const contacts = contactData.contacts;
+
+  // Get preferred communication method from Chat Links board
+  const chatInfo = getVendorChatInfo_(vendor);
 
   // Cache original notes for auto-save detection on transition
   cacheOriginalNotes_(mondayNotes || '');
@@ -983,12 +983,16 @@ function loadVendorData(vendorIndex, options) {
   
   const lastUpdCell = bsSh.getRange(currentRow, 2).setValue(lastUpdDisplay).setHorizontalAlignment('left');
   if (!contactData.lastUpdated) lastUpdCell.setBackground(BS_CFG.COLOR_MISSING);
-  bsSh.getRange(currentRow, 3).setValue('Processed:').setFontWeight('bold');
-  const processedCell = bsSh.getRange(currentRow, 4).setValue(processedDisplay);
-  if (processed) {
-    processedCell.setBackground(BS_CFG.COLOR_SUCCESS);
+  bsSh.getRange(currentRow, 3).setValue('Pref. Comm:').setFontWeight('bold');
+  const prefCommCell = bsSh.getRange(currentRow, 4);
+  if (chatInfo && chatInfo.label) {
+    const prefCommBoardLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendorForStatus}`;
+    const prefCommFormula = `=HYPERLINK("${prefCommBoardLink}", "${chatInfo.label}")`;
+    prefCommCell.setFormula(prefCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK);
   } else {
-    processedCell.setBackground('#fff4e5');
+    const chatLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.CHAT_LINKS_BOARD_ID}`;
+    const addCommFormula = `=HYPERLINK("${chatLinksUrl}", "⚠️ Add in Chat Links →")`;
+    prefCommCell.setFormula(addCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK).setBackground(BS_CFG.COLOR_MISSING);
   }
   currentRow++;
   
@@ -3066,6 +3070,130 @@ function getVendorContacts_(vendor, listRow) {
     Logger.log(`Error fetching contacts: ${e.message}`);
     return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: itemId, boardId: boardId };
   }
+}
+
+/**
+ * Get preferred communication method for a vendor from the Chat Links board.
+ * Fetches all items once and caches for session.
+ * Returns { label, clickableLink } or null if not found.
+ */
+function getVendorChatInfo_(vendor) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.CHAT_LINKS_BOARD_ID;
+  const cacheKey = `chat_links_map`;
+
+  // Check session cache first
+  let chatMap = getCachedData_('monday_items', cacheKey);
+
+  if (!chatMap) {
+    Logger.log(`Fetching Chat Links board ${boardId}...`);
+
+    const query = `
+      query {
+        boards (ids: [${boardId}]) {
+          columns { id title }
+          items_page (limit: 500) {
+            items {
+              id
+              name
+              column_values {
+                id
+                text
+                value
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const options = {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'Authorization': apiToken },
+        payload: JSON.stringify({ query: query }),
+        muteHttpExceptions: true
+      };
+
+      const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      const result = JSON.parse(response.getContentText());
+
+      if (!result.data?.boards?.[0]) {
+        Logger.log('Chat Links board not found');
+        return null;
+      }
+
+      const board = result.data.boards[0];
+      const columns = board.columns;
+
+      // Find column IDs by title
+      let labelColId = null;
+      let clickableLinkColId = null;
+      let vendorNameColId = null;
+
+      for (const col of columns) {
+        const title = col.title.toLowerCase();
+        if (title === 'label') labelColId = col.id;
+        else if (title === 'clickable link') clickableLinkColId = col.id;
+        else if (title === 'vendor name') vendorNameColId = col.id;
+      }
+
+      Logger.log(`Chat Links columns - Label: ${labelColId}, Clickable Link: ${clickableLinkColId}, Vendor Name: ${vendorNameColId}`);
+
+      // Build vendor → chat info map
+      chatMap = {};
+      const items = board.items_page?.items || [];
+
+      for (const item of items) {
+        let vendorName = '';
+        let label = '';
+        let clickableLink = '';
+
+        for (const col of item.column_values) {
+          if (col.id === vendorNameColId && col.text) {
+            vendorName = col.text.trim();
+          } else if (col.id === labelColId && col.text) {
+            label = col.text.trim();
+          } else if (col.id === clickableLinkColId && col.text) {
+            clickableLink = col.text.trim();
+          }
+        }
+
+        if (vendorName) {
+          chatMap[vendorName.toLowerCase()] = { label: label, clickableLink: clickableLink };
+          Logger.log(`Chat Links: ${vendorName} → ${label} (${clickableLink})`);
+        }
+      }
+
+      setCachedData_('monday_items', cacheKey, chatMap);
+      Logger.log(`Cached ${Object.keys(chatMap).length} chat link entries`);
+
+    } catch (e) {
+      Logger.log(`Error fetching Chat Links: ${e.message}`);
+      return null;
+    }
+  }
+
+  // Look up vendor in the map
+  const searchTerm = vendor.toLowerCase();
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
+
+  // Exact match first
+  if (chatMap[searchTerm]) return chatMap[searchTerm];
+  if (chatMap[withoutParens]) return chatMap[withoutParens];
+
+  // Contains match
+  for (const key of Object.keys(chatMap)) {
+    if (key.includes(searchTerm) || searchTerm.includes(key) ||
+        key.includes(withoutParens) || withoutParens.includes(key)) {
+      Logger.log(`Chat Links contains match: "${key}" for "${vendor}"`);
+      return chatMap[key];
+    }
+  }
+
+  Logger.log(`No Chat Links entry found for "${vendor}"`);
+  return null;
 }
 
 /**
