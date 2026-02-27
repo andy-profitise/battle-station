@@ -12243,7 +12243,7 @@ function generateBlockerSummary() {
   ss.toast(`Analyzing blockers for ${vendor}...`, '🚧 Blockers', 5);
 
   // Get current blockers from monday.com
-  const contactData = getVendorContactsFromMonday_(listRow);
+  const contactData = getVendorContacts_(vendor, listRow);
   const currentBlockers = contactData.blockers || '';
 
   const apiKey = getClaudeApiKey_();
