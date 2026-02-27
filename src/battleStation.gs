@@ -11980,7 +11980,15 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
 
       google.script.run
         .withSuccessHandler(function() {
-          google.script.host.close();
+          document.getElementById('loadingMsg').textContent = 'Generating blocker summary...';
+          google.script.run
+            .withSuccessHandler(function() {
+              google.script.host.close();
+            })
+            .withFailureHandler(function() {
+              google.script.host.close();
+            })
+            .showBlockersSummaryAfterNotes();
         })
         .withFailureHandler(function(err) {
           alert('Error: ' + (err.message || err));
@@ -12114,6 +12122,408 @@ Write the revised 2-3 sentence summary. Same rules as before:
   PropertiesService.getUserProperties().setProperty('summaryPreviewContext', JSON.stringify(context));
 
   return newSummary;
+}
+
+/************************************************************
+ * BLOCKER SUMMARY (chained from Notes summarize flow)
+ * After saving notes, generates and shows a blocker preview
+ ************************************************************/
+
+/**
+ * Generate blocker summary with Claude and show the preview dialog.
+ * Called after notes are saved in the Summarize & Update Notes flow.
+ */
+function showBlockersSummaryAfterNotes() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
+  if (!contextRaw) return;
+
+  const context = JSON.parse(contextRaw);
+  const vendor = context.vendor;
+  const listRow = context.listRow;
+
+  ss.toast(`Analyzing blockers for ${vendor}...`, '🚧 Blockers', 5);
+
+  // Get current blockers from monday.com
+  const contactData = getVendorContactsFromMonday_(listRow);
+  const currentBlockers = contactData.blockers || '';
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) return;
+
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You are updating the "Current Blocker(s)" field for a vendor in Andy's vendor management system at Profitise (lead generation).
+${aiInstructions}
+Vendor: ${vendor}
+Status: ${context.status}
+
+Current Blocker(s): ${currentBlockers || '(none)'}
+
+Recent unsnoozed emails (${context.unsnoozedCount} threads):
+${context.emailContext || '(no emails)'}
+
+Notes that were just saved: ${context.summary}
+
+Based on the emails and current state, suggest what the "Current Blocker(s)" field should say. Key rules:
+- If there are active blockers (things preventing progress), describe them concisely.
+- If blockers have been resolved based on recent emails, remove them.
+- If there are no blockers, output exactly: (none)
+- Keep it brief - short phrases or 1-2 sentences max.
+- Be factual, not speculative.
+- Just output the blocker text, nothing else.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 300 });
+
+    if (response.error) {
+      Logger.log(`Blocker AI error: ${response.error}`);
+      return;
+    }
+
+    const suggestedBlockers = response.content.trim();
+
+    // Store blocker context
+    const blockerContext = {
+      vendor: vendor,
+      listRow: listRow,
+      currentBlockers: currentBlockers,
+      status: context.status,
+      emailContext: context.emailContext,
+      suggestedBlockers: suggestedBlockers
+    };
+    PropertiesService.getUserProperties().setProperty('blockerPreviewContext', JSON.stringify(blockerContext));
+
+    showBlockersPreviewDialog_(vendor, currentBlockers, suggestedBlockers);
+
+  } catch (e) {
+    Logger.log(`Blocker generation error: ${e.message}`);
+  }
+}
+
+/**
+ * Show blocker preview dialog with Save, Revise, and Skip options
+ */
+function showBlockersPreviewDialog_(vendor, currentBlockers, suggestedBlockers) {
+  const ui = SpreadsheetApp.getUi();
+
+  const escapeHtml = (text) => {
+    return (text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/\n/g, '<br>');
+  };
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 10px; }
+    .subheader { color: #5f6368; font-size: 12px; margin-bottom: 15px; }
+    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-success { background: #34a853; color: white; }
+    .btn-success:hover { background: #2d8f47; }
+    .btn-success:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .current-notes {
+      background: #fff3e0;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: #666;
+      max-height: 60px;
+      overflow-y: auto;
+    }
+    .current-label { font-size: 11px; color: #999; margin-bottom: 4px; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 13px;
+      max-height: 150px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .revision-section {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .revision-section.show { display: block; }
+    .revision-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="header">🚧 Blocker Preview — ${escapeHtml(vendor)}</div>
+  ${currentBlockers ? `<div class="current-label">Current blocker(s):</div><div class="current-notes">${escapeHtml(currentBlockers)}</div>` : '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>'}
+  <div class="subheader">Suggested blocker(s):</div>
+  <div id="previewContent" class="preview">${escapeHtml(suggestedBlockers)}</div>
+
+  <div class="buttons" style="margin-top: 15px;">
+    <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Blockers</button>
+    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Skip</button>
+  </div>
+
+  <div id="revisionSection" class="revision-section">
+    <div class="revision-label">What should be changed?</div>
+    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add the compliance issue, remove the integration blocker, no blockers...">
+    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+  </div>
+
+  <div id="loadingMsg" class="loading" style="display:none;"></div>
+
+  <script>
+    function doSave() {
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Saving blockers...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .saveBlockersFromPreview();
+    }
+
+    function doShowRevision() {
+      document.getElementById('revisionSection').classList.add('show');
+      document.getElementById('revisionInput').focus();
+    }
+
+    function doRegenerate() {
+      var feedback = document.getElementById('revisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('regenerateBtn').disabled = true;
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newBlockers) {
+          var el = document.getElementById('previewContent');
+          var safe = newBlockers.replace(/&/g, '&amp;');
+          safe = safe.replace(/[<]/g, '&lt;');
+          safe = safe.replace(/[>]/g, '&gt;');
+          safe = safe.replace(/\\n/g, '<br>');
+          el.innerHTML = safe;
+          document.getElementById('revisionInput').value = '';
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('revisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseBlockersDraft(feedback);
+    }
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(550)
+    .setHeight(500);
+  ui.showModalDialog(htmlOutput, '🚧 Blocker Preview');
+}
+
+/**
+ * Save the blockers from the preview dialog to monday.com
+ */
+function saveBlockersFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  const contextRaw = PropertiesService.getUserProperties().getProperty('blockerPreviewContext');
+  if (!contextRaw) throw new Error('No blocker context found.');
+
+  const context = JSON.parse(contextRaw);
+  const blockers = context.suggestedBlockers;
+  const blockerText = (blockers.toLowerCase() === '(none)') ? '' : blockers;
+
+  // Update monday.com
+  const result = updateMondayBlockersForVendor_(context.vendor, blockerText, context.listRow);
+
+  if (result.success) {
+    ss.toast(`Blockers updated for ${context.vendor}`, '✅ Blockers Saved', 3);
+  } else {
+    throw new Error(`Monday.com update failed: ${result.error}`);
+  }
+
+  // Update the blocker section on the Battle Station sheet if it exists
+  for (let i = 5; i < 50; i++) {
+    const val = String(bsSh.getRange(i, 1).getValue() || '');
+    if (val.indexOf('CURRENT BLOCKER') !== -1) {
+      if (blockerText) {
+        bsSh.getRange(i + 1, 1).setValue(blockerText);
+      } else {
+        // Clear blocker display if no blockers
+        bsSh.getRange(i, 1).setValue('');
+        bsSh.getRange(i + 1, 1).setValue('');
+      }
+      break;
+    }
+  }
+}
+
+/**
+ * Revise the blocker text based on user feedback
+ */
+function reviseBlockersDraft(feedback) {
+  const contextRaw = PropertiesService.getUserProperties().getProperty('blockerPreviewContext');
+  if (!contextRaw) throw new Error('No blocker context found.');
+
+  const context = JSON.parse(contextRaw);
+  const apiKey = getClaudeApiKey_();
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You previously wrote this "Current Blocker(s)" text for a vendor:
+"${context.suggestedBlockers}"
+
+For vendor: ${context.vendor} (Status: ${context.status})
+${aiInstructions}
+
+Andy wants you to revise it with this feedback: "${feedback}"
+
+Write the revised blocker text. Same rules as before:
+- If there are active blockers, describe them concisely.
+- If there are no blockers, output exactly: (none)
+- Keep it brief - short phrases or 1-2 sentences max.
+- Just output the text, nothing else.`;
+
+  const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 300 });
+
+  if (response.error) {
+    throw new Error(`Claude API Error: ${response.error}`);
+  }
+
+  const newBlockers = response.content.trim();
+
+  context.suggestedBlockers = newBlockers;
+  PropertiesService.getUserProperties().setProperty('blockerPreviewContext', JSON.stringify(context));
+
+  return newBlockers;
+}
+
+/**
+ * Update the Current Blocker(s) column on monday.com for a vendor
+ */
+function updateMondayBlockersForVendor_(vendor, blockers, listRow) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listRow) {
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex) return { success: false, error: 'Could not determine vendor index' };
+    listRow = currentIndex + 1;
+  }
+
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  let boardId, blockersColumnId;
+  if (source.toLowerCase().includes('buyer')) {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
+  } else if (source.toLowerCase().includes('affiliate')) {
+    boardId = BS_CFG.AFFILIATES_BOARD_ID;
+    blockersColumnId = BS_CFG.AFFILIATES_BLOCKERS_COLUMN;
+  } else {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
+  }
+
+  const itemId = findMondayItemIdByVendor_(vendor, boardId, apiToken);
+
+  if (!itemId) {
+    return { success: false, error: `Could not find monday.com item for vendor: ${vendor}` };
+  }
+
+  const valueJson = JSON.stringify(blockers);
+  const escapedValue = valueJson.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value (
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_id: "${blockersColumnId}",
+        value: "${escapedValue}"
+      ) { id }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: mutation }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result.errors && result.errors.length > 0) {
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      return { success: true, itemId: result.data.change_column_value.id };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 }
 
 /************************************************************
