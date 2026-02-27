@@ -990,7 +990,7 @@ function loadVendorData(vendorIndex, options) {
     const prefCommFormula = `=HYPERLINK("${prefCommBoardLink}", "${chatInfo.label}")`;
     prefCommCell.setFormula(prefCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK);
   } else {
-    const chatLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.CHAT_LINKS_BOARD_ID}`;
+    const chatLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.CHAT_LINKS_BOARD_ID}?term=${encodeURIComponent(vendor)}`;
     const addCommFormula = `=HYPERLINK("${chatLinksUrl}", "⚠️ Add in Chat Links →")`;
     prefCommCell.setFormula(addCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK).setBackground(BS_CFG.COLOR_MISSING);
   }
@@ -3160,9 +3160,11 @@ function getVendorChatInfo_(vendor) {
           }
         }
 
-        if (vendorName) {
-          chatMap[vendorName.toLowerCase()] = { label: label, clickableLink: clickableLink };
-          Logger.log(`Chat Links: ${vendorName} → ${label} (${clickableLink})`);
+        // Use vendor name column if available, fall back to item name
+        const effectiveName = vendorName || item.name.trim();
+        if (effectiveName) {
+          chatMap[effectiveName.toLowerCase()] = { label: label, clickableLink: clickableLink };
+          Logger.log(`Chat Links: ${effectiveName} → ${label} (${clickableLink})`);
         }
       }
 
