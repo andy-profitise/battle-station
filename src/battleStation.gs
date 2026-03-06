@@ -2290,13 +2290,21 @@ function loadVendorData(vendorIndex, options) {
     bsSh.getRange(currentRow, 4).setValue('Project').setFontWeight('bold').setBackground('#f3f3f3');
     currentRow++;
     
-    // Build suffix from vendor's vertical and live modality
-    const taskSuffixParts = [];
-    if (contactData.liveVerticals) taskSuffixParts.push(contactData.liveVerticals);
-    if (contactData.liveModalities) taskSuffixParts.push(contactData.liveModalities);
-    const taskSuffix = taskSuffixParts.length > 0 ? ` [${taskSuffixParts.join(' | ')}]` : '';
+    // Build fallback suffix from vendor's vertical and live modality (used when task has no own vertical/modality)
+    const vendorSuffixParts = [];
+    if (contactData.liveVerticals) vendorSuffixParts.push(contactData.liveVerticals);
+    if (contactData.liveModalities) vendorSuffixParts.push(contactData.liveModalities);
+    const vendorSuffix = vendorSuffixParts.length > 0 ? ` [${vendorSuffixParts.join(' | ')}]` : '';
 
     for (const task of tasks) {
+      // Build per-task suffix from task's own vertical/modality columns (fall back to vendor-level)
+      const taskSuffixParts = [];
+      if (task.vertical) taskSuffixParts.push(task.vertical);
+      else if (contactData.liveVerticals) taskSuffixParts.push(contactData.liveVerticals);
+      if (task.modality) taskSuffixParts.push(task.modality);
+      else if (contactData.liveModalities) taskSuffixParts.push(contactData.liveModalities);
+      const taskSuffix = taskSuffixParts.length > 0 ? ` [${taskSuffixParts.join(' | ')}]` : vendorSuffix;
+
       // Task name - clickable link to Tasks board filtered by task name
       const encodedTask = encodeURIComponent(task.subject);
       const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
@@ -3629,6 +3637,10 @@ function getTasksForVendor_(vendor, listRow) {
     const createdDate = new Date(item.createdAt);
     const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
 
+    // Task-level vertical and modality (from Tasks board columns)
+    const taskVertical = item.vertical || '';
+    const taskModality = item.modality || '';
+
     tasks.push({
       itemId: item.id,
       statusColumnId: statusColumnId,
@@ -3639,6 +3651,8 @@ function getTasksForVendor_(vendor, listRow) {
       created: createdFormatted,
       project: projectName || `Group: ${groupTitle}`,
       isDone: (status.toLowerCase() === 'done' || status.toLowerCase() === 'abandoned'),
+      vertical: taskVertical,
+      modality: taskModality,
 
       // Sorting fields
       groupId: groupId,
@@ -3649,7 +3663,7 @@ function getTasksForVendor_(vendor, listRow) {
       tempIndSort: (tempInd === null) ? 999999 : tempInd
     });
 
-    Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | temp_ind: ${tempInd}`);
+    Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | Vertical: ${taskVertical} | Modality: ${taskModality} | temp_ind: ${tempInd}`);
   }
 
   // Sort by: Done status (not done first)
@@ -5320,10 +5334,14 @@ function getAllMondayTasks_() {
   // Groups to include (no project filter - include all projects)
   const VALID_GROUPS = ['ongoing projects', 'completed projects'];
 
-  // First query to get initial page
+  // First query to get initial page (includes columns for dynamic column ID discovery)
   const initialQuery = `
     query {
       boards (ids: [${boardId}]) {
+        columns {
+          id
+          title
+        }
         items_page (limit: 500) {
           cursor
           items {
@@ -5411,6 +5429,18 @@ function getAllMondayTasks_() {
 
     allItems = result.data.boards[0].items_page.items;
     cursor = result.data.boards[0].items_page.cursor;
+
+    // Discover Vertical and Modality column IDs from board columns
+    const boardColumns = result.data.boards[0].columns || [];
+    let verticalColumnId = null;
+    let modalityColumnId = null;
+    for (const col of boardColumns) {
+      const titleLower = (col.title || '').toLowerCase();
+      if (titleLower === 'vertical') verticalColumnId = col.id;
+      else if (titleLower === 'modality') modalityColumnId = col.id;
+    }
+    Logger.log(`Tasks board column discovery - Vertical: ${verticalColumnId || '(not found)'}, Modality: ${modalityColumnId || '(not found)'}`);
+
     Logger.log(`Page ${pageNum}: Fetched ${allItems.length} tasks, cursor: ${cursor ? 'yes' : 'no'}`);
 
     // Fetch additional pages if cursor exists
@@ -5475,6 +5505,10 @@ function getAllMondayTasks_() {
         continue;
       }
 
+      // Extract task-level vertical and modality from discovered column IDs
+      const taskVertical = verticalColumnId && colVals[verticalColumnId]?.text ? colVals[verticalColumnId].text : '';
+      const taskModality = modalityColumnId && colVals[modalityColumnId]?.text ? colVals[modalityColumnId].text : '';
+
       tasks.push({
         id: item.id,
         name: item.name,
@@ -5483,6 +5517,8 @@ function getAllMondayTasks_() {
         groupTitle: groupTitle,
         status: colVals['status']?.text || '',
         project: project,
+        vertical: taskVertical,
+        modality: taskModality,
         tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
