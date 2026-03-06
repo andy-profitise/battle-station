@@ -2290,12 +2290,19 @@ function loadVendorData(vendorIndex, options) {
     bsSh.getRange(currentRow, 4).setValue('Project').setFontWeight('bold').setBackground('#f3f3f3');
     currentRow++;
     
+    // Build suffix from vendor's vertical and live modality
+    const taskSuffixParts = [];
+    if (contactData.liveVerticals) taskSuffixParts.push(contactData.liveVerticals);
+    if (contactData.liveModalities) taskSuffixParts.push(contactData.liveModalities);
+    const taskSuffix = taskSuffixParts.length > 0 ? ` [${taskSuffixParts.join(' | ')}]` : '';
+
     for (const task of tasks) {
       // Task name - clickable link to Tasks board filtered by task name
       const encodedTask = encodeURIComponent(task.subject);
       const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
+      const taskDisplayName = task.subject + taskSuffix;
       bsSh.getRange(currentRow, 1)
-        .setFormula(`=HYPERLINK("${taskFilterLink}", "${task.subject.replace(/"/g, '""')}")`)
+        .setFormula(`=HYPERLINK("${taskFilterLink}", "${taskDisplayName.replace(/"/g, '""')}")`)
         .setWrap(true)
         .setFontColor('#1a73e8');
       
@@ -12243,7 +12250,7 @@ function generateBlockerSummary() {
   ss.toast(`Analyzing blockers for ${vendor}...`, '🚧 Blockers', 5);
 
   // Get current blockers from monday.com
-  const contactData = getVendorContactsFromMonday_(listRow);
+  const contactData = getVendorContacts_(vendor, listRow);
   const currentBlockers = contactData.blockers || '';
 
   const apiKey = getClaudeApiKey_();
