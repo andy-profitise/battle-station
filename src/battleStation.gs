@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-01-09 10:30AM PST
+ * Last Updated: 2026-03-10 10:00AM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -26,7 +26,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-01-09 10:30AM PST',
+  CODE_VERSION: '2026-03-10 10:00AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -268,6 +268,7 @@ function onOpen() {
     .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
     .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
     .addItem('📤 Send to Aden', 'sendToAden')
+    .addItem('📤 Throw to Aden (Any)', 'throwToAden')
     .addItem('📥 Archive Email', 'archiveSelectedEmail')
     .addItem('⚰️ Bury Email', 'burySelectedEmail')
     .addItem('⬇️ Unprioritize Email', 'unprioritizeSelectedEmail')
@@ -8703,6 +8704,149 @@ function sendToAdenExecute(subject, senderEmail, context) {
   GmailApp.sendEmail(recipient, emailSubject, body);
 
   SpreadsheetApp.getActive().toast(`Sent to Aden: "${subject}"`, '📤 Sent', 3);
+}
+
+/**
+ * Throw any email/provider to Aden for research — not tied to a selected email.
+ * Shows a dialog where you type a vendor name or email address + context.
+ */
+function throwToAden() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Try to pre-populate vendor name from current view
+  let currentVendor = '';
+  try {
+    const idx = getCurrentVendorIndex_();
+    if (idx) {
+      const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+      currentVendor = String(listSh.getRange(idx + 1, BS_CFG.L_VENDOR + 1).getValue() || '');
+    }
+  } catch (e) { /* ignore */ }
+
+  const escapedVendor = currentVendor.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    label { font-weight: bold; display: block; margin-bottom: 6px; color: #5f6368; }
+    input, textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+      margin-bottom: 14px;
+    }
+    textarea { height: 100px; resize: vertical; }
+    .buttons { display: flex; gap: 10px; }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-send { background: #34a853; color: white; }
+    .btn-send:hover { background: #2d8e47; }
+    .btn-cancel { background: #f1f3f4; color: #5f6368; }
+    .btn-cancel:hover { background: #e8eaed; }
+    .loading { color: #5f6368; font-style: italic; display: none; margin-top: 10px; }
+    .hint { font-size: 11px; color: #9aa0a6; margin-top: -10px; margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <label>Vendor / Provider Name</label>
+  <input type="text" id="vendor" value="${escapedVendor}" placeholder="e.g. Acme Corp" />
+
+  <label>Email Address (optional)</label>
+  <input type="email" id="email" placeholder="e.g. john@acme.com" />
+  <div class="hint">If provided, Aden will get a Gmail search link for this sender</div>
+
+  <label>What should Aden do?</label>
+  <textarea id="context" placeholder="e.g. Research this provider, reach out about overdue payment, follow up on contract..."></textarea>
+
+  <div class="buttons">
+    <button class="btn btn-send" onclick="doSend()">Send to Aden</button>
+    <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div id="loading" class="loading">Sending...</div>
+
+  <script>
+    function doSend() {
+      var vendor = document.getElementById('vendor').value.trim();
+      var email = document.getElementById('email').value.trim();
+      var context = document.getElementById('context').value.trim();
+
+      if (!vendor && !email) {
+        alert('Please enter a vendor name or email address.');
+        return;
+      }
+
+      document.querySelector('.btn-send').disabled = true;
+      document.querySelector('.btn-cancel').disabled = true;
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.querySelector('.btn-send').disabled = false;
+          document.querySelector('.btn-cancel').disabled = false;
+          document.getElementById('loading').style.display = 'none';
+        })
+        .throwToAdenExecute(vendor, email, context);
+    }
+
+    document.getElementById('${escapedVendor ? 'context' : 'vendor'}').focus();
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(500)
+    .setHeight(420);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📤 Throw to Aden');
+}
+
+/**
+ * Execute throwing vendor/email to Aden (called from throwToAden dialog)
+ */
+function throwToAdenExecute(vendor, email, context) {
+  const recipient = 'aden@profitise.com';
+  const label = vendor || email;
+  const emailSubject = `RE: ${label} - PLEASE INVESTIGATE/REACH-OUT/RESOLVE`;
+
+  let body = `Hi Aden,\n\n`;
+  body += `Please investigate/reach-out/resolve the following:\n\n`;
+
+  if (vendor) {
+    body += `Vendor/Provider: ${vendor}\n`;
+  }
+
+  if (email) {
+    body += `Contact Email: ${email}\n`;
+    const searchQuery = `from:(${email})`;
+    const encodedQuery = encodeURIComponent(searchQuery);
+    const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/${encodedQuery}`;
+    body += `Gmail Search Link:\n${gmailSearchUrl}\n`;
+  }
+
+  if (context && context.trim()) {
+    body += `\nContext / Instructions:\n${context.trim()}\n`;
+  }
+
+  body += `\nThanks,\nAndy`;
+
+  GmailApp.sendEmail(recipient, emailSubject, body);
+
+  SpreadsheetApp.getActive().toast(`Thrown to Aden: "${label}"`, '📤 Sent', 3);
 }
 
 /**
