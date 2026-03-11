@@ -2254,6 +2254,9 @@ function loadVendorData(vendorIndex, options) {
     if (needsTasksWarning) {
       // Show warning with link to Claude task generator
       const vendorType = source.toLowerCase().includes('affiliate') ? 'Affiliate' : 'Buyer';
+      const vendorTypeLabel = vendorType === 'Affiliate' && contactData.liveModalities
+        ? `Affiliate - ${contactData.liveModalities}`
+        : vendorType;
       const claudeChatUrl = 'https://claude.ai/chat/33d0e36c-23ad-4e7d-b354-bd6cf3692f3f';
       bsSh.getRange(currentRow, 1, 1, 4).merge()
         .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
@@ -2266,7 +2269,7 @@ function loadVendorData(vendorIndex, options) {
 
       // Add copy/paste line for vendor name and type
       bsSh.getRange(currentRow, 1, 1, 4).merge()
-        .setValue(`${vendor} (${vendorType})`)
+        .setValue(`${vendor} (${vendorTypeLabel})`)
         .setFontStyle('italic')
         .setFontColor('#666666')
         .setBackground('#fafafa')
