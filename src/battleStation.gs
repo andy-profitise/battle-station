@@ -136,6 +136,10 @@ const BS_CFG = {
   BUYERS_BLOCKERS_COLUMN: 'text_mm0r9srn',
   AFFILIATES_BLOCKERS_COLUMN: 'text_mm0v3g4s',
 
+  // Blocker Template
+  BLOCKER_TEMPLATE_ITEM_ID: '11492448302',
+  BLOCKERS_GROUP_ID: 'group_mm1cjj43',
+
   // Add to BS_CFG:
   TASKS_PROJECT_COLUMN: 'board_relation_mkqbg3mb',
 
@@ -318,6 +322,7 @@ function onOpen() {
     .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
     .addSeparator()
     .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addItem('🚧 Add a Blocker', 'createBlockerForVendor')
     .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
     .addSeparator()
     .addItem('📷 Chat OCR - Upload Image / Paste Text', 'openVendorOcrUpload')
@@ -1935,13 +1940,19 @@ function loadVendorData(vendorIndex, options) {
     const hasNotes = !!firstBlocker.notes;
     const blockerText = hasNotes ? firstBlocker.notes : firstBlocker.subject;
 
-    bsSh.getRange(currentRow, 1, 1, 4).merge()
+    bsSh.getRange(currentRow, 1, 1, 3).merge()
       .setValue('🚧 CURRENT BLOCKER(S)')
       .setBackground('#fff3e0')
       .setFontWeight('bold')
       .setFontSize(10)
       .setFontColor('#e65100')
       .setHorizontalAlignment('left');
+    bsSh.getRange(currentRow, 4)
+      .setValue('➕ Add a Blocker')
+      .setBackground('#fff3e0')
+      .setFontColor('#e65100')
+      .setFontSize(9)
+      .setHorizontalAlignment('right');
     bsSh.setRowHeight(currentRow, 24);
     currentRow++;
 
@@ -1953,6 +1964,15 @@ function loadVendorData(vendorIndex, options) {
     if (!hasNotes) {
       blockerCell.setFontColor('#999999');  // Grey when showing item name as fallback
     }
+    currentRow++;
+  } else {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('➕ Add a Blocker')
+      .setFontColor('#e65100')
+      .setFontSize(9)
+      .setBackground('#fff3e0')
+      .setHorizontalAlignment('left');
+    bsSh.setRowHeight(currentRow, 24);
     currentRow++;
   }
 
@@ -12653,6 +12673,122 @@ function updateMondayBlockersForVendor_(vendor, blockers, listRow) {
   } catch (e) {
     return { success: false, error: e.message };
   }
+}
+
+/**
+ * Create a new Blocker task for the current vendor by duplicating the template item.
+ * Called from the "Add a Blocker" button in the Battle Station UI.
+ */
+function createBlockerForVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ss.toast('Could not determine current vendor.', '❌ Error', 3);
+    return;
+  }
+
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  ss.toast(`Creating blocker for ${vendor}...`, '🚧 Blocker', 3);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+  const templateItemId = BS_CFG.BLOCKER_TEMPLATE_ITEM_ID;
+
+  // Step 1: Duplicate the template item
+  const dupMutation = `
+    mutation {
+      duplicate_item (
+        board_id: ${boardId},
+        item_id: ${templateItemId},
+        with_updates: false
+      ) {
+        id
+      }
+    }
+  `;
+
+  const dupResult = mondayApiRequest_(dupMutation, apiToken);
+  if (dupResult.errors && dupResult.errors.length > 0) {
+    ss.toast(`Error duplicating template: ${dupResult.errors[0].message}`, '❌ Error', 5);
+    return;
+  }
+
+  const newItemId = dupResult.data?.duplicate_item?.id;
+  if (!newItemId) {
+    ss.toast('Failed to duplicate template item.', '❌ Error', 5);
+    return;
+  }
+
+  // Step 2: Rename the item to the vendor name
+  const escapedVendor = vendor.replace(/"/g, '\\"');
+  const renameMutation = `
+    mutation {
+      change_simple_column_value (
+        board_id: ${boardId},
+        item_id: ${newItemId},
+        column_id: "name",
+        value: "${escapedVendor}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 3: Move to Blockers group
+  const moveMutation = `
+    mutation {
+      move_item_to_group (
+        item_id: ${newItemId},
+        group_id: "${BS_CFG.BLOCKERS_GROUP_ID}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(moveMutation, apiToken);
+
+  // Step 4: Link the vendor item via board relation (find vendor's monday.com item ID)
+  const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
+
+  if (vendorItemId) {
+    // Find the board relation column that links to the vendor's board
+    // Try all board_relation columns on the task to link the vendor
+    const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type } } }`;
+    const colsResult = mondayApiRequest_(colsQuery, apiToken);
+    const cols = colsResult.data?.items?.[0]?.column_values || [];
+
+    for (const col of cols) {
+      if (col.type === 'board_relation' && col.id !== BS_CFG.TASKS_PROJECT_COLUMN) {
+        // Try linking - if it's the wrong board relation column, monday.com will reject it silently
+        const linkMutation = `
+          mutation {
+            change_column_value (
+              board_id: ${boardId},
+              item_id: ${newItemId},
+              column_id: "${col.id}",
+              value: "{\\"item_ids\\": [${vendorItemId}]}"
+            ) { id }
+          }
+        `;
+        const linkResult = mondayApiRequest_(linkMutation, apiToken);
+        if (linkResult.data?.change_column_value?.id) {
+          Logger.log(`Linked vendor ${vendor} (${vendorItemId}) via column ${col.id}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // Clear task cache so the new blocker shows up on refresh
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+  setCachedData_('monday_tasks', cacheKey, []);
+
+  ss.toast(`Blocker created for ${vendor}!`, '✅ Blocker Added', 3);
+
+  // Refresh the Battle Station to show the new blocker
+  loadVendor_();
 }
 
 /************************************************************
