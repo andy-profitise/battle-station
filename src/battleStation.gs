@@ -873,7 +873,6 @@ function loadVendorData(vendorIndex, options) {
   ss.toast('Loading vendor details...', '📊 Loading', 2);
   const contactData = getVendorContacts_(vendor, listRow);
   const mondayNotes = contactData.notes || notes;
-  const mondayBlockers = contactData.blockers || '';
   const contacts = contactData.contacts;
 
   // Get preferred communication method from Chat Links board
@@ -1929,8 +1928,13 @@ function loadVendorData(vendorIndex, options) {
   
   currentRow += 2;
 
-  // Current Blocker(s) section - only show if there are blockers
-  if (mondayBlockers) {
+  // Current Blocker(s) section - show first blocker task's notes (or item name as fallback)
+  const blockerTasks = getTasksForVendor_(vendor, listRow).filter(t => t.isBlocker && !t.isDone);
+  if (blockerTasks.length > 0) {
+    const firstBlocker = blockerTasks[0];
+    const hasNotes = !!firstBlocker.notes;
+    const blockerText = hasNotes ? firstBlocker.notes : firstBlocker.subject;
+
     bsSh.getRange(currentRow, 1, 1, 4).merge()
       .setValue('🚧 CURRENT BLOCKER(S)')
       .setBackground('#fff3e0')
@@ -1941,11 +1945,14 @@ function loadVendorData(vendorIndex, options) {
     bsSh.setRowHeight(currentRow, 24);
     currentRow++;
 
-    bsSh.getRange(currentRow, 1, 1, 4).merge()
-      .setValue(mondayBlockers)
+    const blockerCell = bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue(blockerText)
       .setWrap(true)
       .setVerticalAlignment('top')
       .setBackground('#fff8e1');
+    if (!hasNotes) {
+      blockerCell.setFontColor('#999999');  // Grey when showing item name as fallback
+    }
     currentRow++;
   }
 
@@ -3646,9 +3653,10 @@ function getTasksForVendor_(vendor, listRow) {
     const createdDate = new Date(item.createdAt);
     const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
 
-    // Task-level vertical and modality (from Tasks board columns)
+    // Task-level vertical, modality, and notes (from Tasks board columns)
     const taskVertical = item.vertical || '';
     const taskModality = item.modality || '';
+    const taskNotes = item.notes || '';
 
     tasks.push({
       itemId: item.id,
@@ -3662,6 +3670,7 @@ function getTasksForVendor_(vendor, listRow) {
       isDone: (status.toLowerCase() === 'done' || status.toLowerCase() === 'abandoned'),
       vertical: taskVertical,
       modality: taskModality,
+      notes: taskNotes,
 
       // Sorting fields
       groupId: groupId,
@@ -5444,12 +5453,14 @@ function getAllMondayTasks_() {
     const boardColumns = result.data.boards[0].columns || [];
     let verticalColumnId = null;
     let modalityColumnId = null;
+    let notesColumnId = null;
     for (const col of boardColumns) {
       const titleLower = (col.title || '').toLowerCase();
       if (titleLower === 'vertical') verticalColumnId = col.id;
       else if (titleLower === 'modality') modalityColumnId = col.id;
+      else if (titleLower === 'notes') notesColumnId = col.id;
     }
-    Logger.log(`Tasks board column discovery - Vertical: ${verticalColumnId || '(not found)'}, Modality: ${modalityColumnId || '(not found)'}`);
+    Logger.log(`Tasks board column discovery - Vertical: ${verticalColumnId || '(not found)'}, Modality: ${modalityColumnId || '(not found)'}, Notes: ${notesColumnId || '(not found)'}`);
 
     Logger.log(`Page ${pageNum}: Fetched ${allItems.length} tasks, cursor: ${cursor ? 'yes' : 'no'}`);
 
@@ -5518,6 +5529,7 @@ function getAllMondayTasks_() {
       // Extract task-level vertical and modality from discovered column IDs
       const taskVertical = verticalColumnId && colVals[verticalColumnId]?.text ? colVals[verticalColumnId].text : '';
       const taskModality = modalityColumnId && colVals[modalityColumnId]?.text ? colVals[modalityColumnId].text : '';
+      const taskNotes = notesColumnId && colVals[notesColumnId]?.text ? colVals[notesColumnId].text : '';
 
       tasks.push({
         id: item.id,
@@ -5529,6 +5541,7 @@ function getAllMondayTasks_() {
         project: project,
         vertical: taskVertical,
         modality: taskModality,
+        notes: taskNotes,
         tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
         createdAt: item.created_at,
         updatedAt: item.updated_at,
