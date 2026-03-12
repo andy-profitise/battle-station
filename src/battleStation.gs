@@ -2339,6 +2339,10 @@ function loadVendorData(vendorIndex, options) {
         bsSh.getRange(currentRow, 1, 1, 4)
           .setFontLine('line-through')
           .setFontColor('#999999');
+      } else if (task.isBlocker) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2')   // Red for blockers - needs action
+          .setFontWeight('bold');
       } else if (task.status && task.status.toLowerCase().includes('waiting on phonexa')) {
         bsSh.getRange(currentRow, 1, 1, 4)
           .setBackground('#ffcdd2');  // Red for waiting on phonexa
@@ -3557,6 +3561,7 @@ function getTasksForVendor_(vendor, listRow) {
 
   // Group priority for sorting (DESC = higher number first)
   const groupPriority = {
+    'group_mm1cjj43': 4,           // Blockers - always at the top
     'topics': 3,                    // Ongoing Projects
     'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
     'group_title': 1,              // Completed Projects
@@ -3660,6 +3665,7 @@ function getTasksForVendor_(vendor, listRow) {
 
       // Sorting fields
       groupId: groupId,
+      isBlocker: groupId === 'group_mm1cjj43',
       groupPriority: groupPriority[groupId] || -1,
       projectName: projectName,
       projectPriority: projectPriority[projectName] || 999,
@@ -5336,7 +5342,7 @@ function getAllMondayTasks_() {
   const boardId = BS_CFG.TASKS_BOARD_ID;
 
   // Groups to include (no project filter - include all projects)
-  const VALID_GROUPS = ['ongoing projects', 'completed projects'];
+  const VALID_GROUPS = ['blockers', 'ongoing projects', 'completed projects'];
 
   // First query to get initial page (includes columns for dynamic column ID discovery)
   const initialQuery = `
