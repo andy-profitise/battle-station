@@ -2327,7 +2327,23 @@ function loadVendorData(vendorIndex, options) {
     if (contactData.liveModalities) vendorSuffixParts.push(contactData.liveModalities);
     const vendorSuffix = vendorSuffixParts.length > 0 ? ` [${vendorSuffixParts.join(' | ')}]` : '';
 
+    let lastGroupTitle = null;
     for (const task of tasks) {
+      // Insert group sub-header when the group changes
+      if (task.groupTitle && task.groupTitle !== lastGroupTitle) {
+        lastGroupTitle = task.groupTitle;
+        bsSh.getRange(currentRow, 1, 1, 4).merge()
+          .setValue(task.groupTitle)
+          .setFontWeight('bold')
+          .setFontSize(9)
+          .setFontColor('#555555')
+          .setBackground('#e8eaf6')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('middle');
+        bsSh.setRowHeight(currentRow, 22);
+        currentRow++;
+      }
+
       // Build per-task suffix from task's own vertical/modality columns (fall back to vendor-level)
       const taskSuffixParts = [];
       if (task.vertical) taskSuffixParts.push(task.vertical);
@@ -3687,6 +3703,7 @@ function getTasksForVendor_(vendor, listRow) {
       lastUpdated: lastUpdated,
       created: createdFormatted,
       project: projectName || `Group: ${groupTitle}`,
+      groupTitle: groupTitle,
       isDone: (status.toLowerCase() === 'done' || status.toLowerCase() === 'abandoned'),
       vertical: taskVertical,
       modality: taskModality,
