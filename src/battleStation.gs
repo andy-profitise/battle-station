@@ -340,6 +340,23 @@ function onOpen() {
 }
 
 /**
+ * Detect clicks on interactive cell "buttons" in the A(I)DEN sheet.
+ * Currently supports: "➕ Add a Blocker"
+ */
+function onSelectionChange(e) {
+  const sheet = e.range.getSheet();
+  if (sheet.getName() !== BS_CFG.BATTLE_SHEET) return;
+
+  const cell = e.range;
+  if (cell.getNumRows() !== 1 || cell.getNumColumns() !== 1) return;
+
+  const value = cell.getValue();
+  if (typeof value === 'string' && value.trim() === '➕ Add a Blocker') {
+    createBlockerForVendor();
+  }
+}
+
+/**
  * Web App entry point - handles deep links with vendor parameter
  * Deploy as web app: Execute as "Me", Access "Anyone"
  *
