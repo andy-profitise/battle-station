@@ -12822,7 +12822,7 @@ function createBlockerForVendor() {
   ss.toast(`Blocker created for ${vendor}!`, '✅ Blocker Added', 3);
 
   // Refresh the Battle Station to show the new blocker
-  loadVendor_();
+  battleStationRefresh();
 }
 
 /************************************************************
