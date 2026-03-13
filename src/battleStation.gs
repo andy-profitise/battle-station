@@ -3590,8 +3590,8 @@ function getTasksForVendor_(vendor, listRow) {
   const groupPriority = {
     'group_mm1cjj43': 4,           // Blockers - always at the top
     'topics': 3,                    // Ongoing Projects
-    'group_mkqb5pzw': 2,           // Upcoming/Paused Projects
-    'group_title': 1,              // Completed Projects
+    'group_title': 2,              // Completed Projects
+    'group_mkqb5pzw': 1,           // Upcoming/Paused Projects
     'group_mkqf4yzy': 0            // Task Templates
   };
 
@@ -5371,7 +5371,7 @@ function getAllMondayTasks_() {
   const boardId = BS_CFG.TASKS_BOARD_ID;
 
   // Groups to include (no project filter - include all projects)
-  const VALID_GROUPS = ['blockers', 'ongoing projects', 'completed projects'];
+  const VALID_GROUPS = ['blockers', 'ongoing projects', 'completed projects', 'upcoming/paused projects'];
 
   // First query to get initial page (includes columns for dynamic column ID discovery)
   const initialQuery = `
