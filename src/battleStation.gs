@@ -5052,7 +5052,30 @@ function askAboutVendor() {
     return;
   }
 
-  ss.toast('Searching emails and analyzing...', '🔍 Searching', 10);
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  ss.toast('Gathering vendor context and searching emails...', '🔍 Searching', 15);
+
+  // Gather vendor profile data for context
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+
+  // Get contacts and vendor details from monday.com
+  let contactData = { contacts: [], liveVerticals: '', otherVerticals: '', liveModalities: '', states: '' };
+  try {
+    contactData = getVendorContacts_(vendor, listRow);
+  } catch (e) { /* skip if fails */ }
+
+  // Get AI instructions and goals for context alignment
+  const aiInstructions = getAiInstructions_();
+  const goalsContext = getGoalsContext_();
 
   // Get all emails from vendor label
   const emails = getAllEmailsFromVendorLabel_(listRow, 100); // Get more emails for context
@@ -5064,46 +5087,78 @@ function askAboutVendor() {
 
   Logger.log(`[Ask About Vendor] Found ${emails.length} emails for ${vendor}`);
 
-  // Build email context for Claude - include more detail than Crystal Ball
+  // Build email context with full thread content for deeper understanding
   const emailContext = emails.slice(0, 50).map((e, i) => {
-    // Format date nicely
     const dateStr = e.date || 'Unknown date';
-
-    // Get the content snippet
-    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
-
-    // Format labels nicely
     const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
 
-    return `--- Email ${i+1} ---
+    // Get full thread content (multiple messages) for better context
+    let content = '';
+    try {
+      const thread = GmailApp.getThreadById(e.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        // Include up to last 5 messages in thread for conversation context
+        const recentMsgs = msgs.slice(-5);
+        content = recentMsgs.map(m => {
+          const from = m.getFrom();
+          const date = m.getDate().toISOString().split('T')[0];
+          const body = m.getPlainBody().substring(0, 1000).replace(/\n{3,}/g, '\n\n').trim();
+          return `[${date}] ${from}:\n${body}`;
+        }).join('\n---\n');
+      }
+    } catch (err) {
+      // Fall back to snippet
+      content = (e.snippet || '').replace(/\n+/g, ' ').trim();
+    }
+
+    return `=== Email Thread ${i+1} ===
 Subject: ${e.subject}
 Date: ${dateStr}
 From: ${e.from || 'Unknown'}
 To: ${e.to || 'Unknown'}
+Messages in thread: ${e.messageCount || 1}
 Labels: ${labelsStr}
-Content: ${snippet}`;
+Content:
+${content}`;
   }).join('\n\n');
 
-  // Call Claude with the question
-  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+  // Build vendor profile context
+  let vendorProfile = `## Vendor Profile
+Name: ${vendor}
+Type: ${source}
+Status: ${status}
+TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}`;
 
-USER'S QUESTION: ${question}
+  if (contactData.liveVerticals) vendorProfile += `\nLive Verticals: ${contactData.liveVerticals}`;
+  if (contactData.otherVerticals) vendorProfile += `\nOther Verticals: ${contactData.otherVerticals}`;
+  if (contactData.liveModalities) vendorProfile += `\nLive Modalities: ${contactData.liveModalities}`;
+  if (contactData.states) vendorProfile += `\nStates: ${contactData.states}`;
+  if (notes) vendorProfile += `\nNotes: ${notes}`;
+  if (contactData.contacts.length > 0) {
+    vendorProfile += `\n\nContacts: ${contactData.contacts.slice(0, 5).map(c => `${c.name} (${c.contactType}) ${c.email || ''}`).join(', ')}`;
+  }
 
-Here are the emails from this vendor (most recent first):
+  // Build system prompt for better role context
+  const systemPrompt = `You are A(I)DEN, an AI assistant for Andy Worford, Director of Business Development at Profitise. Profitise delivers exclusive homeowner leads in real-time with TCPA consent, primarily in Home Services and Solar verticals.
+
+Your job is to answer questions about vendors by analyzing their emails, profile data, and relationship context. Be specific, cite relevant emails (mention subject line or date), and provide actionable context. If you can't find a clear answer, say so and explain what related information you did find.
+${aiInstructions}`;
+
+  // Build the user prompt
+  const prompt = `${vendorProfile}
+${goalsContext}
+
+## USER'S QUESTION
+${question}
+
+## Emails from ${vendor} (most recent first, ${Math.min(emails.length, 50)} of ${emails.length} total):
 
 ${emailContext}
 
-Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+Answer the question above based on all available context — vendor profile, emails, and any relevant background. Keep your answer concise but complete.`;
 
-Keep your answer concise but complete.`;
-
-  const apiKey = BS_CFG.CLAUDE_API_KEY;
-  if (!apiKey) {
-    ui.alert('Claude API key not configured.');
-    return;
-  }
-
-  const result = callClaudeAPI_(prompt, apiKey);
+  const result = callClaudeAPI_(prompt, apiKey, { system: systemPrompt, maxTokens: 2500 });
 
   if (result.error) {
     ui.alert(`Error: ${result.error}`);
@@ -5213,35 +5268,58 @@ function askAboutVendorContinue() {
 
   Logger.log(`[Ask About Vendor Continue] Found ${emails.length} emails at offset ${offset} for ${vendor}`);
 
-  // Build email context
+  // Build email context with full thread content
   const emailContext = emails.slice(0, 50).map((e, i) => {
     const dateStr = e.date || 'Unknown date';
-    const snippet = (e.snippet || '').replace(/\n+/g, ' ').trim();
     const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
 
-    return `--- Email ${offset + i + 1} ---
+    // Get full thread content for better context
+    let content = '';
+    try {
+      const thread = GmailApp.getThreadById(e.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const recentMsgs = msgs.slice(-5);
+        content = recentMsgs.map(m => {
+          const from = m.getFrom();
+          const date = m.getDate().toISOString().split('T')[0];
+          const body = m.getPlainBody().substring(0, 1000).replace(/\n{3,}/g, '\n\n').trim();
+          return `[${date}] ${from}:\n${body}`;
+        }).join('\n---\n');
+      }
+    } catch (err) {
+      content = (e.snippet || '').replace(/\n+/g, ' ').trim();
+    }
+
+    return `=== Email Thread ${offset + i + 1} ===
 Subject: ${e.subject}
 Date: ${dateStr}
 From: ${e.from || 'Unknown'}
 To: ${e.to || 'Unknown'}
+Messages in thread: ${e.messageCount || 1}
 Labels: ${labelsStr}
-Content: ${snippet}`;
+Content:
+${content}`;
   }).join('\n\n');
 
-  const prompt = `You are helping analyze emails for a vendor named "${vendor}".
+  const aiInstructions = getAiInstructions_();
 
-USER'S QUESTION: ${question}
+  const systemPrompt = `You are A(I)DEN, an AI assistant for Andy Worford, Director of Business Development at Profitise. Profitise delivers exclusive homeowner leads in real-time with TCPA consent, primarily in Home Services and Solar verticals.
 
-Here are OLDER emails from this vendor (emails ${offset + 1}-${offset + emails.length}):
+Your job is to answer questions about vendors by analyzing their emails. Be specific, cite relevant emails (mention subject line or date), and provide actionable context.
+${aiInstructions}`;
+
+  const prompt = `USER'S QUESTION: ${question}
+
+Here are OLDER emails from vendor "${vendor}" (emails ${offset + 1}-${offset + emails.length}):
 
 ${emailContext}
 
-Based on these emails, please answer the user's question. Be specific and cite relevant emails when possible (mention the subject line or date). If you can't find a clear answer in the emails, say so and explain what related information you did find.
+Based on these emails, please answer the user's question. If you can't find a clear answer, say so and explain what related information you did find.`;
 
-Keep your answer concise but complete.`;
-
-  const apiKey = BS_CFG.CLAUDE_API_KEY;
-  const result = callClaudeAPI_(prompt, apiKey);
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) return { error: 'No Claude API key configured.' };
+  const result = callClaudeAPI_(prompt, apiKey, { system: systemPrompt, maxTokens: 2500 });
 
   if (result.error) {
     return { error: result.error };
