@@ -2969,7 +2969,8 @@ function getVendorContacts_(vendor, listRow) {
   
   let lastUpdated = '';
   
-  // Fetch item data including GROUP, updated_at, and column values
+  // Fetch item data including GROUP, updated_at, column values, AND contact details in one query
+  // (previously required a second API call to fetch contact column_values)
   const query = `
     query {
       items (ids: [${itemId}]) {
@@ -2987,6 +2988,11 @@ function getVendorContacts_(vendor, listRow) {
             linked_items {
               id
               name
+              column_values {
+                id
+                text
+                type
+              }
             }
           }
         }
@@ -3026,6 +3032,7 @@ function getVendorContacts_(vendor, listRow) {
     
     const columnValues = result.data.items[0].column_values;
     const contactIds = [];
+    let contactItems = [];  // Full linked_items with column_values (from single query)
     let notes = '';
     let phonexaLink = '';
     let liveVerticals = '';
@@ -3038,8 +3045,10 @@ function getVendorContacts_(vendor, listRow) {
 
     for (const col of columnValues) {
       // Get contacts from linked_items (for 2-way board relations)
+      // column_values are included in linked_items — no second API call needed
       if (col.id === contactsColumnId && col.linked_items && col.linked_items.length > 0) {
         Logger.log(`Found ${col.linked_items.length} linked contacts`);
+        contactItems = col.linked_items;
         for (const linkedItem of col.linked_items) {
           contactIds.push(linkedItem.id);
           Logger.log(`  Contact ID: ${linkedItem.id}, Name: ${linkedItem.name}`);
@@ -3093,60 +3102,35 @@ function getVendorContacts_(vendor, listRow) {
     
     Logger.log(`Found ${contactIds.length} contact IDs`);
     Logger.log(`Notes: ${notes}`);
-    
+
     const contacts = [];
-    
-    if (contactIds.length > 0) {
-      const contactsQuery = `
-        query {
-          items (ids: [${contactIds.join(', ')}]) {
-            id
-            name
-            column_values {
-              id
-              text
-              type
-            }
+
+    // Contact details are already fetched in the same query via linked_items.column_values
+    // (no second API call needed)
+    if (contactItems.length > 0) {
+      for (const item of contactItems) {
+        const contact = {
+          name: item.name,
+          email: '',
+          phone: '',
+          status: '',
+          contactType: ''
+        };
+
+        for (const col of (item.column_values || [])) {
+          if (col.id === 'email_mkrk53z4') {
+            contact.email = col.text || '';
+          } else if (col.id === 'phone_mkrkzxq2') {
+            contact.phone = col.text || '';
+          } else if (col.id === 'status') {
+            contact.status = col.text || '';
+          } else if (col.id === 'color_mkrkh4bk') {
+            contact.contactType = col.text || '';
           }
         }
-      `;
-      
-      const contactsOptions = {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { 'Authorization': apiToken },
-        payload: JSON.stringify({ query: contactsQuery }),
-        muteHttpExceptions: true
-      };
-      
-      const contactsResponse = UrlFetchApp.fetch('https://api.monday.com/v2', contactsOptions);
-      const contactsResult = JSON.parse(contactsResponse.getContentText());
-      
-      if (contactsResult.data?.items) {
-        for (const item of contactsResult.data.items) {
-          const contact = {
-            name: item.name,
-            email: '',
-            phone: '',
-            status: '',
-            contactType: ''
-          };
-          
-          for (const col of item.column_values) {
-            if (col.id === 'email_mkrk53z4') {
-              contact.email = col.text || '';
-            } else if (col.id === 'phone_mkrkzxq2') {
-              contact.phone = col.text || '';
-            } else if (col.id === 'status') {
-              contact.status = col.text || '';
-            } else if (col.id === 'color_mkrkh4bk') {
-              contact.contactType = col.text || '';
-            }
-          }
-          
-          contacts.push(contact);
-          Logger.log(`Contact found: ${contact.name} <${contact.email}> | ${contact.phone} | ${contact.status} | ${contact.contactType}`);
-        }
+
+        contacts.push(contact);
+        Logger.log(`Contact found: ${contact.name} <${contact.email}> | ${contact.phone} | ${contact.status} | ${contact.contactType}`);
       }
     }
     
@@ -18492,6 +18476,8 @@ Supported action types and their detail formats:
 - ACTION: CHANGE_TASK_STATUS | <task name> | <new status: Done, Waiting on Client, Waiting on Profitise, Waiting on Phonexa, Abandoned>
 - ACTION: UPDATE_PHONEXA_LINK | <url>
 - ACTION: ADD_HELPFUL_LINK | <link name> | <url>
+- ACTION: CHANGE_STATUS | <new status/group name, e.g. "Early Talks", "Live", "Onboarding", "Paused", "Dead">
+- ACTION: RESEARCH | <description of what needs to be researched — this is informational and will be shown as a reminder>
 
 IMPORTANT RULES:
 - Only output ACTION lines - no commentary or explanation
@@ -18645,6 +18631,34 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
         }
         break;
       }
+      case 'CHANGE_STATUS': {
+        if (parts[1]) {
+          const newStatus = parts.slice(1).join(' | ').trim();
+          const currentStatus = contactData.liveStatus || 'Unknown';
+          actions.push({
+            type: 'CHANGE_STATUS',
+            label: 'Change Vendor Status',
+            detail: newStatus,
+            currentStatus: currentStatus,
+            mondayItemId: contactData.mondayItemId,
+            boardId: contactData.boardId,
+            preview: `${currentStatus} → ${newStatus}`
+          });
+        }
+        break;
+      }
+      case 'RESEARCH': {
+        if (parts[1]) {
+          const detail = parts.slice(1).join(' | ').trim();
+          actions.push({
+            type: 'RESEARCH',
+            label: 'Research Reminder',
+            detail: detail,
+            preview: detail
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -18663,7 +18677,9 @@ function showBulkActionsDialog_(vendor, actions) {
     'UPDATE_BLOCKERS': '🚧',
     'CHANGE_TASK_STATUS': '📋',
     'UPDATE_PHONEXA_LINK': '🔗',
-    'ADD_HELPFUL_LINK': '🔗'
+    'ADD_HELPFUL_LINK': '🔗',
+    'CHANGE_STATUS': '🔄',
+    'RESEARCH': '🔍'
   };
 
   let actionsHtml = '';
@@ -18980,6 +18996,55 @@ function executeSingleBulkAction_(action, vendor, source, listRow) {
         mondayApiRequest_(relMutation, apiToken);
       }
 
+      return { success: true };
+    }
+
+    case 'CHANGE_STATUS': {
+      // Change vendor status by moving item to a different group on the monday.com board
+      const itemId = action.mondayItemId;
+      const boardId = action.boardId;
+      if (!itemId || !boardId) {
+        return { success: false, error: 'Missing monday.com item or board ID' };
+      }
+
+      // Fetch available groups from the board to find the matching group ID
+      const groupsQuery = `query { boards (ids: [${boardId}]) { groups { id title } } }`;
+      const groupsResult = mondayApiRequest_(groupsQuery, apiToken);
+      const groups = groupsResult.data?.boards?.[0]?.groups || [];
+
+      const targetTitle = action.detail.toLowerCase().trim();
+      const matchingGroup = groups.find(g => g.title.toLowerCase().trim() === targetTitle) ||
+                            groups.find(g => g.title.toLowerCase().includes(targetTitle) || targetTitle.includes(g.title.toLowerCase()));
+
+      if (!matchingGroup) {
+        const availableGroups = groups.map(g => g.title).join(', ');
+        return { success: false, error: `Group "${action.detail}" not found. Available: ${availableGroups}` };
+      }
+
+      const moveMutation = `
+        mutation {
+          move_item_to_group (
+            item_id: ${itemId},
+            group_id: "${matchingGroup.id}"
+          ) { id }
+        }
+      `;
+      const moveResult = mondayApiRequest_(moveMutation, apiToken);
+      if (moveResult.errors && moveResult.errors.length > 0) {
+        return { success: false, error: moveResult.errors[0].message };
+      }
+      if (moveResult.data?.move_item_to_group?.id) {
+        // Also update the List sheet status column
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(action.listRow || listRow, BS_CFG.L_STATUS + 1).setValue(matchingGroup.title);
+        return { success: true };
+      }
+      return { success: false, error: 'Unexpected API response' };
+    }
+
+    case 'RESEARCH': {
+      // Research is informational-only — just mark as acknowledged
       return { success: true };
     }
 
