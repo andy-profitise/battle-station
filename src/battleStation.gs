@@ -247,6 +247,7 @@ function onOpen() {
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addItem('⚡ Bulk Actions (Claude)', 'battleStationBulkActions')
     .addToUi();
 
   // Email Actions menu - reply templates + email management
@@ -18359,5 +18360,611 @@ Be specific, reference actual vendor names and goals, and give actionable recomm
 
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/************************************************************
+ * BULK ACTIONS
+ * Parse free-text input to identify and execute multiple
+ * vendor operations at once (status changes, URL updates, etc.)
+ ************************************************************/
+
+/**
+ * Entry point: prompt user for free-text, parse into actions, show confirmation dialog.
+ */
+function battleStationBulkActions() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) {
+    ui.alert('No vendor currently loaded. Please load a vendor first.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  if (!vendor) {
+    ui.alert('Could not determine vendor name.');
+    return;
+  }
+
+  // Show input dialog
+  const inputHtml = `
+    <style>
+      body { font-family: Arial, sans-serif; padding: 15px; }
+      h3 { color: #1a73e8; margin-top: 0; }
+      textarea { width: 100%; height: 200px; font-size: 13px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; resize: vertical; }
+      .hint { color: #888; font-size: 12px; margin-top: 8px; line-height: 1.5; }
+      .hint strong { color: #555; }
+      button { background: #1a73e8; color: white; border: none; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; margin-top: 12px; }
+      button:hover { background: #1557b0; }
+    </style>
+    <h3>⚡ Bulk Actions for ${escapeHtml_(vendor)}</h3>
+    <p style="font-size: 13px; color: #333;">Describe everything you want to do — I'll figure out the individual actions:</p>
+    <textarea id="input" placeholder="e.g. Change status to Live, update the phonexa link to https://example.com/report, add a note that they confirmed pricing, mark the Setup Tracking task as Done, update blockers to say waiting on IO signature"></textarea>
+    <div class="hint">
+      <strong>Supported actions:</strong> Change vendor status/group, update notes, update blockers,
+      update Phonexa link, change task statuses, add helpful links, and more.
+    </div>
+    <button onclick="submit()">🤖 Parse Actions</button>
+    <script>
+      function submit() {
+        var text = document.getElementById('input').value.trim();
+        if (!text) { alert('Please describe what you want to do.'); return; }
+        google.script.run
+          .withSuccessHandler(function() { google.script.host.close(); })
+          .withFailureHandler(function(e) { alert('Error: ' + e.message); })
+          .battleStationBulkActionsParse(text);
+      }
+      // Auto-focus
+      document.getElementById('input').focus();
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(inputHtml).setWidth(600).setHeight(400);
+  ui.showModalDialog(htmlOutput, '⚡ Bulk Actions');
+}
+
+/**
+ * Parse user's free-text input into structured actions using Claude,
+ * then show a confirmation dialog.
+ * @param {string} rawInput - The user's free-text description
+ */
+function battleStationBulkActionsParse(rawInput) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  ss.toast('Parsing actions with Claude...', '🤖 Bulk Actions', 5);
+
+  // Gather current vendor state so Claude has context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const tasks = getTasksForVendor_(vendor, listRow);
+  const openTasks = tasks.filter(t => !t.isDone);
+
+  const taskList = openTasks.map(t => `- "${t.subject}" (Status: ${t.status})`).join('\n');
+
+  const prompt = `You are a vendor management assistant. A user has described actions they want to take for vendor "${vendor}" (${source}).
+
+CURRENT VENDOR STATE:
+- Vendor Status (group): ${contactData.liveStatus || 'Unknown'}
+- Notes: ${(contactData.notes || '(none)').substring(0, 300)}
+- Blockers: ${contactData.blockers || '(none)'}
+- Phonexa Link: ${contactData.phonexaLink || '(none)'}
+- Live Verticals: ${contactData.liveVerticals || '(none)'}
+- Other Verticals: ${contactData.otherVerticals || '(none)'}
+- Live Modalities: ${contactData.liveModalities || '(none)'}
+
+OPEN TASKS:
+${taskList || '(no open tasks)'}
+
+USER INPUT:
+"${rawInput}"
+
+Parse the user's input into individual actions. For each action, output a line in this EXACT format:
+
+ACTION: <type> | <details>
+
+Supported action types and their detail formats:
+- ACTION: UPDATE_NOTES | <new notes text to APPEND>
+- ACTION: REPLACE_NOTES | <complete new notes text to REPLACE existing>
+- ACTION: UPDATE_BLOCKERS | <new blockers text>
+- ACTION: CHANGE_TASK_STATUS | <task name> | <new status: Done, Waiting on Client, Waiting on Profitise, Waiting on Phonexa, Abandoned>
+- ACTION: UPDATE_PHONEXA_LINK | <url>
+- ACTION: ADD_HELPFUL_LINK | <link name> | <url>
+
+IMPORTANT RULES:
+- Only output ACTION lines - no commentary or explanation
+- For notes, if the user says "add a note" or "note that" → use UPDATE_NOTES (appends). If they say "change notes to" or "set notes to" → use REPLACE_NOTES
+- For task statuses, match the task name as closely as possible to the open tasks listed above
+- If you cannot determine the action type, skip it
+- Output one ACTION line per action identified`;
+
+  const response = callClaudeAPI_(prompt, BS_CFG.CLAUDE_API_KEY, { maxTokens: 1500 });
+
+  if (response.error) {
+    ui.alert(`Claude API Error: ${response.error}`);
+    return;
+  }
+
+  Logger.log(`Bulk actions Claude response: ${response.content}`);
+
+  // Parse Claude's response into structured actions
+  const actions = parseBulkActions_(response.content, openTasks, contactData);
+
+  if (actions.length === 0) {
+    ui.alert('No actions identified', 'Claude could not identify any actionable operations from your input. Try being more specific.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Store actions for the confirmation dialog to use
+  PropertiesService.getUserProperties().setProperty('bulkActionsData', JSON.stringify({
+    vendor: vendor,
+    source: source,
+    listRow: listRow,
+    actions: actions
+  }));
+
+  // Show confirmation dialog
+  showBulkActionsDialog_(vendor, actions);
+}
+
+/**
+ * Parse Claude's ACTION lines into structured action objects.
+ */
+function parseBulkActions_(claudeResponse, openTasks, contactData) {
+  const actions = [];
+  const lines = claudeResponse.split('\n');
+
+  for (const line of lines) {
+    const match = line.match(/^ACTION:\s*(.+)/i);
+    if (!match) continue;
+
+    const parts = match[1].split('|').map(s => s.trim());
+    const type = parts[0].toUpperCase();
+
+    switch (type) {
+      case 'UPDATE_NOTES': {
+        if (parts[1]) {
+          const currentNotes = contactData.notes || '';
+          const separator = currentNotes ? '\n' : '';
+          actions.push({
+            type: 'UPDATE_NOTES',
+            label: 'Append to Notes',
+            detail: parts[1],
+            preview: parts[1].substring(0, 100) + (parts[1].length > 100 ? '...' : '')
+          });
+        }
+        break;
+      }
+      case 'REPLACE_NOTES': {
+        if (parts[1]) {
+          actions.push({
+            type: 'REPLACE_NOTES',
+            label: 'Replace Notes',
+            detail: parts[1],
+            preview: parts[1].substring(0, 100) + (parts[1].length > 100 ? '...' : '')
+          });
+        }
+        break;
+      }
+      case 'UPDATE_BLOCKERS': {
+        if (parts[1]) {
+          actions.push({
+            type: 'UPDATE_BLOCKERS',
+            label: 'Update Blockers',
+            detail: parts[1],
+            preview: parts[1].substring(0, 100) + (parts[1].length > 100 ? '...' : '')
+          });
+        }
+        break;
+      }
+      case 'CHANGE_TASK_STATUS': {
+        if (parts[1] && parts[2]) {
+          const taskName = parts[1];
+          const newStatus = parts[2];
+          // Match to an actual open task
+          const matchingTask = openTasks.find(t =>
+            t.subject.toLowerCase().includes(taskName.toLowerCase()) ||
+            taskName.toLowerCase().includes(t.subject.replace(/ - [^-]+$/, '').toLowerCase())
+          );
+          if (matchingTask) {
+            actions.push({
+              type: 'CHANGE_TASK_STATUS',
+              label: 'Change Task Status',
+              detail: newStatus,
+              taskName: matchingTask.subject,
+              taskItemId: matchingTask.itemId,
+              taskStatusColumnId: matchingTask.statusColumnId,
+              currentStatus: matchingTask.status,
+              preview: `"${matchingTask.subject}": ${matchingTask.status} → ${newStatus}`
+            });
+          }
+        }
+        break;
+      }
+      case 'UPDATE_PHONEXA_LINK': {
+        if (parts[1]) {
+          actions.push({
+            type: 'UPDATE_PHONEXA_LINK',
+            label: 'Update Phonexa Link',
+            detail: parts[1],
+            preview: parts[1]
+          });
+        }
+        break;
+      }
+      case 'ADD_HELPFUL_LINK': {
+        if (parts[1] && parts[2]) {
+          actions.push({
+            type: 'ADD_HELPFUL_LINK',
+            label: 'Add Helpful Link',
+            detail: parts[2],
+            linkName: parts[1],
+            preview: `${parts[1]} → ${parts[2]}`
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  return actions;
+}
+
+/**
+ * Show confirmation dialog with parsed actions.
+ */
+function showBulkActionsDialog_(vendor, actions) {
+  const ui = SpreadsheetApp.getUi();
+
+  const typeIcons = {
+    'UPDATE_NOTES': '📝',
+    'REPLACE_NOTES': '📝',
+    'UPDATE_BLOCKERS': '🚧',
+    'CHANGE_TASK_STATUS': '📋',
+    'UPDATE_PHONEXA_LINK': '🔗',
+    'ADD_HELPFUL_LINK': '🔗'
+  };
+
+  let actionsHtml = '';
+  actions.forEach((action, i) => {
+    const icon = typeIcons[action.type] || '⚡';
+    actionsHtml += `
+      <div class="action-row" id="action-${i}">
+        <label>
+          <input type="checkbox" class="action-cb" data-index="${i}" checked>
+          <span class="action-icon">${icon}</span>
+          <span class="action-label">${escapeHtml_(action.label)}</span>
+        </label>
+        <div class="action-preview">${escapeHtml_(action.preview)}</div>
+      </div>
+    `;
+  });
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .action-row { background: #fff; border: 1px solid #ddd; padding: 10px 12px; margin-bottom: 8px; border-radius: 5px; }
+      .action-row.applied { background: #e8f5e9; border-color: #4caf50; }
+      .action-row.failed { background: #ffebee; border-color: #e53935; }
+      .action-row.skipped { background: #f5f5f5; opacity: 0.5; }
+      .action-icon { font-size: 16px; margin-right: 4px; }
+      .action-label { font-weight: bold; color: #333; }
+      .action-preview { color: #666; font-size: 12px; margin-top: 4px; margin-left: 24px; word-break: break-all; }
+      label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+      .action-cb { width: 16px; height: 16px; }
+      .btn-bar { display: flex; gap: 10px; margin-top: 15px; padding-top: 12px; border-top: 1px solid #ddd; }
+      .btn-execute { background: #4caf50; color: white; border: none; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; flex: 1; }
+      .btn-execute:hover { background: #45a049; }
+      .btn-execute:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-cancel { background: #f5f5f5; color: #666; border: 1px solid #ddd; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; }
+      .btn-cancel:hover { background: #eee; }
+      .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; font-size: 12px; }
+      .status-msg.show { display: block; }
+      .status-msg.success { background: #e8f5e9; color: #2e7d32; }
+      .status-msg.error { background: #ffebee; color: #c62828; }
+      .status-msg.info { background: #e3f2fd; color: #1565c0; }
+    </style>
+
+    <h2>⚡ Bulk Actions</h2>
+    <p class="subtitle">Review and confirm actions for <strong>${escapeHtml_(vendor)}</strong>. Uncheck any you want to skip.</p>
+
+    <div id="status-message" class="status-msg"></div>
+
+    <div id="actions-list">
+      ${actionsHtml}
+    </div>
+
+    <div class="btn-bar">
+      <button class="btn-execute" id="execute-btn" onclick="executeAll()">✓ Execute Selected (${actions.length})</button>
+      <button class="btn-cancel" onclick="google.script.host.close()">Cancel</button>
+    </div>
+
+    <script>
+      // Update button count when checkboxes change
+      document.querySelectorAll('.action-cb').forEach(function(cb) {
+        cb.addEventListener('change', function() {
+          var count = document.querySelectorAll('.action-cb:checked').length;
+          document.getElementById('execute-btn').textContent = '✓ Execute Selected (' + count + ')';
+          if (cb.checked) {
+            document.getElementById('action-' + cb.dataset.index).classList.remove('skipped');
+          } else {
+            document.getElementById('action-' + cb.dataset.index).classList.add('skipped');
+          }
+        });
+      });
+
+      function showStatus(msg, type) {
+        var el = document.getElementById('status-message');
+        el.textContent = msg;
+        el.className = 'status-msg show ' + type;
+      }
+
+      function executeAll() {
+        var selected = [];
+        document.querySelectorAll('.action-cb:checked').forEach(function(cb) {
+          selected.push(parseInt(cb.dataset.index));
+        });
+        if (selected.length === 0) {
+          showStatus('No actions selected.', 'error');
+          return;
+        }
+
+        var btn = document.getElementById('execute-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Executing...';
+        showStatus('Executing ' + selected.length + ' action(s)...', 'info');
+
+        google.script.run
+          .withSuccessHandler(function(results) {
+            var successCount = 0;
+            var failCount = 0;
+            for (var i = 0; i < results.length; i++) {
+              var row = document.getElementById('action-' + results[i].index);
+              if (results[i].success) {
+                row.classList.add('applied');
+                successCount++;
+              } else {
+                row.classList.add('failed');
+                row.querySelector('.action-preview').textContent = 'Error: ' + results[i].error;
+                failCount++;
+              }
+            }
+            if (failCount === 0) {
+              showStatus('All ' + successCount + ' action(s) executed successfully!', 'success');
+              btn.textContent = '✓ Done — Refreshing...';
+              // Auto-refresh after success
+              google.script.run
+                .withSuccessHandler(function() { google.script.host.close(); })
+                .withFailureHandler(function() { google.script.host.close(); })
+                .battleStationHardRefresh();
+            } else {
+              showStatus(successCount + ' succeeded, ' + failCount + ' failed.', 'error');
+              btn.textContent = '⚠ Completed with errors';
+            }
+          })
+          .withFailureHandler(function(e) {
+            showStatus('Error: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = '✓ Retry';
+          })
+          .executeBulkActions(JSON.stringify(selected));
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(650).setHeight(500);
+  ui.showModalDialog(htmlOutput, '⚡ Bulk Actions — Confirm');
+}
+
+/**
+ * Execute selected bulk actions. Called from the confirmation dialog.
+ * @param {string} selectedIndicesJson - JSON array of action indices to execute
+ * @returns {Array} Array of { index, success, error? } results
+ */
+function executeBulkActions(selectedIndicesJson) {
+  const selectedIndices = JSON.parse(selectedIndicesJson);
+  const stored = JSON.parse(PropertiesService.getUserProperties().getProperty('bulkActionsData') || '{}');
+
+  if (!stored.actions || !stored.vendor) {
+    throw new Error('No bulk actions data found. Please try again.');
+  }
+
+  const { vendor, source, listRow, actions } = stored;
+  const results = [];
+
+  for (const idx of selectedIndices) {
+    const action = actions[idx];
+    if (!action) {
+      results.push({ index: idx, success: false, error: 'Action not found' });
+      continue;
+    }
+
+    try {
+      const result = executeSingleBulkAction_(action, vendor, source, listRow);
+      results.push({ index: idx, success: result.success, error: result.error || null });
+    } catch (e) {
+      results.push({ index: idx, success: false, error: e.message });
+    }
+  }
+
+  // Clean up stored data
+  PropertiesService.getUserProperties().deleteProperty('bulkActionsData');
+
+  return results;
+}
+
+/**
+ * Execute a single parsed bulk action against monday.com.
+ * @param {Object} action - The parsed action object
+ * @param {string} vendor - Vendor name
+ * @param {string} source - "Buyers" or "Affiliates"
+ * @param {number} listRow - Row in the List sheet
+ * @returns {{ success: boolean, error?: string }}
+ */
+function executeSingleBulkAction_(action, vendor, source, listRow) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+
+  switch (action.type) {
+    case 'UPDATE_NOTES': {
+      // Append to existing notes
+      const contactData = getVendorContacts_(vendor, listRow);
+      const currentNotes = contactData.notes || '';
+      const separator = currentNotes ? '\n' : '';
+      const newNotes = currentNotes + separator + action.detail;
+      const result = updateMondayComNotesForVendor_(vendor, newNotes, listRow);
+      if (result.success) {
+        // Also update List sheet
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(newNotes);
+      }
+      return result;
+    }
+
+    case 'REPLACE_NOTES': {
+      const result = updateMondayComNotesForVendor_(vendor, action.detail, listRow);
+      if (result.success) {
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(action.detail);
+      }
+      return result;
+    }
+
+    case 'UPDATE_BLOCKERS': {
+      return updateMondayBlockersForVendor_(vendor, action.detail, listRow);
+    }
+
+    case 'CHANGE_TASK_STATUS': {
+      return updateTaskStatus(action.taskItemId, action.taskStatusColumnId, action.detail);
+    }
+
+    case 'UPDATE_PHONEXA_LINK': {
+      const isBuyer = source.toLowerCase().includes('buyer');
+      const boardId = isBuyer ? BS_CFG.BUYERS_BOARD_ID : BS_CFG.AFFILIATES_BOARD_ID;
+      const phonexaColumnId = isBuyer ? BS_CFG.BUYERS_PHONEXA_COLUMN : BS_CFG.AFFILIATES_PHONEXA_COLUMN;
+      const itemId = findMondayItemIdByVendor_(vendor, boardId, apiToken);
+
+      if (!itemId) {
+        return { success: false, error: `Could not find monday.com item for ${vendor}` };
+      }
+
+      // Link columns expect JSON format: {"url": "...", "text": "..."}
+      const linkValue = JSON.stringify({ url: action.detail, text: action.detail });
+      const escapedValue = linkValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+      const mutation = `
+        mutation {
+          change_column_value (
+            board_id: ${boardId},
+            item_id: ${itemId},
+            column_id: "${phonexaColumnId}",
+            value: "${escapedValue}"
+          ) { id }
+        }
+      `;
+
+      const result = mondayApiRequest_(mutation, apiToken);
+      if (result.errors && result.errors.length > 0) {
+        return { success: false, error: result.errors[0].message };
+      }
+      if (result.data?.change_column_value?.id) {
+        return { success: true };
+      }
+      return { success: false, error: 'Unexpected API response' };
+    }
+
+    case 'ADD_HELPFUL_LINK': {
+      // Create a new item on the Helpful Links board and link it to the vendor
+      const boardId = BS_CFG.HELPFUL_LINKS_BOARD_ID;
+      const linkName = action.linkName || 'Link';
+
+      // Create the item
+      const escapedName = linkName.replace(/"/g, '\\"');
+      const createMutation = `
+        mutation {
+          create_item (
+            board_id: ${boardId},
+            item_name: "${escapedName}"
+          ) { id }
+        }
+      `;
+
+      const createResult = mondayApiRequest_(createMutation, apiToken);
+      if (createResult.errors && createResult.errors.length > 0) {
+        return { success: false, error: createResult.errors[0].message };
+      }
+
+      const newItemId = createResult.data?.create_item?.id;
+      if (!newItemId) {
+        return { success: false, error: 'Failed to create helpful link item' };
+      }
+
+      // Set the link URL
+      const linkValue = JSON.stringify({ url: action.detail, text: action.detail });
+      const escapedLinkValue = linkValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+      const linkMutation = `
+        mutation {
+          change_column_value (
+            board_id: ${boardId},
+            item_id: ${newItemId},
+            column_id: "${BS_CFG.HELPFUL_LINKS_LINK_COLUMN}",
+            value: "${escapedLinkValue}"
+          ) { id }
+        }
+      `;
+      mondayApiRequest_(linkMutation, apiToken);
+
+      // Link to the vendor via the appropriate board relation column
+      const isBuyer = source.toLowerCase().includes('buyer');
+      const vendorBoardId = isBuyer ? BS_CFG.BUYERS_BOARD_ID : BS_CFG.AFFILIATES_BOARD_ID;
+      const relationColumn = isBuyer ? BS_CFG.HELPFUL_LINKS_BUYERS_COLUMN : BS_CFG.HELPFUL_LINKS_AFFILIATES_COLUMN;
+      const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
+
+      if (vendorItemId) {
+        const relValue = `{\\"item_ids\\": [${vendorItemId}]}`;
+        const relMutation = `
+          mutation {
+            change_column_value (
+              board_id: ${boardId},
+              item_id: ${newItemId},
+              column_id: "${relationColumn}",
+              value: "${relValue}"
+            ) { id }
+          }
+        `;
+        mondayApiRequest_(relMutation, apiToken);
+      }
+
+      return { success: true };
+    }
+
+    default:
+      return { success: false, error: `Unknown action type: ${action.type}` };
   }
 }
