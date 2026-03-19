@@ -18498,7 +18498,12 @@ IMPORTANT RULES:
 - For notes, if the user says "add a note" or "note that" → use UPDATE_NOTES (appends). If they say "change notes to" or "set notes to" → use REPLACE_NOTES
 - For task statuses, match the task name as closely as possible to the open tasks listed above
 - If you cannot determine the action type, skip it
-- Output one ACTION line per action identified`;
+- Output one ACTION line per action identified
+- For multi-line content (bullet points, lists), put ALL the content after the pipe. Continuation lines (without ACTION: prefix) will be merged into the preceding action. Example:
+  ACTION: UPDATE_NOTES | Notes with bullets:
+  - bullet 1
+  - bullet 2
+  - bullet 3`;
 
   const response = callClaudeAPI_(prompt, BS_CFG.CLAUDE_API_KEY, { maxTokens: 1500 });
 
@@ -18536,45 +18541,59 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
   const actions = [];
   const lines = claudeResponse.split('\n');
 
+  // First pass: merge continuation lines into their preceding ACTION line.
+  // Lines that don't start with "ACTION:" are appended to the previous ACTION's detail.
+  const mergedActionLines = [];
   for (const line of lines) {
-    const match = line.match(/^ACTION:\s*(.+)/i);
-    if (!match) continue;
+    const actionMatch = line.match(/^ACTION:\s*(.+)/i);
+    if (actionMatch) {
+      mergedActionLines.push(actionMatch[1]);
+    } else if (mergedActionLines.length > 0 && line.trim()) {
+      // Continuation line — append to the last ACTION's content
+      mergedActionLines[mergedActionLines.length - 1] += '\n' + line;
+    }
+  }
 
-    const parts = match[1].split('|').map(s => s.trim());
+  for (const rawLine of mergedActionLines) {
+    // Split only on the first pipe(s) for type and structured fields,
+    // but keep the detail text intact (it may contain pipes in URLs etc.)
+    const parts = rawLine.split('|').map(s => s.trim());
     const type = parts[0].toUpperCase();
 
     switch (type) {
       case 'UPDATE_NOTES': {
         if (parts[1]) {
-          const currentNotes = contactData.notes || '';
-          const separator = currentNotes ? '\n' : '';
+          // Rejoin remaining parts in case the detail text contained pipe characters
+          const detail = parts.slice(1).join(' | ');
           actions.push({
             type: 'UPDATE_NOTES',
             label: 'Append to Notes',
-            detail: parts[1],
-            preview: parts[1].substring(0, 100) + (parts[1].length > 100 ? '...' : '')
+            detail: detail,
+            preview: detail
           });
         }
         break;
       }
       case 'REPLACE_NOTES': {
         if (parts[1]) {
+          const detail = parts.slice(1).join(' | ');
           actions.push({
             type: 'REPLACE_NOTES',
             label: 'Replace Notes',
-            detail: parts[1],
-            preview: parts[1].substring(0, 100) + (parts[1].length > 100 ? '...' : '')
+            detail: detail,
+            preview: detail
           });
         }
         break;
       }
       case 'UPDATE_BLOCKERS': {
         if (parts[1]) {
+          const detail = parts.slice(1).join(' | ');
           actions.push({
             type: 'UPDATE_BLOCKERS',
             label: 'Update Blockers',
-            detail: parts[1],
-            preview: parts[1].substring(0, 100) + (parts[1].length > 100 ? '...' : '')
+            detail: detail,
+            preview: detail
           });
         }
         break;
@@ -18673,7 +18692,7 @@ function showBulkActionsDialog_(vendor, actions) {
       .action-row.skipped { background: #f5f5f5; opacity: 0.5; }
       .action-icon { font-size: 16px; margin-right: 4px; }
       .action-label { font-weight: bold; color: #333; }
-      .action-preview { color: #666; font-size: 12px; margin-top: 4px; margin-left: 24px; word-break: break-all; }
+      .action-preview { color: #666; font-size: 12px; margin-top: 4px; margin-left: 24px; word-break: break-word; white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
       label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
       .action-cb { width: 16px; height: 16px; }
       .btn-bar { display: flex; gap: 10px; margin-top: 15px; padding-top: 12px; border-top: 1px solid #ddd; }
