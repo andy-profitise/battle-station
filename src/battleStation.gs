@@ -3227,7 +3227,7 @@ function getVendorChatInfo_(vendor) {
       const options = {
         method: 'post',
         contentType: 'application/json',
-        headers: { 'Authorization': apiToken },
+        headers: { 'Authorization': apiToken, 'API-Version': '2024-10' },
         payload: JSON.stringify({ query: query }),
         muteHttpExceptions: true
       };
@@ -3247,15 +3247,17 @@ function getVendorChatInfo_(vendor) {
       let labelColId = null;
       let clickableLinkColId = null;
       let vendorNameColId = null;
+      let altNameColId = null;
 
       for (const col of columns) {
         const title = col.title.toLowerCase();
         if (title === 'label') labelColId = col.id;
         else if (title === 'clickable link') clickableLinkColId = col.id;
         else if (title === 'vendor name') vendorNameColId = col.id;
+        else if (title === 'alt name') altNameColId = col.id;
       }
 
-      Logger.log(`Chat Links columns - Label: ${labelColId}, Clickable Link: ${clickableLinkColId}, Vendor Name: ${vendorNameColId}`);
+      Logger.log(`Chat Links columns - Label: ${labelColId}, Clickable Link: ${clickableLinkColId}, Vendor Name: ${vendorNameColId}, Alt Name: ${altNameColId}`);
 
       // Build vendor → chat info map
       chatMap = {};
@@ -3263,12 +3265,15 @@ function getVendorChatInfo_(vendor) {
 
       for (const item of items) {
         let vendorName = '';
+        let altName = '';
         let label = '';
         let clickableLink = '';
 
         for (const col of item.column_values) {
           if (col.id === vendorNameColId && col.text) {
             vendorName = col.text.trim();
+          } else if (col.id === altNameColId && col.text) {
+            altName = col.text.trim();
           } else if (col.id === labelColId && col.text) {
             label = col.text.trim();
           } else if (col.id === clickableLinkColId && col.text) {
@@ -3276,12 +3281,20 @@ function getVendorChatInfo_(vendor) {
           }
         }
 
-        // Use vendor name column if available, fall back to item name
-        const effectiveName = vendorName || item.name.trim();
-        if (effectiveName) {
-          chatMap[effectiveName.toLowerCase()] = { label: label, clickableLink: clickableLink };
-          Logger.log(`Chat Links: ${effectiveName} → ${label} (${clickableLink})`);
+        const chatEntry = { label: label, clickableLink: clickableLink };
+        const itemName = item.name.trim();
+
+        // Store under all available names for robust matching
+        const names = new Set();
+        if (vendorName) names.add(vendorName.toLowerCase());
+        if (altName) names.add(altName.toLowerCase());
+        if (itemName) names.add(itemName.toLowerCase());
+
+        for (const name of names) {
+          chatMap[name] = chatEntry;
         }
+
+        Logger.log(`Chat Links: ${vendorName || itemName} → ${label} (${clickableLink})${altName ? ` [alt: ${altName}]` : ''}`);
       }
 
       setCachedData_('monday_items', cacheKey, chatMap);
