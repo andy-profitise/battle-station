@@ -297,6 +297,7 @@ function onOpen() {
     .addItem('▶ Next Vendor (Fast)', 'battleStationNext')
     .addItem('◀ Previous Vendor (Fast)', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addItem('⏮️ Restart from Top', 'battleStationRestartFromTop')
     .addSeparator()
     .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
     .addItem('⚙️ Set Deep Link URL...', 'setDeepLinkBaseUrl')
@@ -5788,6 +5789,24 @@ function battleStationPrevious() {
   }
 
   loadVendorData(currentIndex - 1, { loadMode: 'fast' });
+}
+
+/**
+ * Navigation: Restart from the first vendor in the list
+ */
+function battleStationRestartFromTop() {
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  ss.toast('Restarting from the top...', '⏮️ Restart', 2);
+  loadVendorData(1);
 }
 
 /**
