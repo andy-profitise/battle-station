@@ -2097,20 +2097,30 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
   // CRYSTAL BALL SECTION (right side - below Google Drive)
   // Skip Crystal Ball in turbo mode - redundant with Gmail search
-  let crystalBall = { items: [], snoozed: [], summary: null, error: null };
+  let crystalBall = { items: [], snoozed: [], summary: null, suggestedActions: [], error: null };
   if (turboMode) {
     Logger.log('Skipping Crystal Ball in turbo mode');
   } else {
-    ss.toast('Analyzing emails...', '🔮 Crystal Ball', 2);
-    crystalBall = getCrystalBallData_(vendor, listRow);
+    ss.toast('Analyzing emails + blockers + tasks...', '🔮 Crystal Ball', 3);
+    // Pass blockers, tasks, and vendor context for cross-referencing
+    const allVendorTasks = getTasksForVendor_(vendor, listRow); // cached, no extra API call
+    crystalBall = getCrystalBallData_(vendor, listRow, {
+      blockerTasks: blockerTasks,
+      tasks: allVendorTasks,
+      contactData: contactData,
+      notes: mondayNotes
+    });
   }
 
   let crystalRow = rightColumnRow + 1;
 
   // Crystal Ball header
   const crystalCount = crystalBall.items.length + crystalBall.snoozed.length;
+  const blockerCount = blockerTasks.length;
+  const headerParts = [`${crystalCount} threads`];
+  if (blockerCount > 0) headerParts.push(`${blockerCount} blockers`);
   bsSh.getRange(crystalRow, 6, 1, 4).merge()
-    .setValue(`🔮 CRYSTAL BALL (${crystalCount} threads)`)
+    .setValue(`🔮 CRYSTAL BALL (${headerParts.join(', ')})`)
     .setBackground('#e8f5e9')  // Light green
     .setFontWeight('bold')
     .setFontSize(10)
@@ -2129,29 +2139,63 @@ function loadVendorData(vendorIndex, options) {
       .setHorizontalAlignment('left');
     crystalRow++;
   } else if (crystalBall.summary) {
-    // Display the AI-generated summary
+    // Display the AI-generated summary (blockers analysis + summary)
     const summaryLines = crystalBall.summary.split('\n').filter(l => l.trim());
 
-    for (const line of summaryLines.slice(0, 8)) {
-      bsSh.getRange(crystalRow, 6, 1, 4).merge()
-        .setValue(line.trim())
+    for (const line of summaryLines.slice(0, 12)) {
+      // Detect section headers (bold markdown) and style differently
+      const isSectionHeader = line.trim().startsWith('**') && line.trim().endsWith('**');
+      const cell = bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(isSectionHeader ? line.trim().replace(/\*\*/g, '') : line.trim())
         .setFontSize(9)
-        .setBackground('#fafafa')
+        .setBackground(isSectionHeader ? '#e8f5e9' : '#fafafa')
         .setWrap(true)
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
+      if (isSectionHeader) {
+        cell.setFontWeight('bold').setFontColor('#2e7d32');
+      }
       bsSh.setRowHeight(crystalRow, 22);
       crystalRow++;
     }
 
-    if (summaryLines.length > 8) {
+    if (summaryLines.length > 12) {
       bsSh.getRange(crystalRow, 6, 1, 4).merge()
-        .setValue(`... and ${summaryLines.length - 8} more items`)
+        .setValue(`... and ${summaryLines.length - 12} more items`)
         .setFontStyle('italic')
         .setFontColor('#666666')
         .setBackground('#fafafa')
         .setHorizontalAlignment('left');
       crystalRow++;
+    }
+
+    // Display suggested actions if any
+    const suggestedActions = crystalBall.suggestedActions || [];
+    if (suggestedActions.length > 0) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue('⚡ SUGGESTED ACTIONS')
+        .setBackground('#fff3e0')
+        .setFontWeight('bold')
+        .setFontSize(9)
+        .setFontColor('#e65100')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(crystalRow, 22);
+      crystalRow++;
+
+      for (const action of suggestedActions.slice(0, 5)) {
+        const whoIcon = action.who === 'vendor' ? '👤' : '👈';
+        const actionText = `${whoIcon} ${action.description}${action.relatedItem ? ' → ' + action.relatedItem : ''}`;
+        bsSh.getRange(crystalRow, 6, 1, 4).merge()
+          .setValue(actionText)
+          .setFontSize(9)
+          .setBackground('#fff8e1')
+          .setWrap(true)
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top');
+        bsSh.setRowHeight(crystalRow, 22);
+        crystalRow++;
+      }
     }
   } else {
     bsSh.getRange(crystalRow, 6, 1, 4).merge()
@@ -4809,19 +4853,25 @@ function getGDriveFilesForVendor_(vendorName) {
  * @param {number} listRow - The row number in the list sheet
  * @returns {object} - { items: [], snoozed: [], summary: string, error: string }
  */
-function getCrystalBallData_(vendor, listRow) {
+function getCrystalBallData_(vendor, listRow, options) {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
 
   if (!listSh) {
-    return { items: [], snoozed: [], summary: '', error: 'List sheet not found' };
+    return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'List sheet not found' };
   }
+
+  // Extract additional context from options
+  const blockerTasks = (options && options.blockerTasks) || [];
+  const allTasks = (options && options.tasks) || [];
+  const contactData = (options && options.contactData) || {};
+  const mondayNotes = (options && options.notes) || '';
 
   try {
     // Get the Gmail link to extract the vendor label
     const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
     if (!gmailLinkAll) {
-      return { items: [], snoozed: [], summary: '', error: 'No Gmail link found' };
+      return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'No Gmail link found' };
     }
 
     const gmailLinkStr = gmailLinkAll.toString();
@@ -4829,7 +4879,7 @@ function getCrystalBallData_(vendor, listRow) {
     // Extract vendor label (zzzvendors-*) from URL
     const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
     if (!vendorLabelMatch) {
-      return { items: [], snoozed: [], summary: '', error: 'Could not extract vendor label' };
+      return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'Could not extract vendor label' };
     }
 
     const vendorLabel = vendorLabelMatch[1];
@@ -4907,12 +4957,30 @@ function getCrystalBallData_(vendor, listRow) {
       });
     }
 
-    // If no emails, return early
-    if (receivedItems.length === 0 && snoozedItems.length === 0) {
+    // Build blocker context for Claude
+    const blockerContext = blockerTasks.length > 0
+      ? blockerTasks.map((b, i) => `${i+1}. "${b.subject}" (Status: ${b.status}${b.notes ? ', Notes: ' + b.notes : ''})`).join('\n')
+      : 'None';
+
+    // Build open tasks context (non-blocker, non-done tasks)
+    const openTasks = allTasks.filter(t => !t.isDone && !t.isBlocker);
+    const openTaskContext = openTasks.length > 0
+      ? openTasks.map((t, i) => `${i+1}. "${t.subject}" (Status: ${t.status}, Project: ${t.project})`).join('\n')
+      : 'None';
+
+    // Build recently completed tasks context (for awareness of what's already done)
+    const completedTasks = allTasks.filter(t => t.isDone);
+    const completedTaskContext = completedTasks.length > 0
+      ? completedTasks.slice(0, 10).map((t, i) => `${i+1}. "${t.subject}" (${t.status}${t.created ? ', Completed around: ' + t.created : ''})`).join('\n')
+      : 'None';
+
+    // If no emails AND no blockers AND no open tasks, return early
+    if (receivedItems.length === 0 && snoozedItems.length === 0 && blockerTasks.length === 0 && openTasks.length === 0) {
       return {
         items: [],
         snoozed: [],
-        summary: 'No outstanding emails found.',
+        summary: 'No outstanding items found.',
+        suggestedActions: [],
         error: null
       };
     }
@@ -4927,8 +4995,8 @@ function getCrystalBallData_(vendor, listRow) {
       `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
     ).join('\n\n');
 
-    // Call Claude for analysis
-    const prompt = `You are analyzing emails for a vendor named "${vendor}" to determine what is OUTSTANDING and needs attention.
+    // Call Claude for analysis with full vendor context
+    const prompt = `You are analyzing a vendor named "${vendor}" to determine what is OUTSTANDING and what the next actions should be. You have access to their emails, blockers, open tasks, completed tasks, and vendor state.
 
 CRITICAL CONTEXT:
 - "OUR TEAM" = Profitise/ZeroParallel/Phonexa (emails from @profitise.com, @zeroparallel.com, @phonexa.com)
@@ -4939,27 +5007,52 @@ CRITICAL CONTEXT:
 
 IMPORTANT: Only use 🔴 (red) if the email has the "01.priority/1" label. Without that label, use 🟡 (yellow) instead.
 
+VENDOR STATE:
+- Status: ${contactData.liveStatus || 'Unknown'}
+- Live Verticals: ${contactData.liveVerticals || '(none)'}
+- Live Modalities: ${contactData.liveModalities || '(none)'}
+- Phonexa Link: ${contactData.phonexaLink || '(none)'}
+- Notes: ${(mondayNotes || '(none)').substring(0, 500)}
+
+🚧 OPEN BLOCKERS (these are actively blocking progress):
+${blockerContext}
+
+📋 OPEN TASKS (onboarding/project checklist items not yet done):
+${openTaskContext}
+
+✅ RECENTLY COMPLETED TASKS (already done — DO NOT suggest these again):
+${completedTaskContext}
+
 ACTIVE EMAILS IN INBOX (label:00.received):
 ${emailContext || 'None'}
 
 SNOOZED EMAILS (deferred for later):
 ${snoozedContext || 'None'}
 
-Analyze these emails and provide a BRIEF, ACTIONABLE summary. Pay close attention to:
-1. WHO sent the last message
-2. Whether the email has the 01.priority/1 label (check the Labels line)
+ANALYSIS INSTRUCTIONS:
+1. Cross-reference the EMAILS with the BLOCKERS and OPEN TASKS to understand the full picture
+2. If a blocker says the vendor needs to do something (e.g., "Signup on Portal"), check if the emails or completed tasks suggest they may have already done it
+3. If the vendor is waiting on us (based on email context), identify what WE need to do from the open tasks list
+4. If we are waiting on the vendor, identify what THEY need to do based on blockers and tasks
+5. Look at the onboarding checklist (open tasks) to determine what the logical next step is
 
-Format your response as a SHORT bulleted list (3-6 bullets max). Be concise - each bullet should be 10 words or less.
-Start each bullet with an emoji:
-- 🔴 = URGENT: they sent last AND has 01.priority/1 label
-- 🟡 = Waiting/needs attention but not urgent (no priority label, or we sent last)
-- 🔵 = Snoozed/deferred for later
-- 🟢 = FYI/informational
+FORMAT YOUR RESPONSE IN TWO SECTIONS:
 
-Example format:
-• 🟡 Awaiting vendor response on Invoice #123
-• 🔴 URGENT: Reply to their pricing question (priority)
-• 🔵 Follow-up snoozed until Jan 15`;
+**Blockers**
+Analyze each blocker against the emails and completed tasks. For each blocker, state whether it appears resolved or still active, and what evidence supports this.
+
+**Summary**
+A brief summary of the overall situation and what the most important next step is.
+
+Then on a NEW LINE, output suggested actions in this format (one per line):
+SUGGESTED_ACTION: <description of what to do> | <who needs to do it: "us" or "vendor"> | <related blocker or task name if applicable>
+
+Examples:
+SUGGESTED_ACTION: Ask vendor to sign up on Profitise affiliate portal | vendor | Signup on Profitise Portal
+SUGGESTED_ACTION: Reply to vendor's email about campaign details | us | Send Campaign Details
+SUGGESTED_ACTION: Mark blocker as resolved - vendor already completed signup | us | Signup on Profitise Portal
+
+Keep the analysis concise but insightful. Focus on what's ACTIONABLE.`;
 
     const apiKey = BS_CFG.CLAUDE_API_KEY;
     if (!apiKey) {
@@ -4968,11 +5061,12 @@ Example format:
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
+        suggestedActions: [],
         error: null
       };
     }
 
-    const claudeResult = callClaudeAPI_(prompt, apiKey);
+    const claudeResult = callClaudeAPI_(prompt, apiKey, { maxTokens: 1500 });
 
     if (claudeResult.error) {
       Logger.log(`[Crystal Ball] Claude API error: ${claudeResult.error}`);
@@ -4980,21 +5074,49 @@ Example format:
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active, ${snoozedItems.length} snoozed (analysis failed)`,
+        suggestedActions: [],
         error: claudeResult.error
       };
     }
 
     Logger.log(`[Crystal Ball] Analysis complete`);
+
+    // Parse suggested actions from Claude's response
+    const suggestedActions = [];
+    const summaryLines = [];
+    const responseLines = claudeResult.content.split('\n');
+    for (const line of responseLines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('SUGGESTED_ACTION:')) {
+        const parts = trimmed.substring('SUGGESTED_ACTION:'.length).split('|').map(p => p.trim());
+        if (parts.length >= 2) {
+          suggestedActions.push({
+            description: parts[0],
+            who: parts[1] || 'us',
+            relatedItem: parts[2] || ''
+          });
+        }
+      } else {
+        summaryLines.push(line);
+      }
+    }
+
+    // Clean up trailing blank lines from summary
+    while (summaryLines.length > 0 && summaryLines[summaryLines.length - 1].trim() === '') {
+      summaryLines.pop();
+    }
+
     return {
       items: receivedItems,
       snoozed: snoozedItems,
-      summary: claudeResult.content,
+      summary: summaryLines.join('\n'),
+      suggestedActions: suggestedActions,
       error: null
     };
 
   } catch (e) {
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
-    return { items: [], snoozed: [], summary: '', error: e.message };
+    return { items: [], snoozed: [], summary: '', suggestedActions: [], error: e.message };
   }
 }
 
