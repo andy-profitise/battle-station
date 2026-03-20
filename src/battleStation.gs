@@ -297,6 +297,7 @@ function onOpen() {
     .addItem('▶ Next Vendor (Fast)', 'battleStationNext')
     .addItem('◀ Previous Vendor (Fast)', 'battleStationPrevious')
     .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addItem('⏮️ Restart from Top', 'battleStationRestartFromTop')
     .addSeparator()
     .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
     .addItem('⚙️ Set Deep Link URL...', 'setDeepLinkBaseUrl')
@@ -2096,20 +2097,30 @@ function loadVendorData(vendorIndex, options) {
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
   // CRYSTAL BALL SECTION (right side - below Google Drive)
   // Skip Crystal Ball in turbo mode - redundant with Gmail search
-  let crystalBall = { items: [], snoozed: [], summary: null, error: null };
+  let crystalBall = { items: [], snoozed: [], summary: null, suggestedActions: [], error: null };
   if (turboMode) {
     Logger.log('Skipping Crystal Ball in turbo mode');
   } else {
-    ss.toast('Analyzing emails...', '🔮 Crystal Ball', 2);
-    crystalBall = getCrystalBallData_(vendor, listRow);
+    ss.toast('Analyzing emails + blockers + tasks...', '🔮 Crystal Ball', 3);
+    // Pass blockers, tasks, and vendor context for cross-referencing
+    const allVendorTasks = getTasksForVendor_(vendor, listRow); // cached, no extra API call
+    crystalBall = getCrystalBallData_(vendor, listRow, {
+      blockerTasks: blockerTasks,
+      tasks: allVendorTasks,
+      contactData: contactData,
+      notes: mondayNotes
+    });
   }
 
   let crystalRow = rightColumnRow + 1;
 
   // Crystal Ball header
   const crystalCount = crystalBall.items.length + crystalBall.snoozed.length;
+  const blockerCount = blockerTasks.length;
+  const headerParts = [`${crystalCount} threads`];
+  if (blockerCount > 0) headerParts.push(`${blockerCount} blockers`);
   bsSh.getRange(crystalRow, 6, 1, 4).merge()
-    .setValue(`🔮 CRYSTAL BALL (${crystalCount} threads)`)
+    .setValue(`🔮 CRYSTAL BALL (${headerParts.join(', ')})`)
     .setBackground('#e8f5e9')  // Light green
     .setFontWeight('bold')
     .setFontSize(10)
@@ -2128,29 +2139,63 @@ function loadVendorData(vendorIndex, options) {
       .setHorizontalAlignment('left');
     crystalRow++;
   } else if (crystalBall.summary) {
-    // Display the AI-generated summary
+    // Display the AI-generated summary (blockers analysis + summary)
     const summaryLines = crystalBall.summary.split('\n').filter(l => l.trim());
 
-    for (const line of summaryLines.slice(0, 8)) {
-      bsSh.getRange(crystalRow, 6, 1, 4).merge()
-        .setValue(line.trim())
+    for (const line of summaryLines.slice(0, 12)) {
+      // Detect section headers (bold markdown) and style differently
+      const isSectionHeader = line.trim().startsWith('**') && line.trim().endsWith('**');
+      const cell = bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(isSectionHeader ? line.trim().replace(/\*\*/g, '') : line.trim())
         .setFontSize(9)
-        .setBackground('#fafafa')
+        .setBackground(isSectionHeader ? '#e8f5e9' : '#fafafa')
         .setWrap(true)
         .setHorizontalAlignment('left')
         .setVerticalAlignment('top');
+      if (isSectionHeader) {
+        cell.setFontWeight('bold').setFontColor('#2e7d32');
+      }
       bsSh.setRowHeight(crystalRow, 22);
       crystalRow++;
     }
 
-    if (summaryLines.length > 8) {
+    if (summaryLines.length > 12) {
       bsSh.getRange(crystalRow, 6, 1, 4).merge()
-        .setValue(`... and ${summaryLines.length - 8} more items`)
+        .setValue(`... and ${summaryLines.length - 12} more items`)
         .setFontStyle('italic')
         .setFontColor('#666666')
         .setBackground('#fafafa')
         .setHorizontalAlignment('left');
       crystalRow++;
+    }
+
+    // Display suggested actions if any
+    const suggestedActions = crystalBall.suggestedActions || [];
+    if (suggestedActions.length > 0) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue('⚡ SUGGESTED ACTIONS')
+        .setBackground('#fff3e0')
+        .setFontWeight('bold')
+        .setFontSize(9)
+        .setFontColor('#e65100')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(crystalRow, 22);
+      crystalRow++;
+
+      for (const action of suggestedActions.slice(0, 5)) {
+        const whoIcon = action.who === 'vendor' ? '👤' : '👈';
+        const actionText = `${whoIcon} ${action.description}${action.relatedItem ? ' → ' + action.relatedItem : ''}`;
+        bsSh.getRange(crystalRow, 6, 1, 4).merge()
+          .setValue(actionText)
+          .setFontSize(9)
+          .setBackground('#fff8e1')
+          .setWrap(true)
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top');
+        bsSh.setRowHeight(crystalRow, 22);
+        crystalRow++;
+      }
     }
   } else {
     bsSh.getRange(crystalRow, 6, 1, 4).merge()
@@ -2969,7 +3014,8 @@ function getVendorContacts_(vendor, listRow) {
   
   let lastUpdated = '';
   
-  // Fetch item data including GROUP, updated_at, and column values
+  // Fetch item data including GROUP, updated_at, column values, AND contact details in one query
+  // (previously required a second API call to fetch contact column_values)
   const query = `
     query {
       items (ids: [${itemId}]) {
@@ -2987,6 +3033,11 @@ function getVendorContacts_(vendor, listRow) {
             linked_items {
               id
               name
+              column_values {
+                id
+                text
+                type
+              }
             }
           }
         }
@@ -3026,6 +3077,7 @@ function getVendorContacts_(vendor, listRow) {
     
     const columnValues = result.data.items[0].column_values;
     const contactIds = [];
+    let contactItems = [];  // Full linked_items with column_values (from single query)
     let notes = '';
     let phonexaLink = '';
     let liveVerticals = '';
@@ -3038,8 +3090,10 @@ function getVendorContacts_(vendor, listRow) {
 
     for (const col of columnValues) {
       // Get contacts from linked_items (for 2-way board relations)
+      // column_values are included in linked_items — no second API call needed
       if (col.id === contactsColumnId && col.linked_items && col.linked_items.length > 0) {
         Logger.log(`Found ${col.linked_items.length} linked contacts`);
+        contactItems = col.linked_items;
         for (const linkedItem of col.linked_items) {
           contactIds.push(linkedItem.id);
           Logger.log(`  Contact ID: ${linkedItem.id}, Name: ${linkedItem.name}`);
@@ -3093,60 +3147,35 @@ function getVendorContacts_(vendor, listRow) {
     
     Logger.log(`Found ${contactIds.length} contact IDs`);
     Logger.log(`Notes: ${notes}`);
-    
+
     const contacts = [];
-    
-    if (contactIds.length > 0) {
-      const contactsQuery = `
-        query {
-          items (ids: [${contactIds.join(', ')}]) {
-            id
-            name
-            column_values {
-              id
-              text
-              type
-            }
+
+    // Contact details are already fetched in the same query via linked_items.column_values
+    // (no second API call needed)
+    if (contactItems.length > 0) {
+      for (const item of contactItems) {
+        const contact = {
+          name: item.name,
+          email: '',
+          phone: '',
+          status: '',
+          contactType: ''
+        };
+
+        for (const col of (item.column_values || [])) {
+          if (col.id === 'email_mkrk53z4') {
+            contact.email = col.text || '';
+          } else if (col.id === 'phone_mkrkzxq2') {
+            contact.phone = col.text || '';
+          } else if (col.id === 'status') {
+            contact.status = col.text || '';
+          } else if (col.id === 'color_mkrkh4bk') {
+            contact.contactType = col.text || '';
           }
         }
-      `;
-      
-      const contactsOptions = {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { 'Authorization': apiToken },
-        payload: JSON.stringify({ query: contactsQuery }),
-        muteHttpExceptions: true
-      };
-      
-      const contactsResponse = UrlFetchApp.fetch('https://api.monday.com/v2', contactsOptions);
-      const contactsResult = JSON.parse(contactsResponse.getContentText());
-      
-      if (contactsResult.data?.items) {
-        for (const item of contactsResult.data.items) {
-          const contact = {
-            name: item.name,
-            email: '',
-            phone: '',
-            status: '',
-            contactType: ''
-          };
-          
-          for (const col of item.column_values) {
-            if (col.id === 'email_mkrk53z4') {
-              contact.email = col.text || '';
-            } else if (col.id === 'phone_mkrkzxq2') {
-              contact.phone = col.text || '';
-            } else if (col.id === 'status') {
-              contact.status = col.text || '';
-            } else if (col.id === 'color_mkrkh4bk') {
-              contact.contactType = col.text || '';
-            }
-          }
-          
-          contacts.push(contact);
-          Logger.log(`Contact found: ${contact.name} <${contact.email}> | ${contact.phone} | ${contact.status} | ${contact.contactType}`);
-        }
+
+        contacts.push(contact);
+        Logger.log(`Contact found: ${contact.name} <${contact.email}> | ${contact.phone} | ${contact.status} | ${contact.contactType}`);
       }
     }
     
@@ -4824,19 +4853,25 @@ function getGDriveFilesForVendor_(vendorName) {
  * @param {number} listRow - The row number in the list sheet
  * @returns {object} - { items: [], snoozed: [], summary: string, error: string }
  */
-function getCrystalBallData_(vendor, listRow) {
+function getCrystalBallData_(vendor, listRow, options) {
   const ss = SpreadsheetApp.getActive();
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
 
   if (!listSh) {
-    return { items: [], snoozed: [], summary: '', error: 'List sheet not found' };
+    return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'List sheet not found' };
   }
+
+  // Extract additional context from options
+  const blockerTasks = (options && options.blockerTasks) || [];
+  const allTasks = (options && options.tasks) || [];
+  const contactData = (options && options.contactData) || {};
+  const mondayNotes = (options && options.notes) || '';
 
   try {
     // Get the Gmail link to extract the vendor label
     const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
     if (!gmailLinkAll) {
-      return { items: [], snoozed: [], summary: '', error: 'No Gmail link found' };
+      return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'No Gmail link found' };
     }
 
     const gmailLinkStr = gmailLinkAll.toString();
@@ -4844,7 +4879,7 @@ function getCrystalBallData_(vendor, listRow) {
     // Extract vendor label (zzzvendors-*) from URL
     const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
     if (!vendorLabelMatch) {
-      return { items: [], snoozed: [], summary: '', error: 'Could not extract vendor label' };
+      return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'Could not extract vendor label' };
     }
 
     const vendorLabel = vendorLabelMatch[1];
@@ -4922,12 +4957,30 @@ function getCrystalBallData_(vendor, listRow) {
       });
     }
 
-    // If no emails, return early
-    if (receivedItems.length === 0 && snoozedItems.length === 0) {
+    // Build blocker context for Claude
+    const blockerContext = blockerTasks.length > 0
+      ? blockerTasks.map((b, i) => `${i+1}. "${b.subject}" (Status: ${b.status}${b.notes ? ', Notes: ' + b.notes : ''})`).join('\n')
+      : 'None';
+
+    // Build open tasks context (non-blocker, non-done tasks)
+    const openTasks = allTasks.filter(t => !t.isDone && !t.isBlocker);
+    const openTaskContext = openTasks.length > 0
+      ? openTasks.map((t, i) => `${i+1}. "${t.subject}" (Status: ${t.status}, Project: ${t.project})`).join('\n')
+      : 'None';
+
+    // Build recently completed tasks context (for awareness of what's already done)
+    const completedTasks = allTasks.filter(t => t.isDone);
+    const completedTaskContext = completedTasks.length > 0
+      ? completedTasks.slice(0, 10).map((t, i) => `${i+1}. "${t.subject}" (${t.status}${t.created ? ', Completed around: ' + t.created : ''})`).join('\n')
+      : 'None';
+
+    // If no emails AND no blockers AND no open tasks, return early
+    if (receivedItems.length === 0 && snoozedItems.length === 0 && blockerTasks.length === 0 && openTasks.length === 0) {
       return {
         items: [],
         snoozed: [],
-        summary: 'No outstanding emails found.',
+        summary: 'No outstanding items found.',
+        suggestedActions: [],
         error: null
       };
     }
@@ -4942,8 +4995,8 @@ function getCrystalBallData_(vendor, listRow) {
       `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
     ).join('\n\n');
 
-    // Call Claude for analysis
-    const prompt = `You are analyzing emails for a vendor named "${vendor}" to determine what is OUTSTANDING and needs attention.
+    // Call Claude for analysis with full vendor context
+    const prompt = `You are analyzing a vendor named "${vendor}" to determine what is OUTSTANDING and what the next actions should be. You have access to their emails, blockers, open tasks, completed tasks, and vendor state.
 
 CRITICAL CONTEXT:
 - "OUR TEAM" = Profitise/ZeroParallel/Phonexa (emails from @profitise.com, @zeroparallel.com, @phonexa.com)
@@ -4954,27 +5007,52 @@ CRITICAL CONTEXT:
 
 IMPORTANT: Only use 🔴 (red) if the email has the "01.priority/1" label. Without that label, use 🟡 (yellow) instead.
 
+VENDOR STATE:
+- Status: ${contactData.liveStatus || 'Unknown'}
+- Live Verticals: ${contactData.liveVerticals || '(none)'}
+- Live Modalities: ${contactData.liveModalities || '(none)'}
+- Phonexa Link: ${contactData.phonexaLink || '(none)'}
+- Notes: ${(mondayNotes || '(none)').substring(0, 500)}
+
+🚧 OPEN BLOCKERS (these are actively blocking progress):
+${blockerContext}
+
+📋 OPEN TASKS (onboarding/project checklist items not yet done):
+${openTaskContext}
+
+✅ RECENTLY COMPLETED TASKS (already done — DO NOT suggest these again):
+${completedTaskContext}
+
 ACTIVE EMAILS IN INBOX (label:00.received):
 ${emailContext || 'None'}
 
 SNOOZED EMAILS (deferred for later):
 ${snoozedContext || 'None'}
 
-Analyze these emails and provide a BRIEF, ACTIONABLE summary. Pay close attention to:
-1. WHO sent the last message
-2. Whether the email has the 01.priority/1 label (check the Labels line)
+ANALYSIS INSTRUCTIONS:
+1. Cross-reference the EMAILS with the BLOCKERS and OPEN TASKS to understand the full picture
+2. If a blocker says the vendor needs to do something (e.g., "Signup on Portal"), check if the emails or completed tasks suggest they may have already done it
+3. If the vendor is waiting on us (based on email context), identify what WE need to do from the open tasks list
+4. If we are waiting on the vendor, identify what THEY need to do based on blockers and tasks
+5. Look at the onboarding checklist (open tasks) to determine what the logical next step is
 
-Format your response as a SHORT bulleted list (3-6 bullets max). Be concise - each bullet should be 10 words or less.
-Start each bullet with an emoji:
-- 🔴 = URGENT: they sent last AND has 01.priority/1 label
-- 🟡 = Waiting/needs attention but not urgent (no priority label, or we sent last)
-- 🔵 = Snoozed/deferred for later
-- 🟢 = FYI/informational
+FORMAT YOUR RESPONSE IN TWO SECTIONS:
 
-Example format:
-• 🟡 Awaiting vendor response on Invoice #123
-• 🔴 URGENT: Reply to their pricing question (priority)
-• 🔵 Follow-up snoozed until Jan 15`;
+**Blockers**
+Analyze each blocker against the emails and completed tasks. For each blocker, state whether it appears resolved or still active, and what evidence supports this.
+
+**Summary**
+A brief summary of the overall situation and what the most important next step is.
+
+Then on a NEW LINE, output suggested actions in this format (one per line):
+SUGGESTED_ACTION: <description of what to do> | <who needs to do it: "us" or "vendor"> | <related blocker or task name if applicable>
+
+Examples:
+SUGGESTED_ACTION: Ask vendor to sign up on Profitise affiliate portal | vendor | Signup on Profitise Portal
+SUGGESTED_ACTION: Reply to vendor's email about campaign details | us | Send Campaign Details
+SUGGESTED_ACTION: Mark blocker as resolved - vendor already completed signup | us | Signup on Profitise Portal
+
+Keep the analysis concise but insightful. Focus on what's ACTIONABLE.`;
 
     const apiKey = BS_CFG.CLAUDE_API_KEY;
     if (!apiKey) {
@@ -4983,11 +5061,12 @@ Example format:
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
+        suggestedActions: [],
         error: null
       };
     }
 
-    const claudeResult = callClaudeAPI_(prompt, apiKey);
+    const claudeResult = callClaudeAPI_(prompt, apiKey, { maxTokens: 1500 });
 
     if (claudeResult.error) {
       Logger.log(`[Crystal Ball] Claude API error: ${claudeResult.error}`);
@@ -4995,21 +5074,49 @@ Example format:
         items: receivedItems,
         snoozed: snoozedItems,
         summary: `${receivedItems.length} active, ${snoozedItems.length} snoozed (analysis failed)`,
+        suggestedActions: [],
         error: claudeResult.error
       };
     }
 
     Logger.log(`[Crystal Ball] Analysis complete`);
+
+    // Parse suggested actions from Claude's response
+    const suggestedActions = [];
+    const summaryLines = [];
+    const responseLines = claudeResult.content.split('\n');
+    for (const line of responseLines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('SUGGESTED_ACTION:')) {
+        const parts = trimmed.substring('SUGGESTED_ACTION:'.length).split('|').map(p => p.trim());
+        if (parts.length >= 2) {
+          suggestedActions.push({
+            description: parts[0],
+            who: parts[1] || 'us',
+            relatedItem: parts[2] || ''
+          });
+        }
+      } else {
+        summaryLines.push(line);
+      }
+    }
+
+    // Clean up trailing blank lines from summary
+    while (summaryLines.length > 0 && summaryLines[summaryLines.length - 1].trim() === '') {
+      summaryLines.pop();
+    }
+
     return {
       items: receivedItems,
       snoozed: snoozedItems,
-      summary: claudeResult.content,
+      summary: summaryLines.join('\n'),
+      suggestedActions: suggestedActions,
       error: null
     };
 
   } catch (e) {
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
-    return { items: [], snoozed: [], summary: '', error: e.message };
+    return { items: [], snoozed: [], summary: '', suggestedActions: [], error: e.message };
   }
 }
 
@@ -5804,6 +5911,24 @@ function battleStationPrevious() {
   }
 
   loadVendorData(currentIndex - 1, { loadMode: 'fast' });
+}
+
+/**
+ * Navigation: Restart from the first vendor in the list
+ */
+function battleStationRestartFromTop() {
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  ss.toast('Restarting from the top...', '⏮️ Restart', 2);
+  loadVendorData(1);
 }
 
 /**
@@ -18492,6 +18617,8 @@ Supported action types and their detail formats:
 - ACTION: CHANGE_TASK_STATUS | <task name> | <new status: Done, Waiting on Client, Waiting on Profitise, Waiting on Phonexa, Abandoned>
 - ACTION: UPDATE_PHONEXA_LINK | <url>
 - ACTION: ADD_HELPFUL_LINK | <link name> | <url>
+- ACTION: CHANGE_STATUS | <new status/group name, e.g. "Early Talks", "Live", "Onboarding", "Paused", "Dead">
+- ACTION: RESEARCH | <description of what needs to be researched — this is informational and will be shown as a reminder>
 
 IMPORTANT RULES:
 - Only output ACTION lines - no commentary or explanation
@@ -18645,6 +18772,34 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
         }
         break;
       }
+      case 'CHANGE_STATUS': {
+        if (parts[1]) {
+          const newStatus = parts.slice(1).join(' | ').trim();
+          const currentStatus = contactData.liveStatus || 'Unknown';
+          actions.push({
+            type: 'CHANGE_STATUS',
+            label: 'Change Vendor Status',
+            detail: newStatus,
+            currentStatus: currentStatus,
+            mondayItemId: contactData.mondayItemId,
+            boardId: contactData.boardId,
+            preview: `${currentStatus} → ${newStatus}`
+          });
+        }
+        break;
+      }
+      case 'RESEARCH': {
+        if (parts[1]) {
+          const detail = parts.slice(1).join(' | ').trim();
+          actions.push({
+            type: 'RESEARCH',
+            label: 'Research Reminder',
+            detail: detail,
+            preview: detail
+          });
+        }
+        break;
+      }
     }
   }
 
@@ -18663,7 +18818,9 @@ function showBulkActionsDialog_(vendor, actions) {
     'UPDATE_BLOCKERS': '🚧',
     'CHANGE_TASK_STATUS': '📋',
     'UPDATE_PHONEXA_LINK': '🔗',
-    'ADD_HELPFUL_LINK': '🔗'
+    'ADD_HELPFUL_LINK': '🔗',
+    'CHANGE_STATUS': '🔄',
+    'RESEARCH': '🔍'
   };
 
   let actionsHtml = '';
@@ -18980,6 +19137,55 @@ function executeSingleBulkAction_(action, vendor, source, listRow) {
         mondayApiRequest_(relMutation, apiToken);
       }
 
+      return { success: true };
+    }
+
+    case 'CHANGE_STATUS': {
+      // Change vendor status by moving item to a different group on the monday.com board
+      const itemId = action.mondayItemId;
+      const boardId = action.boardId;
+      if (!itemId || !boardId) {
+        return { success: false, error: 'Missing monday.com item or board ID' };
+      }
+
+      // Fetch available groups from the board to find the matching group ID
+      const groupsQuery = `query { boards (ids: [${boardId}]) { groups { id title } } }`;
+      const groupsResult = mondayApiRequest_(groupsQuery, apiToken);
+      const groups = groupsResult.data?.boards?.[0]?.groups || [];
+
+      const targetTitle = action.detail.toLowerCase().trim();
+      const matchingGroup = groups.find(g => g.title.toLowerCase().trim() === targetTitle) ||
+                            groups.find(g => g.title.toLowerCase().includes(targetTitle) || targetTitle.includes(g.title.toLowerCase()));
+
+      if (!matchingGroup) {
+        const availableGroups = groups.map(g => g.title).join(', ');
+        return { success: false, error: `Group "${action.detail}" not found. Available: ${availableGroups}` };
+      }
+
+      const moveMutation = `
+        mutation {
+          move_item_to_group (
+            item_id: ${itemId},
+            group_id: "${matchingGroup.id}"
+          ) { id }
+        }
+      `;
+      const moveResult = mondayApiRequest_(moveMutation, apiToken);
+      if (moveResult.errors && moveResult.errors.length > 0) {
+        return { success: false, error: moveResult.errors[0].message };
+      }
+      if (moveResult.data?.move_item_to_group?.id) {
+        // Also update the List sheet status column
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(action.listRow || listRow, BS_CFG.L_STATUS + 1).setValue(matchingGroup.title);
+        return { success: true };
+      }
+      return { success: false, error: 'Unexpected API response' };
+    }
+
+    case 'RESEARCH': {
+      // Research is informational-only — just mark as acknowledged
       return { success: true };
     }
 
