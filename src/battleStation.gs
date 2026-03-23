@@ -780,6 +780,9 @@ function loadVendorData(vendorIndex, options) {
   // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
 
 
+  // Track script start time for time budget checks (Crystal Ball will skip AI if running too long)
+  PropertiesService.getScriptProperties().setProperty('_loadStartMs', String(Date.now()));
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
   const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
@@ -2095,7 +2098,263 @@ function loadVendorData(vendorIndex, options) {
   
   // Update rightColumnRow to track furthest row used on right side
   rightColumnRow = Math.max(rightColumnRow, gDriveRow);
+  } // end if (!isFastMode) - right side panel render (contacts, calendar, links, contracts, box, gdrive)
+
+  // EMAILS SECTION - loaded before Crystal Ball to ensure emails always display
+  // (Crystal Ball calls Claude API which can take 60-120s and block everything after it)
+  ss.toast('Searching Gmail...', '📧 Loading', 2);
+  const emails = getEmailsForVendor_(vendor, listRow);
+
+  bsSh.getRange(currentRow, 1, 1, 4).merge()
+    .setValue(`📧 EMAILS (${emails.length})  |  🔵 Snoozed  🔴 Overdue  🟠 Phonexa  🟢 Accounting  🟡 Waiting`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 24);
+  currentRow++;
+
+  if (emails.length === 0) {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('No emails found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle');
+    bsSh.setRowHeight(currentRow, 25);
+    currentRow++;
+  } else {
+    // Email headers
+    bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
+    currentRow++;
+
+    for (const email of emails.slice(0, 20)) {
+      bsSh.getRange(currentRow, 1).setValue(email.subject);
+      const emailDateCell = bsSh.getRange(currentRow, 2);
+      emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell.setValue(email.date);
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
+      bsSh.getRange(currentRow, 4).setValue(email.labels);
+
+      if (email.link) {
+        bsSh.getRange(currentRow, 1)
+          .setFormula(`=HYPERLINK("${email.link}", "${email.subject.replace(/"/g, '""')}")`);
+      }
+
+      // Check if this email is overdue (waiting/customer + >16 business hours)
+      const isOverdue = isEmailOverdue_(email);
+
+      // Check if email has priority label
+      const hasPriority = email.labels.includes('01.priority/1');
+
+      // Color priority: Snoozed (blue) > OVERDUE (red) > Phonexa (coral) > Accounting (green) > Waiting/Customer (yellow) > Active (white)
+      if (email.isSnoozed) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_SNOOZED);
+      } else if (isOverdue) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_OVERDUE);
+        bsSh.getRange(currentRow, 1, 1, 4).setFontWeight('bold');
+      } else if (email.labels.includes('02.waiting/phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_PHONEXA);
+      } else if (email.labels.includes('04.accounting-invoices')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#d9ead3'); // Green
+      } else if (email.labels.includes('02.waiting/customer')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_WAITING);
+      } else {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#ffffff');
+      }
+
+      // If missing 01.priority/1, make text grey to indicate lower importance
+      if (!hasPriority) {
+        bsSh.getRange(currentRow, 1, 1, 4).setFontColor('#999999');
+      }
+
+      currentRow++;
+    }
+
+    if (emails.length > 20) {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`... and ${emails.length - 20} more emails (showing first 20)`)
+        .setFontStyle('italic')
+        .setHorizontalAlignment('center');
+      currentRow++;
+    }
+  }
+
+  bsSh.setRowHeight(currentRow, 10);
+  currentRow++;
+
+  // TASKS SECTION
+  let tasks = getTasksForVendor_(vendor, listRow);
+
+  // Filter out inappropriate onboarding tasks based on source
+  // If source is Affiliates, don't show "Onboarding - Buyer" tasks
+  // If source is Buyers, don't show "Onboarding - Affiliate" tasks
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+  const isBuyer = source.toLowerCase().includes('buyer');
+
+  tasks = tasks.filter(task => {
+    const project = (task.project || '').toLowerCase();
+    if (isAffiliate && project.includes('onboarding - buyer')) {
+      return false;
+    }
+    if (isBuyer && project.includes('onboarding - affiliate')) {
+      return false;
+    }
+    return true;
+  });
+
+  const nonDoneTasks = tasks.filter(t => !t.isDone);
+
+  bsSh.getRange(currentRow, 1, 1, 4).merge()
+    .setValue(`📋 MONDAY.COM TASKS (${nonDoneTasks.length})`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 24);
+  currentRow++;
+
+  if (tasks.length === 0) {
+    // Check if vendor is Live/Paused/Onboarding - should have tasks
+    // Note: "preonboarding" contains "onboarding" so we must exclude it explicitly
+    const statusLower = (liveStatus || '').toLowerCase();
+    const isPreonboarding = statusLower.includes('pre');
+    const needsTasksWarning = !isPreonboarding && (
+                               statusLower.includes('live') ||
+                               statusLower.includes('onboarding') ||
+                               statusLower.includes('paused'));
+
+    if (needsTasksWarning) {
+      // Show warning with link to Claude task generator
+      const vendorType = source.toLowerCase().includes('affiliate') ? 'Affiliate' : 'Buyer';
+      const vendorTypeLabel = vendorType === 'Affiliate' && contactData.liveModalities
+        ? `Affiliate - ${contactData.liveModalities}`
+        : vendorType;
+      const claudeChatUrl = 'https://claude.ai/chat/33d0e36c-23ad-4e7d-b354-bd6cf3692f3f';
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
+        .setFontColor('#d32f2f')
+        .setBackground('#ffebee')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+
+      // Add copy/paste line for vendor name and type
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`${vendor} (${vendorTypeLabel})`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 22);
+      currentRow++;
+    } else {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue('No tasks found')
+        .setFontStyle('italic')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+    }
+  } else {
+    bsSh.getRange(currentRow, 1).setValue('Task').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 2).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Created').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 4).setValue('Project').setFontWeight('bold').setBackground('#f3f3f3');
+    currentRow++;
+
+    // Build fallback suffix from vendor's vertical and live modality (used when task has no own vertical/modality)
+    const vendorSuffixParts = [];
+    if (contactData.liveVerticals) vendorSuffixParts.push(contactData.liveVerticals);
+    if (contactData.liveModalities) vendorSuffixParts.push(contactData.liveModalities);
+    const vendorSuffix = vendorSuffixParts.length > 0 ? ` [${vendorSuffixParts.join(' | ')}]` : '';
+
+    let lastGroupTitle = null;
+    for (const task of tasks) {
+      // Insert group sub-header when the group changes
+      if (task.groupTitle && task.groupTitle !== lastGroupTitle) {
+        lastGroupTitle = task.groupTitle;
+        bsSh.getRange(currentRow, 1, 1, 4).merge()
+          .setValue(task.groupTitle)
+          .setFontWeight('bold')
+          .setFontSize(9)
+          .setFontColor('#555555')
+          .setBackground('#e8eaf6')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('middle');
+        bsSh.setRowHeight(currentRow, 22);
+        currentRow++;
+      }
+
+      // Build per-task suffix from task's own vertical/modality columns (fall back to vendor-level)
+      const taskSuffixParts = [];
+      if (task.vertical) taskSuffixParts.push(task.vertical);
+      else if (contactData.liveVerticals) taskSuffixParts.push(contactData.liveVerticals);
+      if (task.modality) taskSuffixParts.push(task.modality);
+      else if (contactData.liveModalities) taskSuffixParts.push(contactData.liveModalities);
+      const taskSuffix = taskSuffixParts.length > 0 ? ` [${taskSuffixParts.join(' | ')}]` : vendorSuffix;
+
+      // Task name - clickable link to Tasks board filtered by task name
+      const encodedTask = encodeURIComponent(task.subject);
+      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
+      const taskDisplayName = task.subject + taskSuffix;
+      bsSh.getRange(currentRow, 1)
+        .setFormula(`=HYPERLINK("${taskFilterLink}", "${taskDisplayName.replace(/"/g, '""')}")`)
+        .setWrap(true)
+        .setFontColor('#1a73e8');
+
+      // Status display:
+      // - For Done tasks: show "Done - YYYY-MM-DD" (lastUpdated date)
+      // - For non-Done tasks with taskDate: show "Status - taskDate"
+      // - Otherwise: just show status
+      let statusDisplay = task.status;
+      if (task.isDone && task.lastUpdated) {
+        statusDisplay = `${task.status} - ${task.lastUpdated}`;
+      } else if (task.taskDate && !task.isDone) {
+        statusDisplay = `${task.status} - ${task.taskDate}`;
+      }
+      bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
+      const taskDateCell = bsSh.getRange(currentRow, 3);
+      taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      taskDateCell.setValue(task.created).setWrap(true);
+      bsSh.getRange(currentRow, 4).setValue(task.project).setWrap(true);
+
+      // Color coding for task status
+      if (task.isDone) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setFontLine('line-through')
+          .setFontColor('#999999');
+      } else if (task.isBlocker) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2')   // Red for blockers - needs action
+          .setFontWeight('bold');
+      } else if (task.status && task.status.toLowerCase().includes('waiting on phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2');  // Red for waiting on phonexa
+      } else if (task.status && task.status.toLowerCase().includes('waiting on client')) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#fff2cc');  // Yellow for waiting on client
+      }
+
+      currentRow++;
+    }
+  }
+
   // CRYSTAL BALL SECTION (right side - below Google Drive)
+  // Loaded LAST because it calls Claude API which can take 60-120s
+  // Emails and tasks are already rendered above, so user sees those even if Crystal Ball is slow
+  if (!isFastMode) {
   // Skip Crystal Ball in turbo mode - redundant with Gmail search
   let crystalBall = { items: [], snoozed: [], summary: null, suggestedActions: [], error: null };
   if (turboMode) {
@@ -2209,259 +2468,9 @@ function loadVendorData(vendorIndex, options) {
 
   // Update rightColumnRow
   rightColumnRow = Math.max(rightColumnRow, crystalRow);
-  } // end if (!isFastMode) - right side panel render
+  } // end if (!isFastMode) - Crystal Ball
 
-  // EMAILS SECTION
-  ss.toast('Searching Gmail...', '📧 Loading', 2);
-  const emails = getEmailsForVendor_(vendor, listRow);
-  
-  bsSh.getRange(currentRow, 1, 1, 4).merge()
-    .setValue(`📧 EMAILS (${emails.length})  |  🔵 Snoozed  🔴 Overdue  🟠 Phonexa  🟢 Accounting  🟡 Waiting`)
-    .setBackground('#f8f9fa')
-    .setFontWeight('bold')
-    .setFontSize(10)
-    .setFontColor('#1a73e8')
-    .setHorizontalAlignment('left')
-    .setVerticalAlignment('middle');
-  bsSh.setRowHeight(currentRow, 24);
-  currentRow++;
-  
-  if (emails.length === 0) {
-    bsSh.getRange(currentRow, 1, 1, 4).merge()
-      .setValue('No emails found')
-      .setFontStyle('italic')
-      .setBackground('#fafafa')
-      .setHorizontalAlignment('center')
-      .setVerticalAlignment('middle');
-    bsSh.setRowHeight(currentRow, 25);
-    currentRow++;
-  } else {
-    // Email headers
-    bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
-    currentRow++;
 
-    for (const email of emails.slice(0, 20)) {
-      bsSh.getRange(currentRow, 1).setValue(email.subject);
-      const emailDateCell = bsSh.getRange(currentRow, 2);
-      emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
-      emailDateCell.setValue(email.date);
-      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
-      bsSh.getRange(currentRow, 4).setValue(email.labels);
-      
-      if (email.link) {
-        bsSh.getRange(currentRow, 1)
-          .setFormula(`=HYPERLINK("${email.link}", "${email.subject.replace(/"/g, '""')}")`);
-      }
-      
-      // Check if this email is overdue (waiting/customer + >16 business hours)
-      const isOverdue = isEmailOverdue_(email);
-      
-      // Check if email has priority label
-      const hasPriority = email.labels.includes('01.priority/1');
-      
-      // Color priority: Snoozed (blue) > OVERDUE (red) > Phonexa (coral) > Accounting (green) > Waiting/Customer (yellow) > Active (white)
-      if (email.isSnoozed) {
-        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_SNOOZED);
-      } else if (isOverdue) {
-        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_OVERDUE);
-        bsSh.getRange(currentRow, 1, 1, 4).setFontWeight('bold');
-      } else if (email.labels.includes('02.waiting/phonexa')) {
-        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_PHONEXA);
-      } else if (email.labels.includes('04.accounting-invoices')) {
-        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#d9ead3'); // Green
-      } else if (email.labels.includes('02.waiting/customer')) {
-        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_WAITING);
-      } else {
-        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#ffffff');
-      }
-      
-      // If missing 01.priority/1, make text grey to indicate lower importance
-      if (!hasPriority) {
-        bsSh.getRange(currentRow, 1, 1, 4).setFontColor('#999999');
-      }
-      
-      currentRow++;
-    }
-    
-    if (emails.length > 20) {
-      bsSh.getRange(currentRow, 1, 1, 4).merge()
-        .setValue(`... and ${emails.length - 20} more emails (showing first 20)`)
-        .setFontStyle('italic')
-        .setHorizontalAlignment('center');
-      currentRow++;
-    }
-  }
-  
-  bsSh.setRowHeight(currentRow, 10);
-  currentRow++;
-  
-  // TASKS SECTION
-  let tasks = getTasksForVendor_(vendor, listRow);
-  
-  // Filter out inappropriate onboarding tasks based on source
-  // If source is Affiliates, don't show "Onboarding - Buyer" tasks
-  // If source is Buyers, don't show "Onboarding - Affiliate" tasks
-  const isAffiliate = source.toLowerCase().includes('affiliate');
-  const isBuyer = source.toLowerCase().includes('buyer');
-  
-  tasks = tasks.filter(task => {
-    const project = (task.project || '').toLowerCase();
-    if (isAffiliate && project.includes('onboarding - buyer')) {
-      return false;
-    }
-    if (isBuyer && project.includes('onboarding - affiliate')) {
-      return false;
-    }
-    return true;
-  });
-  
-  const nonDoneTasks = tasks.filter(t => !t.isDone);
-  
-  bsSh.getRange(currentRow, 1, 1, 4).merge()
-    .setValue(`📋 MONDAY.COM TASKS (${nonDoneTasks.length})`)
-    .setBackground('#f8f9fa')
-    .setFontWeight('bold')
-    .setFontSize(10)
-    .setFontColor('#1a73e8')
-    .setHorizontalAlignment('left')
-    .setVerticalAlignment('middle');
-  bsSh.setRowHeight(currentRow, 24);
-  currentRow++;
-  
-  if (tasks.length === 0) {
-    // Check if vendor is Live/Paused/Onboarding - should have tasks
-    // Note: "preonboarding" contains "onboarding" so we must exclude it explicitly
-    const statusLower = (liveStatus || '').toLowerCase();
-    const isPreonboarding = statusLower.includes('pre');
-    const needsTasksWarning = !isPreonboarding && (
-                               statusLower.includes('live') ||
-                               statusLower.includes('onboarding') ||
-                               statusLower.includes('paused'));
-
-    if (needsTasksWarning) {
-      // Show warning with link to Claude task generator
-      const vendorType = source.toLowerCase().includes('affiliate') ? 'Affiliate' : 'Buyer';
-      const vendorTypeLabel = vendorType === 'Affiliate' && contactData.liveModalities
-        ? `Affiliate - ${contactData.liveModalities}`
-        : vendorType;
-      const claudeChatUrl = 'https://claude.ai/chat/33d0e36c-23ad-4e7d-b354-bd6cf3692f3f';
-      bsSh.getRange(currentRow, 1, 1, 4).merge()
-        .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
-        .setFontColor('#d32f2f')
-        .setBackground('#ffebee')
-        .setHorizontalAlignment('left')
-        .setVerticalAlignment('middle');
-      bsSh.setRowHeight(currentRow, 25);
-      currentRow++;
-
-      // Add copy/paste line for vendor name and type
-      bsSh.getRange(currentRow, 1, 1, 4).merge()
-        .setValue(`${vendor} (${vendorTypeLabel})`)
-        .setFontStyle('italic')
-        .setFontColor('#666666')
-        .setBackground('#fafafa')
-        .setHorizontalAlignment('left')
-        .setVerticalAlignment('middle');
-      bsSh.setRowHeight(currentRow, 22);
-      currentRow++;
-    } else {
-      bsSh.getRange(currentRow, 1, 1, 4).merge()
-        .setValue('No tasks found')
-        .setFontStyle('italic')
-        .setBackground('#fafafa')
-        .setHorizontalAlignment('left')
-        .setVerticalAlignment('middle');
-      bsSh.setRowHeight(currentRow, 25);
-      currentRow++;
-    }
-  } else {
-    bsSh.getRange(currentRow, 1).setValue('Task').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 2).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 3).setValue('Created').setFontWeight('bold').setBackground('#f3f3f3');
-    bsSh.getRange(currentRow, 4).setValue('Project').setFontWeight('bold').setBackground('#f3f3f3');
-    currentRow++;
-    
-    // Build fallback suffix from vendor's vertical and live modality (used when task has no own vertical/modality)
-    const vendorSuffixParts = [];
-    if (contactData.liveVerticals) vendorSuffixParts.push(contactData.liveVerticals);
-    if (contactData.liveModalities) vendorSuffixParts.push(contactData.liveModalities);
-    const vendorSuffix = vendorSuffixParts.length > 0 ? ` [${vendorSuffixParts.join(' | ')}]` : '';
-
-    let lastGroupTitle = null;
-    for (const task of tasks) {
-      // Insert group sub-header when the group changes
-      if (task.groupTitle && task.groupTitle !== lastGroupTitle) {
-        lastGroupTitle = task.groupTitle;
-        bsSh.getRange(currentRow, 1, 1, 4).merge()
-          .setValue(task.groupTitle)
-          .setFontWeight('bold')
-          .setFontSize(9)
-          .setFontColor('#555555')
-          .setBackground('#e8eaf6')
-          .setHorizontalAlignment('left')
-          .setVerticalAlignment('middle');
-        bsSh.setRowHeight(currentRow, 22);
-        currentRow++;
-      }
-
-      // Build per-task suffix from task's own vertical/modality columns (fall back to vendor-level)
-      const taskSuffixParts = [];
-      if (task.vertical) taskSuffixParts.push(task.vertical);
-      else if (contactData.liveVerticals) taskSuffixParts.push(contactData.liveVerticals);
-      if (task.modality) taskSuffixParts.push(task.modality);
-      else if (contactData.liveModalities) taskSuffixParts.push(contactData.liveModalities);
-      const taskSuffix = taskSuffixParts.length > 0 ? ` [${taskSuffixParts.join(' | ')}]` : vendorSuffix;
-
-      // Task name - clickable link to Tasks board filtered by task name
-      const encodedTask = encodeURIComponent(task.subject);
-      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
-      const taskDisplayName = task.subject + taskSuffix;
-      bsSh.getRange(currentRow, 1)
-        .setFormula(`=HYPERLINK("${taskFilterLink}", "${taskDisplayName.replace(/"/g, '""')}")`)
-        .setWrap(true)
-        .setFontColor('#1a73e8');
-      
-      // Status display:
-      // - For Done tasks: show "Done - YYYY-MM-DD" (lastUpdated date)
-      // - For non-Done tasks with taskDate: show "Status - taskDate"
-      // - Otherwise: just show status
-      let statusDisplay = task.status;
-      if (task.isDone && task.lastUpdated) {
-        statusDisplay = `${task.status} - ${task.lastUpdated}`;
-      } else if (task.taskDate && !task.isDone) {
-        statusDisplay = `${task.status} - ${task.taskDate}`;
-      }
-      bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
-      const taskDateCell = bsSh.getRange(currentRow, 3);
-      taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
-      taskDateCell.setValue(task.created).setWrap(true);
-      bsSh.getRange(currentRow, 4).setValue(task.project).setWrap(true);
-      
-      // Color coding for task status
-      if (task.isDone) {
-        bsSh.getRange(currentRow, 1, 1, 4)
-          .setFontLine('line-through')
-          .setFontColor('#999999');
-      } else if (task.isBlocker) {
-        bsSh.getRange(currentRow, 1, 1, 4)
-          .setBackground('#ffcdd2')   // Red for blockers - needs action
-          .setFontWeight('bold');
-      } else if (task.status && task.status.toLowerCase().includes('waiting on phonexa')) {
-        bsSh.getRange(currentRow, 1, 1, 4)
-          .setBackground('#ffcdd2');  // Red for waiting on phonexa
-      } else if (task.status && task.status.toLowerCase().includes('waiting on client')) {
-        bsSh.getRange(currentRow, 1, 1, 4)
-          .setBackground('#fff2cc');  // Yellow for waiting on client
-      }
-      
-      currentRow++;
-    }
-  }
-  
-  
   // Use the greater of currentRow or rightColumnRow for final row count
   const finalRow = isFastMode ? currentRow : Math.max(currentRow, rightColumnRow);
 
@@ -5079,6 +5088,24 @@ Keep the analysis concise but insightful. Focus on what's ACTIONABLE.`;
       };
     }
 
+    // Time budget check: skip Claude API call if script has been running too long
+    // Apps Script has a 6-minute (360s) execution limit; reserve 60s for remaining work
+    const scriptProps = PropertiesService.getScriptProperties();
+    const loadStartMs = Number(scriptProps.getProperty('_loadStartMs') || '0');
+    if (loadStartMs > 0) {
+      const elapsedSec = (Date.now() - loadStartMs) / 1000;
+      if (elapsedSec > 240) {
+        Logger.log(`[Crystal Ball] Skipping Claude API - time budget exceeded (${Math.round(elapsedSec)}s elapsed, limit 240s)`);
+        return {
+          items: receivedItems,
+          snoozed: snoozedItems,
+          summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed (AI analysis skipped - time budget)`,
+          suggestedActions: [],
+          error: null
+        };
+      }
+    }
+
     const claudeResult = callClaudeAPI_(prompt, apiKey, { maxTokens: 1500 });
 
     if (claudeResult.error) {
@@ -6260,6 +6287,9 @@ function battleStationHardRefresh() {
  * Use when you need completely fresh data from all external sources
  */
 function battleStationHardestRefresh() {
+  // Track start time for time budget (Hardest Refresh runs cache clears THEN loadVendorData)
+  PropertiesService.getScriptProperties().setProperty('_loadStartMs', String(Date.now()));
+
   const ss = SpreadsheetApp.getActive();
   const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
 
