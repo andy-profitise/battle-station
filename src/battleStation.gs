@@ -19,6 +19,7 @@
  * - ✉️ Draft Reply: Claude-powered email reply drafting
  * - 📧 Email Rules: Automatic actions on inbound emails
  * - ⚙️ Claude API key management via Script Properties
+ * - 📋 Inbox Review: Step-by-step vendor review with blocker + notes suggestions
  *
  * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
  * NEW: Vendor Briefing (full intel aggregation), Bulk Actions match transparency
@@ -27,7 +28,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-03-24 12:00PM PST',
+  CODE_VERSION: '2026-03-24 4:00PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
