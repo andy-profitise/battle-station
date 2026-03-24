@@ -228,6 +228,22 @@ const BS_CFG = {
   CANNED_RESPONSE_DOCS: {
     REFERRAL_PROGRAM: '1tn3uQMvVR6ZItk1p0k-0-BclMJxbNBDzuh4jSt8PT9c',
     INITIAL_CALL_FOLLOWUP: '1z2lUA4aDD1_zSq1gxX13pcrqlHMh80CmUvorfwLw5ws'
+  },
+
+  // Vendor Review Log sheet (records Q&A, narratives, to-dos from Inbox Review sessions)
+  REVIEW_LOG_SHEET: 'Vendor Review Log',
+  REVIEW_LOG_COLUMNS: {
+    TIMESTAMP: 0,        // A - When the review happened
+    VENDOR: 1,           // B - Vendor name
+    SOURCE: 2,           // C - Buyer/Affiliate
+    STATUS: 3,           // D - Vendor status at time of review
+    QA_RESPONSES: 4,     // E - JSON of true/false Q&A answers
+    USER_NOTES: 5,       // F - Additional notes from user
+    NARRATIVE: 6,        // G - AI+User parsed narrative
+    TODOS: 7,            // H - Generated to-do items (JSON)
+    TODO_STATUS: 8,      // I - Status of each to-do (JSON: done/skip/pending)
+    WEEKLY_RECAP: 9,     // J - Weekly recap notes
+    RECAP_WEEK: 10       // K - ISO week identifier (e.g. "2026-W13")
   }
 };
 
@@ -250,6 +266,10 @@ function onOpen() {
     .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
     .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
     .addItem('⚡ Bulk Actions (Claude)', 'battleStationBulkActions')
+    .addSeparator()
+    .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
+    .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
+    .addItem('✅ Update To-Do Status', 'inboxReviewUpdateTodos')
     .addToUi();
 
   // Email Actions menu - reply templates + email management
