@@ -263,6 +263,136 @@ function searchBoxForVendor(vendorName) {
 }
 
 /**
+ * Search Box for multiple vendor name variants in parallel using UrlFetchApp.fetchAll()
+ * Much faster than sequential searches when vendor has alternate names.
+ *
+ * @param {string} primaryName - The primary vendor name
+ * @param {string} otherName - Comma-separated alternate names (optional)
+ * @returns {array} Array of unique matching documents
+ */
+function searchBoxForVendorParallel(primaryName, otherName) {
+  if (!primaryName || primaryName.trim() === '') {
+    Logger.log('No vendor name provided');
+    return [];
+  }
+
+  const service = getBoxService_();
+  if (!service.hasAccess()) {
+    Logger.log('Box not authorized, skipping parallel search');
+    return [];
+  }
+
+  // Build list of all search terms
+  const searchTerms = [primaryName.trim()];
+
+  if (otherName) {
+    // Add full other name as a term
+    searchTerms.push(otherName.trim());
+
+    // If other name has commas, add individual values too
+    if (otherName.includes(',')) {
+      const skipTerms = (typeof BS_CFG !== 'undefined' && BS_CFG.SKIP_SEARCH_TERMS) || ['LLC', 'Inc', 'Inc.', 'Corp', 'Corp.', 'Co', 'Co.', 'Ltd', 'Ltd.', 'LP', 'LLP', 'PC', 'PLLC', 'NA', 'N/A'];
+      const parts = otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+      for (const part of parts) {
+        if (!skipTerms.some(term => term.toLowerCase() === part.toLowerCase())) {
+          searchTerms.push(part);
+        }
+      }
+    }
+  }
+
+  // Also add suffix-stripped variants
+  const allTerms = [];
+  for (const term of searchTerms) {
+    allTerms.push(term);
+    const stripped = term
+      .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.|L\.?L\.?C\.?)$/i, '')
+      .trim();
+    if (stripped !== term && stripped.length > 0) {
+      allTerms.push(stripped);
+    }
+  }
+
+  // Dedupe search terms (case-insensitive)
+  const seen = new Set();
+  const uniqueTerms = [];
+  for (const term of allTerms) {
+    const key = term.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueTerms.push(term);
+    }
+  }
+
+  Logger.log(`Box parallel search: ${uniqueTerms.length} unique search terms`);
+
+  // Build all fetch requests at once
+  const accessToken = service.getAccessToken();
+  const requests = uniqueTerms.map(term => {
+    const searchUrl = `${BOX_CFG.API_BASE}/search?query=${encodeURIComponent('"' + term + '"')}&limit=${BOX_CFG.DEFAULT_LIMIT}&type=file&fields=id,name,type,description,created_at,modified_at,size,parent,path_collection,shared_link`;
+    return {
+      url: searchUrl,
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken,
+        'Content-Type': 'application/json'
+      },
+      muteHttpExceptions: true
+    };
+  });
+
+  // Execute ALL searches in parallel
+  const responses = UrlFetchApp.fetchAll(requests);
+
+  // Process results and dedupe
+  const existingIds = new Set();
+  const allDocs = [];
+
+  for (let i = 0; i < responses.length; i++) {
+    const resp = responses[i];
+    const code = resp.getResponseCode();
+    const term = uniqueTerms[i];
+
+    if (code < 200 || code >= 300) {
+      Logger.log(`Box parallel search error for "${term}": HTTP ${code}`);
+      continue;
+    }
+
+    try {
+      const result = JSON.parse(resp.getContentText());
+      const entries = result.entries || [];
+      Logger.log(`Box parallel search "${term}": ${entries.length} results`);
+
+      for (const item of entries) {
+        if (existingIds.has(item.id)) continue;
+        existingIds.add(item.id);
+        allDocs.push({
+          id: item.id,
+          name: item.name,
+          type: item.type,
+          description: item.description || '',
+          createdAt: item.created_at,
+          modifiedAt: item.modified_at,
+          size: item.size,
+          folderPath: item.path_collection?.entries?.map(e => e.name).join('/') || '',
+          parentFolder: item.parent?.name || '',
+          parentFolderId: item.parent?.id || '',
+          parentFolderUrl: item.parent?.id ? `https://app.box.com/folder/${item.parent.id}` : '',
+          sharedLink: item.shared_link?.url || null,
+          webUrl: item.type === 'folder' ? `https://app.box.com/folder/${item.id}` : `https://app.box.com/file/${item.id}`,
+          matchedOn: term
+        });
+      }
+    } catch (e) {
+      Logger.log(`Box parallel search parse error for "${term}": ${e.message}`);
+    }
+  }
+
+  Logger.log(`Box parallel search: ${allDocs.length} unique documents total`);
+  return allDocs;
+}
+
+/**
  * Get current user info (useful for testing)
  */
 function getBoxCurrentUser() {

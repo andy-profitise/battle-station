@@ -215,6 +215,10 @@ const BS_CFG = {
   // Google Drive Vendors Folder
   GDRIVE_VENDORS_FOLDER_ID: '1fZzQZ_srKJFZab73zE_6hqDLZrn7ud_C',
   
+  // Crystal Ball performance settings
+  CRYSTAL_BALL_MODEL: 'claude-haiku-4-5-20251001',  // Haiku for speed (~5-10s vs 60-120s with Sonnet)
+  CRYSTAL_BALL_MAX_TOKENS: 1000,                     // Reduced from 1500 - analysis doesn't need more
+
   // Max characters for notes display (truncate with "..." if longer)
   MAX_NOTES_LENGTH: 400,
 
@@ -1535,62 +1539,10 @@ function loadVendorData(vendorIndex, options) {
       // Check if Box is authorized before searching
       const boxService = getBoxService_();
       if (boxService.hasAccess()) {
-        // NORMAL MODE: Search Box API for each vendor
-        // Search with primary vendor name
-        const primaryDocs = searchBoxForVendor(vendor);
-        Logger.log(`Box search for "${vendor}" found ${primaryDocs.length} results`);
-      
-      // Tag each result with the search term that found it
-      for (const doc of primaryDocs) {
-        doc.matchedOn = vendor;
-        boxDocs.push(doc);
-      }
-      
-      // Also try Other Name(s)
-      if (contactData.otherName) {
-        const existingIds = new Set(boxDocs.map(d => d.id));
-        
-        // First try the full Other Name value (in case it's like "Profitise, LLC")
-        Logger.log(`Searching Box for full Other Name: "${contactData.otherName}"`);
-        const fullNameDocs = searchBoxForVendor(contactData.otherName);
-        Logger.log(`Box search for "${contactData.otherName}" found ${fullNameDocs.length} results`);
-        
-        for (const doc of fullNameDocs) {
-          if (!existingIds.has(doc.id)) {
-            doc.matchedOn = contactData.otherName;
-            boxDocs.push(doc);
-            existingIds.add(doc.id);
-          }
-        }
-        
-        // If full name found nothing, also try splitting by comma for multiple values
-        if (fullNameDocs.length === 0 && contactData.otherName.includes(',')) {
-          const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
-          Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
-          
-          for (const altName of otherNames) {
-            // Skip generic terms that cause false positives
-            if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
-              Logger.log(`Skipping generic term: "${altName}"`);
-              continue;
-            }
-            
-            Logger.log(`Searching Box for: "${altName}"`);
-            const otherNameDocs = searchBoxForVendor(altName);
-            Logger.log(`Box search for "${altName}" found ${otherNameDocs.length} results`);
-            
-            // Add any new results (not already in boxDocs)
-            for (const doc of otherNameDocs) {
-              if (!existingIds.has(doc.id)) {
-                doc.matchedOn = altName;
-                boxDocs.push(doc);
-                existingIds.add(doc.id);
-              }
-            }
-          }
-        }
-        Logger.log(`Combined Box results: ${boxDocs.length} unique documents`);
-      }
+        // PARALLEL MODE: Search all vendor name variants at once using fetchAll
+        // This is ~5x faster than sequential when vendor has alternate names
+        boxDocs = searchBoxForVendorParallel(vendor, contactData.otherName || '');
+        Logger.log(`Box parallel search found ${boxDocs.length} unique documents`);
 
       // Filter out "Signing Log" documents (Box Sign creates these alongside the actual document)
       const beforeSigningLogCount = boxDocs.length;
@@ -5040,63 +4992,32 @@ function getCrystalBallData_(vendor, listRow, options) {
     ).join('\n\n');
 
     // Call Claude for analysis with full vendor context
-    const prompt = `You are analyzing a vendor named "${vendor}" to determine what is OUTSTANDING and what the next actions should be. You have access to their emails, blockers, open tasks, completed tasks, and vendor state.
+    // Prompt optimized for speed: concise instructions, structured data, minimal examples
+    const prompt = `Analyze vendor "${vendor}" — what's OUTSTANDING and what are next actions?
 
-CRITICAL CONTEXT:
-- "OUR TEAM" = Profitise/ZeroParallel/Phonexa (emails from @profitise.com, @zeroparallel.com, @phonexa.com)
-- "VENDOR" = ${vendor} (the external party)
-- If WE sent the last message → we are WAITING on the vendor to respond (🟡)
-- If THEY sent the last message AND it has 01.priority/1 label → urgent, we need to respond (🔴)
-- If THEY sent the last message but NO 01.priority/1 label → less urgent (🟡)
+CONTEXT: OUR TEAM = @profitise.com/@zeroparallel.com/@phonexa.com. VENDOR = ${vendor}.
+- We sent last → waiting on vendor (🟡). They sent last + 01.priority/1 label → urgent (🔴). They sent last, no priority label → 🟡.
 
-IMPORTANT: Only use 🔴 (red) if the email has the "01.priority/1" label. Without that label, use 🟡 (yellow) instead.
+VENDOR: Status=${contactData.liveStatus || '?'} | Verticals=${contactData.liveVerticals || 'none'} | Modalities=${contactData.liveModalities || 'none'}
+Notes: ${(mondayNotes || 'none').substring(0, 300)}
 
-VENDOR STATE:
-- Status: ${contactData.liveStatus || 'Unknown'}
-- Live Verticals: ${contactData.liveVerticals || '(none)'}
-- Live Modalities: ${contactData.liveModalities || '(none)'}
-- Phonexa Link: ${contactData.phonexaLink || '(none)'}
-- Notes: ${(mondayNotes || '(none)').substring(0, 500)}
+BLOCKERS: ${blockerContext}
+OPEN TASKS: ${openTaskContext}
+COMPLETED (don't re-suggest): ${completedTaskContext}
+INBOX EMAILS: ${emailContext || 'None'}
+SNOOZED: ${snoozedContext || 'None'}
 
-🚧 OPEN BLOCKERS (these are actively blocking progress):
-${blockerContext}
+Cross-reference emails with blockers/tasks. Check if blockers appear resolved by emails or completed tasks.
 
-📋 OPEN TASKS (onboarding/project checklist items not yet done):
-${openTaskContext}
-
-✅ RECENTLY COMPLETED TASKS (already done — DO NOT suggest these again):
-${completedTaskContext}
-
-ACTIVE EMAILS IN INBOX (label:00.received):
-${emailContext || 'None'}
-
-SNOOZED EMAILS (deferred for later):
-${snoozedContext || 'None'}
-
-ANALYSIS INSTRUCTIONS:
-1. Cross-reference the EMAILS with the BLOCKERS and OPEN TASKS to understand the full picture
-2. If a blocker says the vendor needs to do something (e.g., "Signup on Portal"), check if the emails or completed tasks suggest they may have already done it
-3. If the vendor is waiting on us (based on email context), identify what WE need to do from the open tasks list
-4. If we are waiting on the vendor, identify what THEY need to do based on blockers and tasks
-5. Look at the onboarding checklist (open tasks) to determine what the logical next step is
-
-FORMAT YOUR RESPONSE IN TWO SECTIONS:
-
+FORMAT:
 **Blockers**
-Analyze each blocker against the emails and completed tasks. For each blocker, state whether it appears resolved or still active, and what evidence supports this.
+For each blocker: resolved or active? Evidence?
 
 **Summary**
-A brief summary of the overall situation and what the most important next step is.
+Brief situation + most important next step.
 
-Then on a NEW LINE, output suggested actions in this format (one per line):
-SUGGESTED_ACTION: <description of what to do> | <who needs to do it: "us" or "vendor"> | <related blocker or task name if applicable>
-
-Examples:
-SUGGESTED_ACTION: Ask vendor to sign up on Profitise affiliate portal | vendor | Signup on Profitise Portal
-SUGGESTED_ACTION: Reply to vendor's email about campaign details | us | Send Campaign Details
-SUGGESTED_ACTION: Mark blocker as resolved - vendor already completed signup | us | Signup on Profitise Portal
-
-Keep the analysis concise but insightful. Focus on what's ACTIONABLE.`;
+Then on new lines:
+SUGGESTED_ACTION: <what to do> | <us or vendor> | <related blocker/task>`;
 
     const apiKey = BS_CFG.CLAUDE_API_KEY;
     if (!apiKey) {
@@ -5128,7 +5049,10 @@ Keep the analysis concise but insightful. Focus on what's ACTIONABLE.`;
       }
     }
 
-    const claudeResult = callClaudeAPI_(prompt, apiKey, { maxTokens: 1500 });
+    const claudeResult = callClaudeAPI_(prompt, apiKey, {
+      model: BS_CFG.CRYSTAL_BALL_MODEL,
+      maxTokens: BS_CFG.CRYSTAL_BALL_MAX_TOKENS
+    });
 
     if (claudeResult.error) {
       Logger.log(`[Crystal Ball] Claude API error: ${claudeResult.error}`);
@@ -8045,7 +7969,8 @@ function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
   const modelMap = {
     'claude-sonnet-4-20250514': 'claude-sonnet-4',
     'claude-opus-4-20250514': 'claude-opus-4',
-    'claude-haiku-4-20250514': 'claude-haiku-4'
+    'claude-haiku-4-20250514': 'claude-haiku-4',
+    'claude-haiku-4-5-20251001': 'claude-haiku-4-5'
   };
   const requestedModel = options.model || 'claude-sonnet-4-20250514';
   const model = modelMap[requestedModel] || requestedModel;
@@ -8088,27 +8013,49 @@ function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
     muteHttpExceptions: true
   };
 
-  try {
-    const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
+  // Retry with exponential backoff for transient proxy errors (502, 503, 504)
+  const maxRetries = 2;
+  const retryableStatusCodes = [502, 503, 504];
 
-    if (responseCode !== 200) {
-      return { error: `Proxy returned ${responseCode}: ${responseText}` };
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
+      const responseCode = response.getResponseCode();
+      const responseText = response.getContentText();
+
+      if (responseCode === 200) {
+        const result = JSON.parse(responseText);
+        // OpenAI format: { choices: [{ message: { content: "..." } }] }
+        if (result.choices && result.choices.length > 0 && result.choices[0].message) {
+          return { content: result.choices[0].message.content };
+        }
+        return { error: 'No content in proxy response' };
+      }
+
+      // Retry on transient gateway errors
+      if (retryableStatusCodes.includes(responseCode) && attempt < maxRetries) {
+        const delaySec = Math.pow(2, attempt + 1); // 2s, 4s
+        Logger.log(`[Claude Proxy] Got ${responseCode}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
+        Utilities.sleep(delaySec * 1000);
+        continue;
+      }
+
+      // Strip HTML from error responses for cleaner display
+      const cleanError = responseText.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      return { error: `Proxy returned ${responseCode}: ${cleanError || 'Gateway error'}` };
+
+    } catch (e) {
+      if (attempt < maxRetries) {
+        const delaySec = Math.pow(2, attempt + 1);
+        Logger.log(`[Claude Proxy] Exception: ${e.message}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
+        Utilities.sleep(delaySec * 1000);
+        continue;
+      }
+      return { error: `Proxy error: ${e.message}` };
     }
-
-    const result = JSON.parse(responseText);
-
-    // OpenAI format: { choices: [{ message: { content: "..." } }] }
-    if (result.choices && result.choices.length > 0 && result.choices[0].message) {
-      return { content: result.choices[0].message.content };
-    }
-
-    return { error: 'No content in proxy response' };
-
-  } catch (e) {
-    return { error: `Proxy error: ${e.message}` };
   }
+
+  return { error: 'Proxy failed after retries' };
 }
 
 /**
