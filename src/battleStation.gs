@@ -8013,27 +8013,49 @@ function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
     muteHttpExceptions: true
   };
 
-  try {
-    const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
+  // Retry with exponential backoff for transient proxy errors (502, 503, 504)
+  const maxRetries = 2;
+  const retryableStatusCodes = [502, 503, 504];
 
-    if (responseCode !== 200) {
-      return { error: `Proxy returned ${responseCode}: ${responseText}` };
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
+      const responseCode = response.getResponseCode();
+      const responseText = response.getContentText();
+
+      if (responseCode === 200) {
+        const result = JSON.parse(responseText);
+        // OpenAI format: { choices: [{ message: { content: "..." } }] }
+        if (result.choices && result.choices.length > 0 && result.choices[0].message) {
+          return { content: result.choices[0].message.content };
+        }
+        return { error: 'No content in proxy response' };
+      }
+
+      // Retry on transient gateway errors
+      if (retryableStatusCodes.includes(responseCode) && attempt < maxRetries) {
+        const delaySec = Math.pow(2, attempt + 1); // 2s, 4s
+        Logger.log(`[Claude Proxy] Got ${responseCode}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
+        Utilities.sleep(delaySec * 1000);
+        continue;
+      }
+
+      // Strip HTML from error responses for cleaner display
+      const cleanError = responseText.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      return { error: `Proxy returned ${responseCode}: ${cleanError || 'Gateway error'}` };
+
+    } catch (e) {
+      if (attempt < maxRetries) {
+        const delaySec = Math.pow(2, attempt + 1);
+        Logger.log(`[Claude Proxy] Exception: ${e.message}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
+        Utilities.sleep(delaySec * 1000);
+        continue;
+      }
+      return { error: `Proxy error: ${e.message}` };
     }
-
-    const result = JSON.parse(responseText);
-
-    // OpenAI format: { choices: [{ message: { content: "..." } }] }
-    if (result.choices && result.choices.length > 0 && result.choices[0].message) {
-      return { content: result.choices[0].message.content };
-    }
-
-    return { error: 'No content in proxy response' };
-
-  } catch (e) {
-    return { error: `Proxy error: ${e.message}` };
   }
+
+  return { error: 'Proxy failed after retries' };
 }
 
 /**
