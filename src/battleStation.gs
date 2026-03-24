@@ -1,7 +1,7 @@
 /************************************************************
  * A(I)DEN - One-by-one vendor review dashboard
  *
- * Last Updated: 2026-03-10 10:00AM PST
+ * Last Updated: 2026-03-24 12:00PM PST
  *
  * Features:
  * - Navigate through vendors sequentially via menu
@@ -21,12 +21,13 @@
  * - ⚙️ Claude API key management via Script Properties
  *
  * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
+ * NEW: Vendor Briefing (full intel aggregation), Bulk Actions match transparency
  * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
  ************************************************************/
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-03-10 10:00AM PST',
+  CODE_VERSION: '2026-03-24 12:00PM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -241,6 +242,7 @@ function onOpen() {
     .addItem('🧠 Smart Briefing (What to do next)', 'battleStationSmartBriefing')
     .addItem('💡 Generate Insights (This Vendor)', 'battleStationGenerateInsights')
     .addItem('🎯 Goal-Aligned Insights (All Vendors)', 'battleStationGoalInsights')
+    .addItem('📋 Vendor Briefing (Full Intel)', 'battleStationVendorBriefing')
     .addSeparator()
     .addItem('📝 Summarize & Update Notes (Claude)', 'battleStationSummarizeToNotes')
     .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
@@ -18532,6 +18534,320 @@ Be specific, reference actual vendor names and goals, and give actionable recomm
 }
 
 /************************************************************
+ * VENDOR BRIEFING - Full Intelligence Report
+ * Aggregates ALL vendor data sources into a comprehensive
+ * briefing with actionable bullet points for meetings/calls
+ ************************************************************/
+
+/**
+ * Generate a comprehensive vendor intelligence briefing.
+ * Aggregates: emails, documents, tasks, notes, blockers, contracts,
+ * helpful links, meetings, Google Drive, Box docs, and relationship context.
+ * Outputs actionable bullet points for vendor meetings.
+ */
+function battleStationVendorBriefing() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+
+  if (!vendor) {
+    ui.alert('Could not determine vendor name.');
+    return;
+  }
+
+  ss.toast(`Building full intelligence briefing for ${vendor}...`, '📋 Vendor Briefing', 15);
+
+  // ─── 1. VENDOR PROFILE (monday.com) ───
+  let contactData = { contacts: [], notes: '', blockers: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', phonexaLink: '', liveStatus: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Contact error: ${e.message}`); }
+
+  // ─── 2. EMAILS ───
+  let emails = [];
+  try { emails = getEmailsForVendor_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Email error: ${e.message}`); }
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for the most important threads
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 10)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        const labels = Array.isArray(email.labels) ? email.labels : (email.labels || '').split(',');
+        const isOverdue = overdue.some(o => o.threadId === email.threadId);
+        emailContext += `\n[${isOverdue ? '🔴 OVERDUE' : '📧'}] Subject: ${email.subject}\n  Date: ${email.date}\n  Labels: ${labels.join(', ')}\n  From: ${latest.getFrom()}\n  Content: ${latest.getPlainBody().substring(0, 600)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\n📧 ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // ─── 3. TASKS ───
+  let tasks = [];
+  try { tasks = getTasksForVendor_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Tasks error: ${e.message}`); }
+  const openTasks = tasks.filter(t => !t.isDone);
+  const completedTasks = tasks.filter(t => t.isDone);
+  const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+
+  // ─── 4. CONTRACTS (Airtable) ───
+  let contracts = { contracts: [], hasContracts: false };
+  try { contracts = getVendorContracts_(vendor); } catch (e) { Logger.log(`[Briefing] Contracts error: ${e.message}`); }
+
+  // ─── 5. HELPFUL LINKS ───
+  let helpfulLinks = [];
+  try { helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Links error: ${e.message}`); }
+
+  // ─── 6. MEETINGS (Google Calendar) ───
+  let meetings = [];
+  try { meetings = getUpcomingMeetingsForVendor_(vendor, contactData); } catch (e) { Logger.log(`[Briefing] Meetings error: ${e.message}`); }
+
+  // ─── 7. GOOGLE DRIVE DOCS ───
+  let gDriveFiles = [];
+  try { gDriveFiles = getGDriveFilesForVendor_(vendor); } catch (e) { Logger.log(`[Briefing] GDrive error: ${e.message}`); }
+
+  // ─── 8. BOX DOCUMENTS ───
+  let boxDocs = [];
+  try { boxDocs = searchBoxForVendor(vendor); } catch (e) { Logger.log(`[Briefing] Box error: ${e.message}`); }
+
+  // ─── 9. GOALS & AI INSTRUCTIONS ───
+  const goalsContext = getGoalsContext_();
+  const aiInstructions = getAiInstructions_();
+
+  // ─── 10. GOOGLE SHEET CONTEXT ───
+  // Pull the vendor's row data from the List sheet for extra context
+  const tranche = listSh.getRange(listRow, 9).getValue() || '(none)';
+
+  ss.toast('Analyzing all data with Claude...', '🤖 Thinking', 15);
+
+  // ─── BUILD THE MEGA-PROMPT ───
+  const tasksContext = openTasks.map(t =>
+    `- [${t.status}] ${t.subject} (Project: ${t.project || 'N/A'}${t.notes ? ', Notes: ' + t.notes.substring(0, 100) : ''})`
+  ).join('\n') || '(no open tasks)';
+
+  const completedTasksContext = completedTasks.slice(0, 8).map(t =>
+    `- ✅ ${t.subject} (${t.status})`
+  ).join('\n') || '(none)';
+
+  const blockerContext = blockerTasks.map(t =>
+    `- 🚧 ${t.subject} (${t.status}${t.notes ? ' — ' + t.notes.substring(0, 100) : ''})`
+  ).join('\n') || '(none)';
+
+  const contractsContext = contracts.contracts.map(c =>
+    `- ${c.contractType || 'Contract'}: ${c.status || 'Unknown'} (${c.vertical || 'N/A'}) ${c.notes ? '— ' + c.notes.substring(0, 100) : ''} [${c.createdDate || ''}]`
+  ).join('\n') || '(no contracts)';
+
+  const linksContext = helpfulLinks.map(l =>
+    `- ${l.name || l.title || 'Link'}: ${l.url || l.link || '(no URL)'}`
+  ).join('\n') || '(none)';
+
+  const meetingsContext = meetings.map(m =>
+    `- ${m.isPast ? '(PAST)' : '(UPCOMING)'} ${m.title} — ${m.date} ${m.time || ''}${m.attendees ? ' [' + m.attendees.join(', ') + ']' : ''}`
+  ).join('\n') || '(no meetings)';
+
+  const docsContext = [
+    ...gDriveFiles.map(f => `- [GDrive] ${f.name} (Modified: ${f.modified || 'N/A'})`),
+    ...boxDocs.map(f => `- [Box] ${f.name} (${f.type || 'file'}, Modified: ${f.modified || 'N/A'})`)
+  ].join('\n') || '(no documents)';
+
+  const contactsContext = contactData.contacts.slice(0, 10).map(c =>
+    `- ${c.name} (${c.contactType || 'Unknown'}, ${c.status || 'N/A'}) ${c.email || ''} ${c.phone || ''}`
+  ).join('\n') || '(no contacts)';
+
+  const prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
+
+This briefing should give Andy everything he needs to walk into a call, meeting, or email exchange and be fully prepared. Think of it as a pre-meeting intelligence packet.
+${aiInstructions}
+
+═══════════════════════════════════════
+COMPLETE VENDOR DOSSIER: ${vendor}
+═══════════════════════════════════════
+
+📊 PROFILE
+- Type: ${source}
+- Status: ${contactData.liveStatus || status || 'Unknown'}
+- Priority Zone: ${tranche}
+- TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
+- Live Verticals: ${contactData.liveVerticals || '(none)'}
+- Other Verticals: ${contactData.otherVerticals || '(none)'}
+- Live Modalities: ${contactData.liveModalities || '(none)'}
+- States: ${contactData.states || '(none)'}
+- Dead States: ${contactData.deadStates || '(none)'}
+- Phonexa Link: ${contactData.phonexaLink || '(not set)'}
+- Other Name: ${contactData.otherName || '(none)'}
+
+👥 CONTACTS (${contactData.contacts.length})
+${contactsContext}
+
+📝 VENDOR NOTES (from monday.com)
+${contactData.notes || notes || '(no notes)'}
+
+🚧 BLOCKERS
+${blockerContext}
+
+📧 OUTSTANDING EMAILS (${unsnoozed.length} active, ${overdue.length} overdue)
+${emailContext || '(no emails)'}
+
+📋 OPEN TASKS (${openTasks.length})
+${tasksContext}
+
+✅ RECENTLY COMPLETED (${completedTasks.length})
+${completedTasksContext}
+
+📄 CONTRACTS (Airtable) (${contracts.contracts.length})
+${contractsContext}
+
+🔗 HELPFUL LINKS (${helpfulLinks.length})
+${linksContext}
+
+📅 MEETINGS
+${meetingsContext}
+
+📁 DOCUMENTS
+${docsContext}
+${goalsContext}
+
+═══════════════════════════════════════
+BRIEFING INSTRUCTIONS
+═══════════════════════════════════════
+
+Generate a briefing with these sections. Be specific, reference actual data, and prioritize actionable intelligence:
+
+## 🏢 RELATIONSHIP SUMMARY
+[2-3 sentences on the overall relationship: How long have we worked with them? What's the trajectory — growing, stagnant, declining? What's the vibe from the emails? Are they a high-value partner or a low-priority vendor?]
+
+## 🔥 WHAT'S HOT RIGHT NOW
+[Bullet points of everything that needs IMMEDIATE attention: overdue emails, blockers, urgent tasks. For each item, say what it is and what Andy should do about it.]
+
+## 📧 OUTSTANDING EMAIL ACTIONS
+[For each outstanding email thread:
+- What is it about?
+- Who has the ball (us or them)?
+- What's the next action?
+Group by urgency: overdue first, then waiting-on-vendor, then waiting-on-us.]
+
+## 📄 OUTSTANDING DOCUMENTS & CONTRACTS
+[Any contracts pending, documents that need review, links that need attention. What's the status of each?]
+
+## 📋 TASK CHECKPOINT
+[What tasks are open? Which are blocking progress? What's the logical next step in the onboarding/project flow?]
+
+## 🚧 BLOCKERS & RESOLUTION PATH
+[For each blocker: What's blocking? Who needs to act? What's the fastest path to resolution? Cross-reference with emails — has the vendor maybe already done something about it?]
+
+## 💬 TALKING POINTS
+[5-8 bullet points Andy can use in a call or meeting. These should be specific, actionable things to bring up. Include:
+- Things to follow up on
+- Questions to ask
+- Updates to share
+- Asks to make
+- Relationship-building angles]
+
+## 🎯 ACTION PLAN
+[Numbered list of specific next steps Andy should take, in priority order. Each action should be concrete: "Reply to email about X with Y" not "Follow up on emails".]
+
+Be direct, concise, and strategic. Andy is busy — make every word count.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    // Format the response for HTML display
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    // Build data summary badges
+    const badges = [];
+    badges.push(`${unsnoozed.length} emails`);
+    if (overdue.length > 0) badges.push(`<span style="color:#c62828">${overdue.length} overdue</span>`);
+    badges.push(`${openTasks.length} tasks`);
+    if (blockerTasks.length > 0) badges.push(`<span style="color:#e65100">${blockerTasks.length} blockers</span>`);
+    if (contracts.contracts.length > 0) badges.push(`${contracts.contracts.length} contracts`);
+    if (meetings.length > 0) badges.push(`${meetings.length} meetings`);
+    if (gDriveFiles.length + boxDocs.length > 0) badges.push(`${gDriveFiles.length + boxDocs.length} docs`);
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #1565c0; margin-top: 0; }
+        h3 { color: #1565c0; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #1a73e8; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 8px; }
+        .vendor-card { background: #e3f2fd; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #1a73e8; }
+        .vendor-card strong { color: #1565c0; }
+        .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .badge { background: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; border: 1px solid #ddd; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
+      </style>
+      <h2>📋 Vendor Briefing: ${escapeHtml_(vendor)}</h2>
+      <div class="vendor-card">
+        <strong>${escapeHtml_(source)}</strong> | ${escapeHtml_(contactData.liveStatus || status)} | TTL: $${Number(ttlUsd).toLocaleString()}
+        <div class="badges">${badges.map(b => '<span class="badge">' + b + '</span>').join('')}</div>
+      </div>
+      <p class="meta">Generated ${new Date().toLocaleString()} | Data sources: monday.com, Gmail, Airtable, Calendar, GDrive, Box</p>
+      <button class="copy-btn" onclick="copyBriefing()">📋 Copy to Clipboard</button>
+      <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
+      <div id="briefing-content">${content}</div>
+      <script>
+        function copyBriefing() {
+          var el = document.getElementById('briefing-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = '✅ Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = '📋 Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(850).setHeight(750);
+    ui.showModalDialog(html, `📋 Vendor Briefing: ${vendor}`);
+    ss.toast('Briefing ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error generating briefing: ${e.message}`);
+  }
+}
+
+/************************************************************
  * BULK ACTIONS
  * Parse free-text input to identify and execute multiple
  * vendor operations at once (status changes, URL updates, etc.)
@@ -18664,7 +18980,7 @@ Supported action types and their detail formats:
 - ACTION: RESEARCH | <description of what needs to be researched — this is informational and will be shown as a reminder>
 
 IMPORTANT RULES:
-- Only output ACTION lines - no commentary or explanation
+- Only output ACTION lines and UNMATCHED lines - no commentary or explanation
 - For notes, if the user says "add a note" or "note that" → use UPDATE_NOTES (appends). If they say "change notes to" or "set notes to" → use REPLACE_NOTES
 - For task statuses, match the task name as closely as possible to the open tasks listed above
 - If you cannot determine the action type, skip it
@@ -18673,7 +18989,13 @@ IMPORTANT RULES:
   ACTION: UPDATE_NOTES | Notes with bullets:
   - bullet 1
   - bullet 2
-  - bullet 3`;
+  - bullet 3
+
+CRITICAL: After all ACTION lines, output an UNMATCHED section for any parts of the user's input that you could NOT map to an action. Use this format:
+UNMATCHED: <original text from user input> | <reason it couldn't be matched, e.g. "no matching task found", "ambiguous instruction", "not a supported action type">
+
+This helps the user see what was missed so they can rephrase or handle it manually. If everything was matched, output:
+UNMATCHED: (none)
 
   const response = callClaudeAPI_(prompt, BS_CFG.CLAUDE_API_KEY, { maxTokens: 1500 });
 
@@ -18684,10 +19006,12 @@ IMPORTANT RULES:
 
   Logger.log(`Bulk actions Claude response: ${response.content}`);
 
-  // Parse Claude's response into structured actions
-  const actions = parseBulkActions_(response.content, openTasks, contactData);
+  // Parse Claude's response into structured actions + unmatched items
+  const parseResult = parseBulkActions_(response.content, openTasks, contactData);
+  const actions = parseResult.actions;
+  const unmatched = parseResult.unmatched;
 
-  if (actions.length === 0) {
+  if (actions.length === 0 && unmatched.length === 0) {
     ui.alert('No actions identified', 'Claude could not identify any actionable operations from your input. Try being more specific.', ui.ButtonSet.OK);
     return;
   }
@@ -18700,8 +19024,8 @@ IMPORTANT RULES:
     actions: actions
   }));
 
-  // Show confirmation dialog
-  showBulkActionsDialog_(vendor, actions);
+  // Show confirmation dialog with match transparency
+  showBulkActionsDialog_(vendor, actions, unmatched);
 }
 
 /**
@@ -18709,19 +19033,45 @@ IMPORTANT RULES:
  */
 function parseBulkActions_(claudeResponse, openTasks, contactData) {
   const actions = [];
+  const unmatched = [];
   const lines = claudeResponse.split('\n');
 
   // First pass: merge continuation lines into their preceding ACTION line.
-  // Lines that don't start with "ACTION:" are appended to the previous ACTION's detail.
+  // Lines that don't start with "ACTION:" or "UNMATCHED:" are appended to the previous line's detail.
   const mergedActionLines = [];
+  const unmatchedLines = [];
+  let currentTarget = null; // 'action' or 'unmatched'
+
   for (const line of lines) {
     const actionMatch = line.match(/^ACTION:\s*(.+)/i);
+    const unmatchedMatch = line.match(/^UNMATCHED:\s*(.+)/i);
+
     if (actionMatch) {
       mergedActionLines.push(actionMatch[1]);
-    } else if (mergedActionLines.length > 0 && line.trim()) {
-      // Continuation line — append to the last ACTION's content
-      mergedActionLines[mergedActionLines.length - 1] += '\n' + line;
+      currentTarget = 'action';
+    } else if (unmatchedMatch) {
+      const text = unmatchedMatch[1].trim();
+      if (text !== '(none)') {
+        unmatchedLines.push(text);
+      }
+      currentTarget = 'unmatched';
+    } else if (line.trim()) {
+      // Continuation line — append to the last entry of whichever type we're in
+      if (currentTarget === 'action' && mergedActionLines.length > 0) {
+        mergedActionLines[mergedActionLines.length - 1] += '\n' + line;
+      } else if (currentTarget === 'unmatched' && unmatchedLines.length > 0) {
+        unmatchedLines[unmatchedLines.length - 1] += '\n' + line;
+      }
     }
+  }
+
+  // Parse UNMATCHED lines into structured objects
+  for (const raw of unmatchedLines) {
+    const parts = raw.split('|').map(s => s.trim());
+    unmatched.push({
+      text: parts[0] || raw,
+      reason: parts[1] || 'Could not map to a supported action'
+    });
   }
 
   for (const rawLine of mergedActionLines) {
@@ -18739,7 +19089,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             type: 'UPDATE_NOTES',
             label: 'Append to Notes',
             detail: detail,
-            preview: detail
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
           });
         }
         break;
@@ -18751,7 +19102,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             type: 'REPLACE_NOTES',
             label: 'Replace Notes',
             detail: detail,
-            preview: detail
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
           });
         }
         break;
@@ -18763,7 +19115,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             type: 'UPDATE_BLOCKERS',
             label: 'Update Blockers',
             detail: detail,
-            preview: detail
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
           });
         }
         break;
@@ -18786,7 +19139,15 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
               taskItemId: matchingTask.itemId,
               taskStatusColumnId: matchingTask.statusColumnId,
               currentStatus: matchingTask.status,
-              preview: `"${matchingTask.subject}": ${matchingTask.status} → ${newStatus}`
+              preview: `"${matchingTask.subject}": ${matchingTask.status} → ${newStatus}`,
+              matchedFrom: `Task "${taskName}" → matched to "${matchingTask.subject}"`
+            });
+          } else {
+            // Task name didn't match — add to unmatched with available tasks for context
+            const availableTasks = openTasks.map(t => t.subject).join(', ');
+            unmatched.push({
+              text: `Change task "${taskName}" to ${newStatus}`,
+              reason: `No matching open task found. Available tasks: ${availableTasks || '(none)'}`
             });
           }
         }
@@ -18798,7 +19159,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             type: 'UPDATE_PHONEXA_LINK',
             label: 'Update Phonexa Link',
             detail: parts[1],
-            preview: parts[1]
+            preview: parts[1],
+            matchedFrom: parts[1]
           });
         }
         break;
@@ -18810,7 +19172,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             label: 'Add Helpful Link',
             detail: parts[2],
             linkName: parts[1],
-            preview: `${parts[1]} → ${parts[2]}`
+            preview: `${parts[1]} → ${parts[2]}`,
+            matchedFrom: `${parts[1]}: ${parts[2]}`
           });
         }
         break;
@@ -18826,7 +19189,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             currentStatus: currentStatus,
             mondayItemId: contactData.mondayItemId,
             boardId: contactData.boardId,
-            preview: `${currentStatus} → ${newStatus}`
+            preview: `${currentStatus} → ${newStatus}`,
+            matchedFrom: `Status change to "${newStatus}"`
           });
         }
         break;
@@ -18838,7 +19202,8 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
             type: 'RESEARCH',
             label: 'Research Reminder',
             detail: detail,
-            preview: detail
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
           });
         }
         break;
@@ -18846,14 +19211,15 @@ function parseBulkActions_(claudeResponse, openTasks, contactData) {
     }
   }
 
-  return actions;
+  return { actions: actions, unmatched: unmatched };
 }
 
 /**
  * Show confirmation dialog with parsed actions.
  */
-function showBulkActionsDialog_(vendor, actions) {
+function showBulkActionsDialog_(vendor, actions, unmatched) {
   const ui = SpreadsheetApp.getUi();
+  unmatched = unmatched || [];
 
   const typeIcons = {
     'UPDATE_NOTES': '📝',
@@ -18866,9 +19232,11 @@ function showBulkActionsDialog_(vendor, actions) {
     'RESEARCH': '🔍'
   };
 
+  // Build matched actions HTML with match transparency
   let actionsHtml = '';
   actions.forEach((action, i) => {
     const icon = typeIcons[action.type] || '⚡';
+    const matchInfo = action.matchedFrom ? `<div class="match-info">Matched from: "${escapeHtml_(action.matchedFrom)}"</div>` : '';
     actionsHtml += `
       <div class="action-row" id="action-${i}">
         <label>
@@ -18877,15 +19245,42 @@ function showBulkActionsDialog_(vendor, actions) {
           <span class="action-label">${escapeHtml_(action.label)}</span>
         </label>
         <div class="action-preview">${escapeHtml_(action.preview)}</div>
+        ${matchInfo}
       </div>
     `;
   });
+
+  // Build unmatched items HTML
+  let unmatchedHtml = '';
+  if (unmatched.length > 0) {
+    unmatchedHtml = `
+      <div class="unmatched-section">
+        <h3>⚠️ Didn't Make the Cut (${unmatched.length})</h3>
+        <p class="unmatched-subtitle">These parts of your input couldn't be mapped to actions. Review them so nothing falls through the cracks.</p>
+        ${unmatched.map((item, i) => `
+          <div class="unmatched-row">
+            <div class="unmatched-text">❌ ${escapeHtml_(item.text)}</div>
+            <div class="unmatched-reason">Reason: ${escapeHtml_(item.reason)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  // Summary badge
+  const summaryBadge = unmatched.length > 0
+    ? `<div class="summary-badge"><span class="badge-matched">✅ ${actions.length} matched</span> <span class="badge-unmatched">⚠️ ${unmatched.length} unmatched</span></div>`
+    : `<div class="summary-badge"><span class="badge-matched">✅ ${actions.length} matched — all input accounted for</span></div>`;
 
   const html = `
     <style>
       body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
       h2 { color: #1a73e8; margin-bottom: 5px; }
-      .subtitle { color: #666; font-size: 12px; margin-bottom: 15px; }
+      h3 { color: #e65100; margin-bottom: 5px; margin-top: 16px; font-size: 14px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 10px; }
+      .summary-badge { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+      .badge-matched { background: #e8f5e9; color: #2e7d32; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+      .badge-unmatched { background: #fff3e0; color: #e65100; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
       .action-row { background: #fff; border: 1px solid #ddd; padding: 10px 12px; margin-bottom: 8px; border-radius: 5px; }
       .action-row.applied { background: #e8f5e9; border-color: #4caf50; }
       .action-row.failed { background: #ffebee; border-color: #e53935; }
@@ -18893,8 +19288,14 @@ function showBulkActionsDialog_(vendor, actions) {
       .action-icon { font-size: 16px; margin-right: 4px; }
       .action-label { font-weight: bold; color: #333; }
       .action-preview { color: #666; font-size: 12px; margin-top: 4px; margin-left: 24px; word-break: break-word; white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
+      .match-info { color: #9e9e9e; font-size: 11px; margin-top: 2px; margin-left: 24px; font-style: italic; }
       label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
       .action-cb { width: 16px; height: 16px; }
+      .unmatched-section { margin-top: 16px; padding-top: 12px; border-top: 2px solid #ff9800; }
+      .unmatched-subtitle { color: #888; font-size: 11px; margin-bottom: 8px; }
+      .unmatched-row { background: #fff8e1; border: 1px solid #ffe0b2; padding: 8px 12px; margin-bottom: 6px; border-radius: 5px; border-left: 3px solid #ff9800; }
+      .unmatched-text { color: #333; font-weight: 500; font-size: 12px; }
+      .unmatched-reason { color: #999; font-size: 11px; margin-top: 2px; font-style: italic; }
       .btn-bar { display: flex; gap: 10px; margin-top: 15px; padding-top: 12px; border-top: 1px solid #ddd; }
       .btn-execute { background: #4caf50; color: white; border: none; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; flex: 1; }
       .btn-execute:hover { background: #45a049; }
@@ -18911,14 +19312,18 @@ function showBulkActionsDialog_(vendor, actions) {
     <h2>⚡ Bulk Actions</h2>
     <p class="subtitle">Review and confirm actions for <strong>${escapeHtml_(vendor)}</strong>. Uncheck any you want to skip.</p>
 
+    ${summaryBadge}
+
     <div id="status-message" class="status-msg"></div>
 
     <div id="actions-list">
       ${actionsHtml}
     </div>
 
+    ${unmatchedHtml}
+
     <div class="btn-bar">
-      <button class="btn-execute" id="execute-btn" onclick="executeAll()">✓ Execute Selected (${actions.length})</button>
+      <button class="btn-execute" id="execute-btn" onclick="executeAll()"${actions.length === 0 ? ' disabled' : ''}>✓ Execute Selected (${actions.length})</button>
       <button class="btn-cancel" onclick="google.script.host.close()">Cancel</button>
     </div>
 
