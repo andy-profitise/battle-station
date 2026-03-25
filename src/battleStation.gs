@@ -28,7 +28,7 @@
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-03-24 4:00PM PST',
+  CODE_VERSION: '2026-03-25 10:00AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -252,6 +252,11 @@ const BS_CFG = {
   }
 };
 
+// In-memory cache for calendar events within a single script execution.
+// Avoids redundant CalendarApp API calls when getAllCalendarEvents_ and
+// getUpcomingMeetingsForVendor_ run in the same invocation.
+let _calendarEventsCache = null;
+
 /**
  * Add menu to Google Sheets
  */
@@ -383,6 +388,27 @@ function onSelectionChange(e) {
   if (typeof value === 'string' && value.trim() === '➕ Add a Blocker') {
     createBlockerForVendor();
   }
+}
+
+/**
+ * Inbox Review - Q&A + Record (stub - not yet implemented)
+ */
+function inboxReviewStart() {
+  SpreadsheetApp.getUi().alert('Inbox Review (Q&A + Record) is not yet implemented.');
+}
+
+/**
+ * Inbox Review - Weekly Recap (stub - not yet implemented)
+ */
+function inboxReviewWeeklyRecap() {
+  SpreadsheetApp.getUi().alert('Weekly Recap is not yet implemented.');
+}
+
+/**
+ * Inbox Review - Update To-Do Status (stub - not yet implemented)
+ */
+function inboxReviewUpdateTodos() {
+  SpreadsheetApp.getUi().alert('Update To-Do Status is not yet implemented.');
 }
 
 /**
@@ -1930,8 +1956,11 @@ function loadVendorData(vendorIndex, options) {
   
   currentRow += 2;
 
+  // Fetch tasks once and reuse for blockers, task display, and Crystal Ball
+  const allVendorTasks_ = getTasksForVendor_(vendor, listRow);
+
   // Current Blocker(s) section - show first blocker task's notes (or item name as fallback)
-  const blockerTasks = getTasksForVendor_(vendor, listRow).filter(t => t.isBlocker && !t.isDone);
+  const blockerTasks = allVendorTasks_.filter(t => t.isBlocker && !t.isDone);
   if (blockerTasks.length > 0) {
     const firstBlocker = blockerTasks[0];
     const hasNotes = !!firstBlocker.notes;
@@ -2163,8 +2192,8 @@ function loadVendorData(vendorIndex, options) {
   bsSh.setRowHeight(currentRow, 10);
   currentRow++;
 
-  // TASKS SECTION
-  let tasks = getTasksForVendor_(vendor, listRow);
+  // TASKS SECTION (reuse fetched tasks)
+  let tasks = allVendorTasks_.slice();
 
   // Filter out inappropriate onboarding tasks based on source
   // If source is Affiliates, don't show "Onboarding - Buyer" tasks
@@ -2336,11 +2365,10 @@ function loadVendorData(vendorIndex, options) {
     Logger.log('Skipping Crystal Ball in turbo mode');
   } else {
     ss.toast('Analyzing emails + blockers + tasks...', '🔮 Crystal Ball', 3);
-    // Pass blockers, tasks, and vendor context for cross-referencing
-    const allVendorTasks = getTasksForVendor_(vendor, listRow); // cached, no extra API call
+    // Pass blockers, tasks, and vendor context for cross-referencing (reuse fetched tasks)
     crystalBall = getCrystalBallData_(vendor, listRow, {
       blockerTasks: blockerTasks,
-      tasks: allVendorTasks,
+      tasks: allVendorTasks_,
       contactData: contactData,
       notes: mondayNotes
     });
@@ -3813,6 +3841,12 @@ function getTasksForVendor_(vendor, listRow) {
  * @returns {array} All calendar events with metadata
  */
 function getAllCalendarEvents_() {
+  // Check in-memory cache first (survives within single execution even when too large for script cache)
+  if (_calendarEventsCache) {
+    Logger.log(`Calendar batch: loaded ${_calendarEventsCache.length} events from in-memory cache`);
+    return _calendarEventsCache;
+  }
+
   const cache = CacheService.getScriptCache();
   const cacheKey = 'calendar_all_events';
 
@@ -3822,6 +3856,7 @@ function getAllCalendarEvents_() {
     try {
       const events = JSON.parse(cached);
       Logger.log(`Calendar batch: loaded ${events.length} events from cache`);
+      _calendarEventsCache = events;
       return events;
     } catch (e) {
       // Cache corrupted, continue to fetch
@@ -3879,7 +3914,8 @@ function getAllCalendarEvents_() {
           isAllDay: isAllDay,
           attendeeEmails: attendeeEmails,
           searchText: (title + ' ' + description + ' ' + location + ' ' + attendeeEmails.join(' ')).toLowerCase(),
-          calendarName: calendar.getName()
+          calendarName: calendar.getName(),
+          calendarId: calendar.getId()
         });
       }
     } catch (e) {
@@ -3901,6 +3937,7 @@ function getAllCalendarEvents_() {
     Logger.log(`Calendar batch cache error: ${e.message}`);
   }
 
+  _calendarEventsCache = allEvents;
   return allEvents;
 }
 
@@ -3992,6 +4029,7 @@ function filterCalendarEventsForVendor_(allEvents, vendor, contactEmails) {
       const isPast = startDateStr < todayStr;
 
       matches.push({
+        id: event.id,
         title: event.title,
         startTime: startTime,
         endTime: event.endTime,
@@ -4003,7 +4041,8 @@ function filterCalendarEventsForVendor_(allEvents, vendor, contactEmails) {
         formattedDate: event.isAllDay
           ? Utilities.formatDate(startTime, tz, 'EEE, MMM d')
           : Utilities.formatDate(startTime, tz, 'EEE, MMM d @ h:mm a'),
-        calendarName: event.calendarName
+        calendarName: event.calendarName,
+        calendarId: event.calendarId
       });
       seenIds.add(event.id);
     }
@@ -4040,7 +4079,7 @@ function getUpcomingMeetingsForVendor_(vendor, contactEmails) {
   if (contactEmails && contactEmails.length > 0) {
     Logger.log(`Contact emails: ${contactEmails.join(', ')}`);
   }
-  
+
   try {
     const now = new Date();
     // Force Pacific timezone for consistent date comparison
@@ -4048,10 +4087,69 @@ function getUpcomingMeetingsForVendor_(vendor, contactEmails) {
     const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
     Logger.log(`Today's date (${tz}): ${todayStr}`);
     Logger.log(`Current time UTC: ${now.toISOString()}`);
-    
+
+    // Fast path: use batch calendar events from in-memory cache (avoids CalendarApp API calls)
+    if (_calendarEventsCache) {
+      Logger.log(`Using batch calendar events from in-memory cache (${_calendarEventsCache.length} events)`);
+      const filtered = filterCalendarEventsForVendor_(_calendarEventsCache, vendor, contactEmails);
+      // Adapt output format to match this function's expected return shape
+      const meetings = filtered.map(m => {
+        const eventStr = Utilities.formatDate(m.startTime, tz, 'yyyy-MM-dd');
+        const isPast = m.startTime < now;
+        const isToday = (eventStr === todayStr);
+        let status = '';
+        if (isPast) {
+          status = '✓ Past';
+        } else if (isToday) {
+          status = '🔴 Today';
+        } else {
+          const eventDate = new Date(eventStr + 'T00:00:00');
+          const todayDate = new Date(todayStr + 'T00:00:00');
+          const daysUntil = Math.round((eventDate - todayDate) / (24 * 60 * 60 * 1000));
+          status = `📅 In ${daysUntil} day${daysUntil !== 1 ? 's' : ''}`;
+        }
+        const startHH = Utilities.formatDate(m.startTime, tz, 'HH');
+        const startMM = Utilities.formatDate(m.startTime, tz, 'mm');
+        const endHH = Utilities.formatDate(m.endTime, tz, 'HH');
+        const endMM = Utilities.formatDate(m.endTime, tz, 'mm');
+        const timeFormatted = m.isAllDay ? 'All Day' : `${startHH}:${startMM} - ${endHH}:${endMM}`;
+        const eventIdBase = (m.id || '').split('@')[0];
+        const calId = m.calendarId || m.calendarName || '';
+        return {
+          title: m.title,
+          date: eventStr,
+          time: timeFormatted,
+          status: status,
+          isPast: isPast,
+          isToday: isToday,
+          startTime: m.startTime,
+          matchSource: m.matchedIn || 'unknown',
+          link: calId ? `https://calendar.google.com/calendar/event?eid=${Utilities.base64Encode(eventIdBase + ' ' + calId)}` : ''
+        };
+      });
+      // Apply same dedup/sort logic
+      meetings.sort((a, b) => {
+        if (a.isToday && !b.isToday) return -1;
+        if (!a.isToday && b.isToday) return 1;
+        if (!a.isPast && b.isPast) return -1;
+        if (a.isPast && !b.isPast) return 1;
+        return a.startTime - b.startTime;
+      });
+      const seenTitles = new Set();
+      const uniqueMeetings = meetings.filter(m => {
+        if (m.isPast && m.title.toLowerCase().includes('checkup')) return false;
+        const normalizedTitle = m.title.replace(/\s*-?\s*Day\s*\d+\s*$/i, '').replace(/\s*-?\s*Day\s*\d+\s*-/i, ' - ').trim();
+        if (seenTitles.has(normalizedTitle)) return false;
+        seenTitles.add(normalizedTitle);
+        return true;
+      });
+      Logger.log(`Found ${uniqueMeetings.length} unique meetings for ${vendor} (${meetings.length} total) [batch fast path]`);
+      return { meetings: uniqueMeetings, totalCount: meetings.length };
+    }
+
     const pastDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
     const futureDate = new Date(now.getTime() + (60 * 24 * 60 * 60 * 1000)); // 60 days ahead
-    
+
     const calendars = CalendarApp.getAllCalendars();
     const meetings = [];
     
@@ -8236,7 +8334,7 @@ function generateVendorChecksum_(vendor, emails, tasks, notes, status, states, c
       url: l.url,
       notes: l.notes
     })),
-    meetings: (meetings || []).map(m => ({
+    meetings: (Array.isArray(meetings) ? meetings : []).map(m => ({
       title: m.title,
       date: m.date,
       time: m.time,
@@ -18589,7 +18687,11 @@ function battleStationVendorBriefing() {
 
   // ─── 6. MEETINGS (Google Calendar) ───
   let meetings = [];
-  try { meetings = getUpcomingMeetingsForVendor_(vendor, contactData); } catch (e) { Logger.log(`[Briefing] Meetings error: ${e.message}`); }
+  try {
+    const contactEmails = (contactData.contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    meetings = meetingsResult.meetings || [];
+  } catch (e) { Logger.log(`[Briefing] Meetings error: ${e.message}`); }
 
   // ─── 7. GOOGLE DRIVE DOCS ───
   let gDriveFiles = [];
