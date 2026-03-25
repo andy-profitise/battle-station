@@ -85,7 +85,7 @@ const BS_CFG = {
   
   // API Keys
   MONDAY_API_TOKEN: 'eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjQ1NDc2OTk0NywiYWFpIjoxMSwidWlkIjo1MzkyOTA3OCwiaWFkIjoiMjAyNS0wMS0wN1QxODoyNzo1My4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MjA1NzI0NjIsInJnbiI6InVzZTEifQ.h8_RIEP9thz-UwIT5SSbkf73n4mzRwyu7ALSZkkTDE8',
-  CLAUDE_API_KEY: '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',
+  CLAUDE_API_KEY: '',  // Set via menu: ⚡ Battle Station → ⚙️ Set Claude API Key
   
   // Search terms to skip (too generic, cause false positives)
   SKIP_SEARCH_TERMS: ['LLC', 'Inc', 'Inc.', 'Corp', 'Corp.', 'Co', 'Co.', 'Ltd', 'Ltd.', 'LP', 'LLP', 'PC', 'PLLC', 'NA', 'N/A'],
