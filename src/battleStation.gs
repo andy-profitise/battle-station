@@ -208,6 +208,10 @@ function onOpen() {
     .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
     .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
     .addSeparator()
+    .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
+    .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
+    .addItem('✅ Update Review Todos', 'inboxReviewUpdateTodos')
+    .addSeparator()
     .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
     .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
     .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
@@ -7118,4 +7122,610 @@ Write ONLY the email body. No meta-commentary.`;
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
   }
+}
+
+/************************************************************
+ * INBOX REVIEW (Q&A + RECORD)
+ * Step-by-step vendor review with Claude analysis,
+ * Q&A dialog, notes/blocker suggestions, and Review Log
+ ************************************************************/
+
+/**
+ * Get or create the Vendor Review Log sheet
+ */
+function getOrCreateReviewLogSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('Vendor Review Log');
+  if (sh) return sh;
+
+  sh = ss.insertSheet('Vendor Review Log');
+  const headers = [
+    'Date', 'Vendor', 'Status', 'Blocker', 'Notes Updated',
+    'Todos Generated', 'AI Narrative', 'User Corrections', 'Reviewed By'
+  ];
+  sh.getRange(1, 1, 1, headers.length).setValues([headers])
+    .setFontWeight('bold').setBackground('#e8f0fe');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 140);
+  sh.setColumnWidth(2, 180);
+  sh.setColumnWidth(3, 100);
+  sh.setColumnWidth(4, 250);
+  sh.setColumnWidth(5, 300);
+  sh.setColumnWidth(6, 300);
+  sh.setColumnWidth(7, 400);
+  sh.setColumnWidth(8, 300);
+  sh.setColumnWidth(9, 120);
+  return sh;
+}
+
+/**
+ * Main Inbox Review entry point — gathers vendor data, runs Claude analysis,
+ * shows a multi-step review dialog with Q&A, blocker/notes suggestions
+ */
+function inboxReviewStart() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded. Navigate to a vendor first.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const status = String(listSh.getRange(listRow, BS_CFG.L_STATUS + 1).getValue() || '');
+  const currentNotes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
+
+  ss.toast(`Gathering data for ${vendor}...`, '📋 Inbox Review', 5);
+
+  // Gather all vendor context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const tasks = getTasksForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for top 5 unsnoozed
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 5)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nContent: ${latest.getPlainBody().substring(0, 600)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // Categorize tasks
+  const openTasks = tasks.filter(t => {
+    const group = (t.group || '').toLowerCase();
+    return !group.includes('done') && !group.includes('complete');
+  });
+  const completedTasks = tasks.filter(t => {
+    const group = (t.group || '').toLowerCase();
+    return group.includes('done') || group.includes('complete');
+  });
+
+  // Build task summary
+  const taskSummary = openTasks.map(t => `- [OPEN] ${t.name} (${t.group || 'no group'})`).join('\n')
+    + '\n' + completedTasks.slice(0, 5).map(t => `- [DONE] ${t.name}`).join('\n');
+
+  // Contact summary
+  const contactSummary = (contactData.contacts || []).map(c =>
+    `${c.name || '(unnamed)'} — ${c.email || ''} ${c.phone || ''} (${c.status || 'unknown'})`
+  ).join('\n') || '(no contacts)';
+
+  ss.toast('Analyzing with Claude...', '🤖 Processing', 10);
+
+  // Claude prompt for the review
+  const prompt = `You are helping Andy, a vendor relationship manager at Profitise (lead generation in Home Services and Solar), review a vendor.
+
+VENDOR: ${vendor}
+STATUS: ${status}
+CURRENT NOTES: ${currentNotes || '(none)'}
+
+CONTACTS:
+${contactSummary}
+
+LIVE VERTICALS: ${contactData.liveVerticals || '(none)'}
+LIVE MODALITIES: ${contactData.liveModalities || '(none)'}
+STATES: ${contactData.states || '(none)'}
+
+TASKS (${openTasks.length} open, ${completedTasks.length} completed):
+${taskSummary || '(no tasks)'}
+
+UNSNOOZED EMAILS (${unsnoozed.length} threads, ${overdue.length} overdue):
+${emailContext || '(no emails)'}
+
+Provide your analysis in this EXACT JSON format (no markdown, just raw JSON):
+{
+  "vendorSummary": "2-3 sentence summary of overall vendor state and trajectory",
+  "questions": [
+    {"q": "A true/false question about the vendor relationship", "suggestedAnswer": true, "reasoning": "Why you think this"},
+    {"q": "Another true/false question", "suggestedAnswer": false, "reasoning": "Why you think this"},
+    {"q": "Another question about tasks/blockers/emails", "suggestedAnswer": true, "reasoning": "Why"},
+    {"q": "Another question about next steps", "suggestedAnswer": true, "reasoning": "Why"},
+    {"q": "Another question about relationship health", "suggestedAnswer": false, "reasoning": "Why"}
+  ],
+  "suggestedBlocker": "A specific blocker/next-action for this vendor (e.g. 'Follow up on February invoice IWL40-51') or null if no blocker needed",
+  "suggestedNotes": "2-3 sentence updated notes summarizing current state. Do NOT repeat old notes, write fresh.",
+  "todos": [
+    "Specific actionable todo item 1",
+    "Specific actionable todo item 2",
+    "Specific actionable todo item 3"
+  ],
+  "narrative": "A 3-4 sentence narrative paragraph about the vendor relationship: trajectory, current status, what's working, what needs attention."
+}
+
+IMPORTANT:
+- Questions should be specific to THIS vendor's data, not generic
+- Blocker should be the single most important next action
+- Todos should be concrete and actionable
+- Notes should be fresh, not repeating existing notes`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 2000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    // Parse JSON from Claude's response
+    let analysis;
+    try {
+      // Strip any markdown code fences if present
+      let jsonStr = response.content.trim();
+      jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+      analysis = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      ui.alert(`Could not parse Claude's response as JSON.\n\nRaw response:\n${response.content.substring(0, 500)}`);
+      return;
+    }
+
+    // Store analysis in script properties for the dialog callbacks
+    const reviewData = {
+      vendor: vendor,
+      listRow: listRow,
+      status: status,
+      currentNotes: currentNotes,
+      analysis: analysis,
+      timestamp: new Date().toISOString()
+    };
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_DATA', JSON.stringify(reviewData)
+    );
+
+    // Build the review dialog HTML
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    const questionsHtml = (analysis.questions || []).map((q, i) => `
+      <div class="question">
+        <div class="q-text">${esc(q.q)}</div>
+        <div class="q-reasoning"><em>AI thinks: ${esc(q.reasoning)}</em></div>
+        <div class="q-controls">
+          <label><input type="radio" name="q${i}" value="true" ${q.suggestedAnswer ? 'checked' : ''}> True</label>
+          <label><input type="radio" name="q${i}" value="false" ${!q.suggestedAnswer ? 'checked' : ''}> False</label>
+          <input type="text" name="q${i}_note" placeholder="Add a note (optional)" class="q-note">
+        </div>
+      </div>
+    `).join('');
+
+    const todosHtml = (analysis.todos || []).map((t, i) => `
+      <div class="todo-item">
+        <label><input type="checkbox" name="todo${i}" checked> ${esc(t)}</label>
+      </div>
+    `).join('');
+
+    const htmlContent = `<!DOCTYPE html>
+<html><head>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 0; margin: 0; font-size: 13px; color: #333; }
+  .container { padding: 16px; }
+  h2 { color: #1a73e8; margin: 0 0 4px; font-size: 18px; }
+  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; border-bottom: 2px solid #e8f0fe; padding-bottom: 4px; }
+  .vendor-badge { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #1a73e8; display: inline-block; margin-bottom: 8px; }
+  .summary { background: #f8f9fa; padding: 10px 14px; border-radius: 8px; border-left: 4px solid #1a73e8; margin: 8px 0 16px; line-height: 1.5; }
+  .question { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .q-text { font-weight: 600; margin-bottom: 4px; }
+  .q-reasoning { color: #888; font-size: 11px; margin-bottom: 6px; }
+  .q-controls { display: flex; gap: 16px; align-items: center; }
+  .q-controls label { cursor: pointer; font-size: 12px; }
+  .q-note { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .section-box { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .editable { width: 100%; min-height: 60px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; }
+  .todo-item { padding: 4px 0; }
+  .todo-item label { cursor: pointer; }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #1a73e8; color: white; }
+  .btn-primary:hover { background: #1557b0; }
+  .btn-secondary { background: #f1f3f4; color: #333; }
+  .btn-secondary:hover { background: #e0e0e0; }
+  .narrative { background: #e8f0fe; padding: 10px 14px; border-radius: 8px; line-height: 1.6; margin: 8px 0; }
+  .corrections { width: 100%; min-height: 40px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; margin-top: 4px; }
+</style>
+</head><body>
+<div class="container">
+  <h2>📋 Inbox Review</h2>
+  <span class="vendor-badge">${esc(vendor)} — ${esc(status)}</span>
+
+  <div class="summary">${esc(analysis.vendorSummary)}</div>
+
+  <h3>📝 Q&A — Confirm or Correct</h3>
+  ${questionsHtml}
+
+  <h3>🚧 Suggested Blocker</h3>
+  <div class="section-box">
+    <textarea class="editable" id="blocker">${esc(analysis.suggestedBlocker || '(none)')}</textarea>
+  </div>
+
+  <h3>📝 Suggested Notes Update</h3>
+  <div class="section-box">
+    <textarea class="editable" id="notes">${esc(analysis.suggestedNotes)}</textarea>
+  </div>
+
+  <h3>✅ Todos</h3>
+  <div class="section-box">
+    ${todosHtml}
+    <input type="text" id="extraTodo" placeholder="Add another todo..." style="width:100%; margin-top:8px; padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:12px;">
+  </div>
+
+  <h3>📖 AI Narrative</h3>
+  <div class="narrative">${esc(analysis.narrative)}</div>
+
+  <h3>✏️ Corrections / Additional Context</h3>
+  <textarea class="corrections" id="corrections" placeholder="Anything the AI got wrong? Add context for future reviews..."></textarea>
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitReview()">Save & Record ✓</button>
+  </div>
+</div>
+
+<script>
+function submitReview() {
+  var answers = {};
+  var qCount = ${(analysis.questions || []).length};
+  for (var i = 0; i < qCount; i++) {
+    var radios = document.getElementsByName('q' + i);
+    var val = true;
+    for (var r = 0; r < radios.length; r++) {
+      if (radios[r].checked) { val = radios[r].value === 'true'; break; }
+    }
+    var noteEl = document.getElementsByName('q' + i + '_note')[0];
+    answers['q' + i] = { answer: val, note: noteEl ? noteEl.value : '' };
+  }
+
+  var todos = [];
+  for (var j = 0; j < 20; j++) {
+    var cb = document.getElementsByName('todo' + j)[0];
+    if (!cb) break;
+    if (cb.checked) todos.push(cb.parentElement.textContent.trim());
+  }
+  var extra = document.getElementById('extraTodo').value.trim();
+  if (extra) todos.push(extra);
+
+  var result = {
+    answers: answers,
+    blocker: document.getElementById('blocker').value,
+    notes: document.getElementById('notes').value,
+    todos: todos,
+    corrections: document.getElementById('corrections').value
+  };
+
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) { alert('Error saving: ' + e.message); })
+    .inboxReviewSave(JSON.stringify(result));
+}
+</script>
+</body></html>`;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(700).setHeight(750);
+    ui.showModalDialog(html, `📋 Inbox Review — ${vendor}`);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Called from the dialog when user clicks "Save & Record"
+ */
+function inboxReviewSave(resultJson) {
+  const result = JSON.parse(resultJson);
+  const stored = JSON.parse(PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_DATA') || '{}');
+
+  if (!stored.vendor) throw new Error('No review data found. Please start a new review.');
+
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  // 1. Update notes on List sheet and monday.com
+  if (result.notes && result.notes !== '(none)') {
+    listSh.getRange(stored.listRow, BS_CFG.L_NOTES + 1).setValue(result.notes);
+    try {
+      updateMondayComNotesForVendor_(stored.vendor, result.notes, stored.listRow);
+    } catch (e) {
+      Logger.log(`Failed to update monday.com notes: ${e.message}`);
+    }
+  }
+
+  // 2. Log to Review Log sheet
+  const logSh = getOrCreateReviewLogSheet_();
+  const todosStr = (result.todos || []).join('\n• ');
+  const answersStr = Object.keys(result.answers || {}).map(k => {
+    const a = result.answers[k];
+    return `${k}: ${a.answer}${a.note ? ' — ' + a.note : ''}`;
+  }).join('; ');
+
+  logSh.appendRow([
+    new Date(),
+    stored.vendor,
+    stored.status,
+    result.blocker || '',
+    result.notes || '',
+    todosStr ? '• ' + todosStr : '',
+    stored.analysis ? stored.analysis.narrative || '' : '',
+    (result.corrections || '') + (answersStr ? '\nQ&A: ' + answersStr : ''),
+    Session.getActiveUser().getEmail() || 'Andy'
+  ]);
+
+  // 3. Store pending todos in script properties for tracking
+  if (result.todos && result.todos.length > 0) {
+    const existingTodos = JSON.parse(
+      PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+    );
+    const newTodos = result.todos.map(t => ({
+      vendor: stored.vendor,
+      todo: t,
+      created: new Date().toISOString(),
+      done: false
+    }));
+    existingTodos.push(...newTodos);
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_TODOS', JSON.stringify(existingTodos)
+    );
+  }
+
+  // 4. Store user corrections for future reference
+  if (result.corrections) {
+    const hints = JSON.parse(
+      PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_HINTS') || '{}'
+    );
+    hints[stored.vendor] = (hints[stored.vendor] || '') + '\n' + result.corrections;
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_HINTS', JSON.stringify(hints)
+    );
+  }
+
+  // Clean up
+  PropertiesService.getScriptProperties().deleteProperty('INBOX_REVIEW_DATA');
+
+  ss.toast(`Review saved for ${stored.vendor}`, '✅ Recorded', 3);
+}
+
+/**
+ * Weekly Recap — aggregates this week's review entries into a summary dialog
+ */
+function inboxReviewWeeklyRecap() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const logSh = ss.getSheetByName('Vendor Review Log');
+
+  if (!logSh || logSh.getLastRow() <= 1) {
+    ui.alert('No review entries found.\n\nUse 📋 Inbox Review (Q&A + Record) to review vendors first.');
+    return;
+  }
+
+  // Get entries from this week
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const data = logSh.getRange(2, 1, logSh.getLastRow() - 1, 9).getValues();
+
+  const thisWeek = data.filter(row => {
+    const d = new Date(row[0]);
+    return d >= weekAgo;
+  });
+
+  if (thisWeek.length === 0) {
+    ui.alert('No reviews this week.\n\nUse 📋 Inbox Review (Q&A + Record) to start reviewing vendors.');
+    return;
+  }
+
+  // Get pending todos
+  const allTodos = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+  );
+  const pendingTodos = allTodos.filter(t => !t.done);
+
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Build recap HTML
+  let vendorRows = thisWeek.map(row => {
+    const date = new Date(row[0]);
+    const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+    return `<tr>
+      <td>${dateStr}</td>
+      <td><strong>${esc(row[1])}</strong></td>
+      <td>${esc(row[2])}</td>
+      <td>${esc(row[3])}</td>
+      <td style="font-size:11px">${esc(String(row[4]).substring(0, 100))}</td>
+    </tr>`;
+  }).join('');
+
+  let todosList = pendingTodos.map(t => {
+    const created = new Date(t.created);
+    const age = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+    const ageLabel = age === 0 ? 'today' : age === 1 ? 'yesterday' : `${age}d ago`;
+    return `<li><strong>${esc(t.vendor)}</strong>: ${esc(t.todo)} <span style="color:#888;font-size:11px">(${ageLabel})</span></li>`;
+  }).join('');
+
+  const htmlContent = `<!DOCTYPE html>
+<html><head>
+<style>
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 16px; font-size: 13px; }
+  h2 { color: #1a73e8; margin: 0 0 12px; }
+  .stat { display: inline-block; background: #e8f0fe; padding: 6px 14px; border-radius: 12px; margin: 2px 4px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #f5f5f5; text-align: left; padding: 6px 10px; font-size: 12px; border-bottom: 2px solid #e0e0e0; }
+  td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
+  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; line-height: 1.5; }
+  .empty { color: #888; font-style: italic; }
+</style>
+</head><body>
+  <h2>📊 Weekly Recap</h2>
+  <span class="stat">📋 ${thisWeek.length} vendors reviewed</span>
+  <span class="stat">✅ ${pendingTodos.length} pending todos</span>
+  <span class="stat">📅 ${weekAgo.getMonth() + 1}/${weekAgo.getDate()} — ${now.getMonth() + 1}/${now.getDate()}</span>
+
+  <h3>Reviews This Week</h3>
+  <table>
+    <tr><th>Date</th><th>Vendor</th><th>Status</th><th>Blocker</th><th>Notes</th></tr>
+    ${vendorRows}
+  </table>
+
+  <h3>Pending Todos (${pendingTodos.length})</h3>
+  ${pendingTodos.length > 0
+    ? '<ul>' + todosList + '</ul>'
+    : '<p class="empty">All caught up! No pending todos.</p>'}
+</body></html>`;
+
+  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(550);
+  ui.showModalDialog(html, '📊 Weekly Recap');
+}
+
+/**
+ * Update Review Todos — shows pending todos and lets user mark done or skip
+ */
+function inboxReviewUpdateTodos() {
+  const ui = SpreadsheetApp.getUi();
+  const allTodos = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+  );
+  const pending = allTodos.filter(t => !t.done);
+
+  if (pending.length === 0) {
+    ui.alert('No pending todos!\n\nUse 📋 Inbox Review (Q&A + Record) to generate todos from vendor reviews.');
+    return;
+  }
+
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const todoRows = pending.map((t, i) => {
+    const created = new Date(t.created);
+    const age = Math.floor((new Date() - created) / (1000 * 60 * 60 * 24));
+    const ageLabel = age === 0 ? 'today' : age === 1 ? 'yesterday' : `${age}d ago`;
+    return `<tr>
+      <td><input type="checkbox" name="done" value="${i}"></td>
+      <td><strong>${esc(t.vendor)}</strong></td>
+      <td>${esc(t.todo)}</td>
+      <td style="color:#888;font-size:11px">${ageLabel}</td>
+    </tr>`;
+  }).join('');
+
+  const htmlContent = `<!DOCTYPE html>
+<html><head>
+<style>
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 16px; font-size: 13px; }
+  h2 { color: #1a73e8; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #f5f5f5; text-align: left; padding: 6px 10px; font-size: 12px; border-bottom: 2px solid #e0e0e0; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #1a73e8; color: white; }
+  .btn-danger { background: #ea4335; color: white; }
+  .btn-secondary { background: #f1f3f4; color: #333; }
+  .count { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+</style>
+</head><body>
+  <h2>✅ Review Todos</h2>
+  <span class="count">${pending.length} pending</span>
+
+  <table>
+    <tr><th>Done</th><th>Vendor</th><th>Todo</th><th>Age</th></tr>
+    ${todoRows}
+  </table>
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    <button class="btn btn-danger" onclick="clearAll()">Clear All Done</button>
+    <button class="btn btn-primary" onclick="save()">Mark Checked as Done</button>
+  </div>
+
+<script>
+function save() {
+  var checked = [];
+  var boxes = document.getElementsByName('done');
+  for (var i = 0; i < boxes.length; i++) {
+    if (boxes[i].checked) checked.push(parseInt(boxes[i].value));
+  }
+  if (checked.length === 0) { alert('No items checked.'); return; }
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) { alert('Error: ' + e.message); })
+    .inboxReviewMarkTodosDone(JSON.stringify(checked));
+}
+function clearAll() {
+  if (!confirm('Mark ALL ${pending.length} todos as done?')) return;
+  var all = [];
+  for (var i = 0; i < ${pending.length}; i++) all.push(i);
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) { alert('Error: ' + e.message); })
+    .inboxReviewMarkTodosDone(JSON.stringify(all));
+}
+</script>
+</body></html>`;
+
+  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(650).setHeight(500);
+  ui.showModalDialog(html, '✅ Update Review Todos');
+}
+
+/**
+ * Called from the todos dialog to mark selected items as done
+ */
+function inboxReviewMarkTodosDone(indicesJson) {
+  const indices = new Set(JSON.parse(indicesJson));
+  const allTodos = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+  );
+
+  // Map pending indices back to allTodos indices
+  let pendingIdx = 0;
+  for (let i = 0; i < allTodos.length; i++) {
+    if (!allTodos[i].done) {
+      if (indices.has(pendingIdx)) {
+        allTodos[i].done = true;
+        allTodos[i].completedAt = new Date().toISOString();
+      }
+      pendingIdx++;
+    }
+  }
+
+  PropertiesService.getScriptProperties().setProperty(
+    'INBOX_REVIEW_TODOS', JSON.stringify(allTodos)
+  );
+
+  const remaining = allTodos.filter(t => !t.done).length;
+  SpreadsheetApp.getActive().toast(
+    `Marked ${indices.size} todo(s) as done. ${remaining} remaining.`, '✅ Updated', 3
+  );
 }
