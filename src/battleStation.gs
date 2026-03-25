@@ -4298,7 +4298,7 @@ function callClaudeAPI_(prompt, apiKey, options) {
     payload.system = options.system;
   }
   
-  const options = {
+  const fetchOptions = {
     method: 'post',
     contentType: 'application/json',
     headers: {
@@ -4308,9 +4308,9 @@ function callClaudeAPI_(prompt, apiKey, options) {
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
-  
+
   try {
-    const response = UrlFetchApp.fetch(url, options);
+    const response = UrlFetchApp.fetch(url, fetchOptions);
     const responseCode = response.getResponseCode();
     const responseText = response.getContentText();
     
