@@ -7979,7 +7979,14 @@ function callClaudeAPI_(prompt, apiKey, options) {
   const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
 
   if (proxyUrl) {
-    return callClaudeViaProxy_(prompt, proxyUrl, props, options);
+    const proxyResult = callClaudeViaProxy_(prompt, proxyUrl, props, options);
+    // If proxy fails with gateway error, fall back to direct API
+    if (proxyResult.error && /Proxy (returned|failed|error)/i.test(proxyResult.error) && apiKey) {
+      Logger.log(`[Claude] Proxy failed (${proxyResult.error}), falling back to direct API`);
+      SpreadsheetApp.getActive().toast('Proxy down, using direct API...', '🔄 Fallback', 3);
+    } else {
+      return proxyResult;
+    }
   }
 
   // Direct Anthropic API
