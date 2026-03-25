@@ -19759,15 +19759,15 @@ function inboxReviewStart() {
   const unsnoozed = emails.filter(e => !e.isSnoozed);
   const overdue = emails.filter(e => isEmailOverdue_(e));
 
-  // Get email content for top 5 unsnoozed
+  // Get email content for top 3 unsnoozed (trimmed to keep prompt small for proxy)
   let emailContext = '';
-  for (const email of unsnoozed.slice(0, 5)) {
+  for (const email of unsnoozed.slice(0, 3)) {
     try {
       const thread = GmailApp.getThreadById(email.threadId);
       if (thread) {
         const msgs = thread.getMessages();
         const latest = msgs[msgs.length - 1];
-        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nContent: ${latest.getPlainBody().substring(0, 600)}\n---`;
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nContent: ${latest.getPlainBody().substring(0, 400)}\n---`;
       }
     } catch (e) {
       emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
@@ -19786,7 +19786,7 @@ function inboxReviewStart() {
 
   // Build task summary
   const taskSummary = openTasks.map(t => `- [OPEN] ${t.name} (${t.group || 'no group'})`).join('\n')
-    + '\n' + completedTasks.slice(0, 5).map(t => `- [DONE] ${t.name}`).join('\n');
+    + '\n' + completedTasks.slice(0, 3).map(t => `- [DONE] ${t.name}`).join('\n');
 
   // Contact summary
   const contactSummary = (contactData.contacts || []).map(c =>
@@ -19842,7 +19842,7 @@ IMPORTANT:
 - Notes should be fresh, not repeating existing notes`;
 
   try {
-    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 2000 });
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 1500, model: 'claude-haiku-4-5-20251001' });
 
     if (response.error) {
       ui.alert(`Claude API Error: ${response.error}`);
