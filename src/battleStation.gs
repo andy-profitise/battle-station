@@ -366,7 +366,6 @@ function onOpen() {
     .addItem('🎯 Manage Goals', 'battleStationManageGoals')
     .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
-    .addItem('🔌 Set Claude Proxy (Max Sub)', 'battleStationSetClaudeProxy')
     .addToUi();
 
   // Check for pending vendor from URL deep link
@@ -8538,21 +8537,11 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
 }
 
 /**
- * Call Claude API — supports direct Anthropic API or claude-max-api-proxy
- * Proxy mode auto-detected from Script Properties (CLAUDE_PROXY_URL)
+ * Call Claude API via direct Anthropic API
  */
 function callClaudeAPI_(prompt, apiKey, options) {
   options = options || {};
 
-  // Check for proxy configuration first
-  const props = PropertiesService.getScriptProperties();
-  const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
-
-  if (proxyUrl) {
-    return callClaudeViaProxy_(prompt, proxyUrl, props, options);
-  }
-
-  // Direct Anthropic API
   const url = 'https://api.anthropic.com/v1/messages';
 
   // Build message content - supports optional image for multimodal requests
@@ -8606,104 +8595,6 @@ function callClaudeAPI_(prompt, apiKey, options) {
   } catch (e) {
     return { error: e.message };
   }
-}
-
-/**
- * Call Claude via claude-max-api-proxy (OpenAI-compatible format)
- * Uses Max subscription instead of per-token API billing
- */
-function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
-  // Map Anthropic model names to proxy short names
-  const modelMap = {
-    'claude-sonnet-4-20250514': 'claude-sonnet-4',
-    'claude-opus-4-20250514': 'claude-opus-4',
-    'claude-haiku-4-20250514': 'claude-haiku-4',
-    'claude-haiku-4-5-20251001': 'claude-haiku-4-5'
-  };
-  const requestedModel = options.model || 'claude-sonnet-4-20250514';
-  const model = modelMap[requestedModel] || requestedModel;
-
-  // Build OpenAI-compatible messages array
-  const messages = [];
-  if (options.system) {
-    messages.push({ role: 'system', content: options.system });
-  }
-
-  // Support multimodal image input
-  if (options.image) {
-    messages.push({ role: 'user', content: [
-      { type: 'image_url', image_url: { url: `data:${options.image.mediaType};base64,${options.image.base64}` } },
-      { type: 'text', text: prompt }
-    ]});
-  } else {
-    messages.push({ role: 'user', content: prompt });
-  }
-
-  const payload = {
-    model: model,
-    messages: messages,
-    max_tokens: options.maxTokens || 2000
-  };
-
-  const headers = { 'Content-Type': 'application/json' };
-
-  // Add basic auth if configured
-  const proxyAuth = props.getProperty('CLAUDE_PROXY_AUTH');
-  if (proxyAuth) {
-    headers['Authorization'] = 'Basic ' + Utilities.base64Encode(proxyAuth);
-  }
-
-  const fetchOptions = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: headers,
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  // Retry with exponential backoff for transient proxy errors (502, 503, 504)
-  const maxRetries = 2;
-  const retryableStatusCodes = [502, 503, 504];
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
-      const responseCode = response.getResponseCode();
-      const responseText = response.getContentText();
-
-      if (responseCode === 200) {
-        const result = JSON.parse(responseText);
-        // OpenAI format: { choices: [{ message: { content: "..." } }] }
-        if (result.choices && result.choices.length > 0 && result.choices[0].message) {
-          return { content: result.choices[0].message.content };
-        }
-        return { error: 'No content in proxy response' };
-      }
-
-      // Retry on transient gateway errors
-      if (retryableStatusCodes.includes(responseCode) && attempt < maxRetries) {
-        const delaySec = Math.pow(2, attempt + 1); // 2s, 4s
-        Logger.log(`[Claude Proxy] Got ${responseCode}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
-        Utilities.sleep(delaySec * 1000);
-        continue;
-      }
-
-      // Strip HTML from error responses for cleaner display
-      const cleanError = responseText.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      return { error: `Proxy returned ${responseCode}: ${cleanError || 'Gateway error'}` };
-
-    } catch (e) {
-      if (attempt < maxRetries) {
-        const delaySec = Math.pow(2, attempt + 1);
-        Logger.log(`[Claude Proxy] Exception: ${e.message}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
-        Utilities.sleep(delaySec * 1000);
-        continue;
-      }
-      return { error: `Proxy error: ${e.message}` };
-    }
-  }
-
-  return { error: 'Proxy failed after retries' };
 }
 
 /**
@@ -12404,21 +12295,14 @@ function writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyer
 }
 
 /************************************************************
- * CLAUDE API / PROXY CONFIGURATION
- * Supports direct Anthropic API key OR claude-max-api-proxy
+ * CLAUDE API CONFIGURATION
  ************************************************************/
 
 /**
- * Get Claude API key - checks proxy first, then Script Properties, then BS_CFG
- * Returns 'PROXY_MODE' if proxy is configured, API key string, or null
+ * Get Claude API key - checks Script Properties first, then BS_CFG
  */
 function getClaudeApiKey_() {
   const props = PropertiesService.getScriptProperties();
-
-  // Proxy takes priority — no API key needed
-  const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
-  if (proxyUrl) return 'PROXY_MODE';
-
   const storedKey = props.getProperty('CLAUDE_API_KEY');
   if (storedKey && storedKey.length > 10) return storedKey;
   if (BS_CFG.CLAUDE_API_KEY && BS_CFG.CLAUDE_API_KEY !== 'YOUR_ANTHROPIC_API_KEY_HERE') {
@@ -12438,7 +12322,7 @@ function battleStationSetClaudeApiKey() {
 
   const response = ui.prompt(
     '⚙️ Set Claude API Key',
-    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):\n\n(Or use "Set Claude Proxy" for Max subscription proxy)`,
+    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):`,
     ui.ButtonSet.OK_CANCEL
   );
 
@@ -12452,62 +12336,6 @@ function battleStationSetClaudeApiKey() {
 
   props.setProperty('CLAUDE_API_KEY', newKey);
   SpreadsheetApp.getActive().toast('Claude API key saved!', '✅ Success', 3);
-}
-
-/**
- * Set Claude proxy URL for claude-max-api-proxy (uses Max subscription)
- * Stores proxy URL and optional basic auth credentials in Script Properties
- */
-function battleStationSetClaudeProxy() {
-  const ui = SpreadsheetApp.getUi();
-  const props = PropertiesService.getScriptProperties();
-  const currentUrl = props.getProperty('CLAUDE_PROXY_URL') || '(not set)';
-  const currentAuth = props.getProperty('CLAUDE_PROXY_AUTH');
-  const authStatus = currentAuth ? '(configured)' : '(none)';
-
-  const urlResponse = ui.prompt(
-    '🔌 Set Claude Proxy URL',
-    `Current: ${currentUrl}\nAuth: ${authStatus}\n\nEnter your claude-max-api-proxy URL:\n(e.g., https://your-vps.com)\n\nLeave blank and click OK to clear proxy settings.`,
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (urlResponse.getSelectedButton() !== ui.Button.OK) return;
-
-  const newUrl = urlResponse.getResponseText().trim();
-
-  // Clear proxy if blank
-  if (!newUrl) {
-    props.deleteProperty('CLAUDE_PROXY_URL');
-    props.deleteProperty('CLAUDE_PROXY_AUTH');
-    SpreadsheetApp.getActive().toast('Proxy settings cleared. Will use API key instead.', '✅ Cleared', 3);
-    return;
-  }
-
-  // Validate URL
-  if (!newUrl.startsWith('http://') && !newUrl.startsWith('https://')) {
-    ui.alert('Invalid URL. Must start with http:// or https://');
-    return;
-  }
-
-  props.setProperty('CLAUDE_PROXY_URL', newUrl.replace(/\/+$/, '')); // strip trailing slash
-
-  // Ask for basic auth
-  const authResponse = ui.prompt(
-    '🔐 Proxy Authentication',
-    'Enter basic auth credentials (user:password).\n\nLeave blank if your proxy has no authentication.\n\n⚠️ Strongly recommended to set auth to prevent unauthorized access!',
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (authResponse.getSelectedButton() === ui.Button.OK) {
-    const auth = authResponse.getResponseText().trim();
-    if (auth) {
-      props.setProperty('CLAUDE_PROXY_AUTH', auth);
-    } else {
-      props.deleteProperty('CLAUDE_PROXY_AUTH');
-    }
-  }
-
-  SpreadsheetApp.getActive().toast('Claude proxy configured! AI features will use your Max subscription.', '✅ Proxy Set', 3);
 }
 
 /**
