@@ -366,7 +366,6 @@ function onOpen() {
     .addItem('🎯 Manage Goals', 'battleStationManageGoals')
     .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
-    .addItem('🔌 Set Claude Proxy (Max Sub)', 'battleStationSetClaudeProxy')
     .addToUi();
 
   // Check for pending vendor from URL deep link
@@ -388,6 +387,576 @@ function onSelectionChange(e) {
   if (typeof value === 'string' && value.trim() === '➕ Add a Blocker') {
     createBlockerForVendor();
   }
+}
+
+/**
+ * Inbox Review - Step-by-step vendor review with Q&A, notes, and AI-generated narrative + to-dos.
+ * Records results to the Vendor Review Log sheet for tracking and weekly recaps.
+ */
+function inboxReviewStart() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) { ui.alert('Vendor list not found.'); return; }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+
+  if (!vendor) { ui.alert('No vendor currently loaded. Please navigate to a vendor first.'); return; }
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) { ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key'); return; }
+
+  // Gather context for the Q&A dialog
+  let contactData = { contacts: [], notes: '', liveStatus: '', liveVerticals: '', liveModalities: '', states: '', blockers: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { /* skip */ }
+
+  const blockerTasks = (getTasksForVendor_(vendor, listRow) || []).filter(t => t.isBlocker && !t.isDone);
+  const blockerText = blockerTasks.map(t => t.subject).join(', ') || '(none)';
+  const mondayNotes = contactData.notes || '(no notes)';
+
+  // Store vendor context for the callback
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('IR_VENDOR', vendor);
+  props.setProperty('IR_SOURCE', source);
+  props.setProperty('IR_STATUS', status);
+  props.setProperty('IR_LIST_ROW', String(listRow));
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .context { background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 13px; }
+      .context strong { color: #333; }
+      .qa-section { margin-bottom: 15px; }
+      .qa-item { display: flex; align-items: center; margin-bottom: 8px; }
+      .qa-item label { margin-left: 8px; cursor: pointer; }
+      .qa-item input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+      .notes-box { width: 100%; height: 80px; padding: 8px; border: 1px solid #ddd; border-radius: 5px; font-family: Arial; font-size: 13px; resize: vertical; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; margin-right: 8px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      .btn-primary:hover { background: #1557b0; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-cancel { background: #f1f3f4; color: #333; }
+      #loading { display: none; color: #666; margin-top: 10px; }
+      #result { display: none; margin-top: 15px; }
+      .narrative { background: #e8f0fe; padding: 12px; border-radius: 5px; white-space: pre-wrap; margin-bottom: 10px; }
+      .todos { background: #e6f4ea; padding: 12px; border-radius: 5px; white-space: pre-wrap; }
+      .success { color: #137333; font-weight: bold; margin-top: 10px; }
+    </style>
+    <h2>📋 Inbox Review: ${escapeHtml_(vendor)}</h2>
+    <div class="subtitle">${escapeHtml_(source)} | Status: ${escapeHtml_(status)}</div>
+
+    <div class="context">
+      <strong>Current Blockers:</strong> ${escapeHtml_(blockerText)}<br>
+      <strong>Monday Notes:</strong> ${escapeHtml_(mondayNotes.substring(0, 200))}${mondayNotes.length > 200 ? '...' : ''}
+    </div>
+
+    <div id="qaForm">
+      <div class="qa-section">
+        <strong>Quick Status Check:</strong>
+        <div class="qa-item"><input type="checkbox" id="q_responded"><label for="q_responded">Responded to latest email / message</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_blocker_resolved"><label for="q_blocker_resolved">Current blocker is resolved or progressing</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_invoice_ok"><label for="q_invoice_ok">Invoicing / payments up to date</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_performance_ok"><label for="q_performance_ok">Performance / quality acceptable</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_needs_attention"><label for="q_needs_attention">Needs immediate attention or escalation</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_expansion"><label for="q_expansion">Expansion opportunity discussed or planned</label></div>
+      </div>
+
+      <strong>Your Notes / Observations:</strong><br>
+      <textarea class="notes-box" id="userNotes" placeholder="What happened? What's the current situation? Any context Claude should know..."></textarea>
+      <br><br>
+
+      <button class="btn btn-primary" id="submitBtn" onclick="submitReview()">🤖 Generate Narrative + To-Dos</button>
+      <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+      <div id="loading">⏳ Analyzing with Claude and recording review...</div>
+    </div>
+
+    <div id="result">
+      <strong>📝 Narrative:</strong>
+      <div class="narrative" id="narrativeBox"></div>
+      <strong>✅ Suggested To-Dos:</strong>
+      <div class="todos" id="todosBox"></div>
+      <div class="success" id="successMsg"></div>
+      <br>
+      <button class="btn btn-primary" onclick="google.script.host.close()">Done</button>
+    </div>
+
+    <script>
+      function submitReview() {
+        var qaResponses = {
+          responded: document.getElementById('q_responded').checked,
+          blocker_resolved: document.getElementById('q_blocker_resolved').checked,
+          invoice_ok: document.getElementById('q_invoice_ok').checked,
+          performance_ok: document.getElementById('q_performance_ok').checked,
+          needs_attention: document.getElementById('q_needs_attention').checked,
+          expansion: document.getElementById('q_expansion').checked
+        };
+        var userNotes = document.getElementById('userNotes').value;
+
+        document.getElementById('submitBtn').disabled = true;
+        document.getElementById('loading').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('loading').style.display = 'none';
+            if (result.error) {
+              alert('Error: ' + result.error);
+              document.getElementById('submitBtn').disabled = false;
+              return;
+            }
+            document.getElementById('qaForm').style.display = 'none';
+            document.getElementById('narrativeBox').textContent = result.narrative;
+            document.getElementById('todosBox').textContent = result.todos;
+            document.getElementById('successMsg').textContent = result.savedMsg;
+            document.getElementById('result').style.display = 'block';
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('loading').style.display = 'none';
+            alert('Error: ' + error.message);
+            document.getElementById('submitBtn').disabled = false;
+          })
+          .inboxReviewProcess(JSON.stringify(qaResponses), userNotes);
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(620).setHeight(650);
+  ui.showModalDialog(htmlOutput, `📋 Inbox Review: ${vendor}`);
+}
+
+/**
+ * Process Inbox Review submission: call Claude for narrative + todos, record to sheet.
+ * Called from the inboxReviewStart dialog.
+ */
+function inboxReviewProcess(qaResponsesJson, userNotes) {
+  const props = PropertiesService.getScriptProperties();
+  const vendor = props.getProperty('IR_VENDOR');
+  const source = props.getProperty('IR_SOURCE');
+  const status = props.getProperty('IR_STATUS');
+  const listRow = parseInt(props.getProperty('IR_LIST_ROW') || '0', 10);
+
+  if (!vendor) return { error: 'No active review session. Please start again.' };
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) return { error: 'No Claude API key configured.' };
+
+  const qaResponses = JSON.parse(qaResponsesJson);
+
+  // Gather additional context
+  let contactData = { contacts: [], notes: '', liveStatus: '', liveVerticals: '', liveModalities: '', blockers: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { /* skip */ }
+
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+  const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+  const openTasks = tasks.filter(t => !t.isDone && !t.isBlocker);
+
+  // Get recent emails (just snippets for context, not full bodies)
+  let emailSummary = '(no emails)';
+  try {
+    const emails = getEmailsForVendor_(vendor, listRow);
+    if (emails.length > 0) {
+      emailSummary = emails.slice(0, 10).map(e =>
+        `- ${e.subject} (${e.date || 'unknown'}, ${Array.isArray(e.labels) ? e.labels.join('/') : ''})`
+      ).join('\n');
+    }
+  } catch (e) { /* skip */ }
+
+  const qaText = [
+    `Responded to latest: ${qaResponses.responded ? 'Yes' : 'No'}`,
+    `Blocker resolved/progressing: ${qaResponses.blocker_resolved ? 'Yes' : 'No'}`,
+    `Invoicing up to date: ${qaResponses.invoice_ok ? 'Yes' : 'No'}`,
+    `Performance acceptable: ${qaResponses.performance_ok ? 'Yes' : 'No'}`,
+    `Needs immediate attention: ${qaResponses.needs_attention ? 'Yes' : 'No'}`,
+    `Expansion opportunity: ${qaResponses.expansion ? 'Yes' : 'No'}`
+  ].join('\n');
+
+  const tasksSummary = [
+    ...blockerTasks.map(t => `🚧 BLOCKER: ${t.subject} (${t.status})`),
+    ...openTasks.slice(0, 8).map(t => `- ${t.subject} (${t.status})`)
+  ].join('\n') || '(no open tasks)';
+
+  const aiInstructions = getAiInstructions_();
+
+  const systemPrompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. You are helping Andy Worford conduct a structured inbox review of vendor "${vendor}".
+
+Your job: Based on Andy's Q&A answers and notes, generate TWO outputs:
+1. A concise NARRATIVE (2-4 sentences) summarizing the vendor's current state and what was reviewed.
+2. A list of ACTION TO-DOs (concrete next steps). Each to-do should be specific and actionable. If no action is needed, say "No action items - vendor is on track."
+
+Keep it practical and brief. Focus on what matters NOW.
+${aiInstructions}`;
+
+  const prompt = `VENDOR: ${vendor}
+TYPE: ${source}
+STATUS: ${status}
+
+MONDAY.COM NOTES: ${contactData.notes || '(none)'}
+LIVE STATUS: ${contactData.liveStatus || 'Unknown'}
+CURRENT BLOCKERS: ${blockerTasks.map(t => t.subject).join(', ') || '(none)'}
+LIVE VERTICALS: ${contactData.liveVerticals || 'N/A'}
+
+OPEN TASKS:
+${tasksSummary}
+
+RECENT EMAILS (newest first):
+${emailSummary}
+
+═══ ANDY'S REVIEW Q&A ═══
+${qaText}
+
+═══ ANDY'S NOTES ═══
+${userNotes || '(no notes)'}
+
+Generate:
+1. NARRATIVE: (2-4 sentence summary of current state)
+2. TO-DOS: (bulleted list of action items, or "No action items" if none needed)`;
+
+  const result = callClaudeAPI_(prompt, apiKey, {
+    system: systemPrompt,
+    maxTokens: 800,
+    model: BS_CFG.CRYSTAL_BALL_MODEL // Use Haiku for speed
+  });
+
+  if (result.error) return { error: result.error };
+
+  // Parse the response into narrative and todos
+  const content = result.content || '';
+  let narrative = content;
+  let todosText = '';
+
+  // Try to split on TO-DO or TODO header
+  const todoMatch = content.match(/(?:TO-?DOS?|ACTION ITEMS?|NEXT STEPS?)\s*:?\s*\n([\s\S]*?)$/i);
+  const narrativeMatch = content.match(/(?:NARRATIVE)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:TO-?DOS?|ACTION ITEMS?|NEXT STEPS?))/i);
+
+  if (narrativeMatch && todoMatch) {
+    narrative = narrativeMatch[1].trim();
+    todosText = todoMatch[1].trim();
+  } else if (todoMatch) {
+    narrative = content.substring(0, todoMatch.index).replace(/^(?:NARRATIVE)\s*:?\s*/i, '').trim();
+    todosText = todoMatch[1].trim();
+  }
+
+  // Extract individual todo items
+  const todoItems = todosText.split('\n')
+    .map(l => l.replace(/^[\s\-•*]+/, '').trim())
+    .filter(l => l.length > 0 && !l.toLowerCase().startsWith('no action'));
+
+  // Record to Vendor Review Log sheet
+  const ss = SpreadsheetApp.getActive();
+  let logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh) {
+    logSh = ss.insertSheet(BS_CFG.REVIEW_LOG_SHEET);
+    // Add header row
+    const headers = ['Timestamp', 'Vendor', 'Source', 'Status', 'Q&A Responses', 'User Notes', 'Narrative', 'To-Dos', 'To-Do Status', 'Weekly Recap', 'Recap Week'];
+    logSh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    logSh.setFrozenRows(1);
+  }
+
+  const todoStatusJson = JSON.stringify(todoItems.map(() => 'pending'));
+  const row = [
+    new Date(),
+    vendor,
+    source,
+    status,
+    qaResponsesJson,
+    userNotes || '',
+    narrative,
+    JSON.stringify(todoItems),
+    todoStatusJson,
+    '',  // Weekly Recap (filled later)
+    ''   // Recap Week (filled later)
+  ];
+
+  logSh.appendRow(row);
+
+  return {
+    narrative: narrative,
+    todos: todoItems.length > 0 ? todoItems.map((t, i) => `${i + 1}. ${t}`).join('\n') : 'No action items - vendor is on track.',
+    savedMsg: `✓ Review recorded to "${BS_CFG.REVIEW_LOG_SHEET}" sheet`
+  };
+}
+
+/**
+ * Weekly Recap - Aggregates inbox reviews from the current week and generates a summary.
+ */
+function inboxReviewWeeklyRecap() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  const logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh || logSh.getLastRow() < 2) {
+    ui.alert('No review records found.\n\nUse "📋 Inbox Review (Q&A + Record)" to review vendors first.');
+    return;
+  }
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) { ui.alert('No Claude API key configured.'); return; }
+
+  // Get current ISO week
+  const now = new Date();
+  const tz = 'America/Los_Angeles';
+  const oneJan = new Date(now.getFullYear(), 0, 1);
+  const weekNum = Math.ceil(((now - oneJan) / 86400000 + oneJan.getDay() + 1) / 7);
+  const isoWeek = `${now.getFullYear()}-W${String(weekNum).padStart(2, '0')}`;
+
+  // Read all review log rows
+  const data = logSh.getDataRange().getValues();
+  const cols = BS_CFG.REVIEW_LOG_COLUMNS;
+
+  // Filter to this week's reviews (by timestamp within last 7 days)
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const weekReviews = [];
+  for (let i = 1; i < data.length; i++) {
+    const ts = data[i][cols.TIMESTAMP];
+    if (ts instanceof Date && ts >= weekAgo) {
+      weekReviews.push({
+        vendor: data[i][cols.VENDOR],
+        source: data[i][cols.SOURCE],
+        status: data[i][cols.STATUS],
+        qa: data[i][cols.QA_RESPONSES],
+        notes: data[i][cols.USER_NOTES],
+        narrative: data[i][cols.NARRATIVE],
+        todos: data[i][cols.TODOS],
+        todoStatus: data[i][cols.TODO_STATUS]
+      });
+    }
+  }
+
+  if (weekReviews.length === 0) {
+    ui.alert(`No reviews found in the past 7 days.\n\nUse "📋 Inbox Review (Q&A + Record)" to review vendors first.`);
+    return;
+  }
+
+  ss.toast(`Generating recap for ${weekReviews.length} reviews...`, '📊 Weekly Recap', 15);
+
+  // Build context for Claude
+  const reviewsContext = weekReviews.map((r, i) => {
+    let todoItems = [];
+    let todoStatuses = [];
+    try { todoItems = JSON.parse(r.todos || '[]'); } catch (e) { /* skip */ }
+    try { todoStatuses = JSON.parse(r.todoStatus || '[]'); } catch (e) { /* skip */ }
+
+    const todosFormatted = todoItems.map((t, j) =>
+      `  - [${todoStatuses[j] || 'pending'}] ${t}`
+    ).join('\n') || '  (none)';
+
+    return `--- Vendor ${i + 1}: ${r.vendor} (${r.source}, ${r.status}) ---
+Narrative: ${r.narrative}
+Notes: ${r.notes || '(none)'}
+To-Dos:\n${todosFormatted}`;
+  }).join('\n\n');
+
+  const aiInstructions = getAiInstructions_();
+  const goalsContext = getGoalsContext_();
+
+  const prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a WEEKLY RECAP for Andy Worford.
+
+Week: ${isoWeek}
+Reviews completed: ${weekReviews.length}
+${goalsContext ? `\nCurrent Goals:\n${goalsContext}` : ''}
+${aiInstructions}
+
+═══ THIS WEEK'S VENDOR REVIEWS ═══
+${reviewsContext}
+
+Generate a concise weekly recap with:
+1. **Overview**: How many vendors reviewed, general themes
+2. **Key Highlights**: Most important developments (good or concerning)
+3. **Priority Actions**: Top 3-5 actions Andy should focus on across all vendors
+4. **Patterns**: Any recurring themes or systemic issues
+
+Keep it executive-level, actionable, and under 400 words.`;
+
+  const result = callClaudeAPI_(prompt, apiKey, {
+    system: 'You are a business intelligence assistant generating concise weekly vendor recaps.',
+    maxTokens: 1200,
+    model: BS_CFG.CRYSTAL_BALL_MODEL
+  });
+
+  if (result.error) { ui.alert(`Error: ${result.error}`); return; }
+
+  const recap = result.content || '(no recap generated)';
+
+  // Store recap in the most recent review row for this week
+  for (let i = data.length - 1; i >= 1; i--) {
+    const ts = data[i][cols.TIMESTAMP];
+    if (ts instanceof Date && ts >= weekAgo) {
+      logSh.getRange(i + 1, cols.WEEKLY_RECAP + 1).setValue(recap);
+      logSh.getRange(i + 1, cols.RECAP_WEEK + 1).setValue(isoWeek);
+      break;
+    }
+  }
+
+  // Show in dialog
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .meta { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .recap { background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; margin-top: 15px; }
+      .btn-primary { background: #1a73e8; color: white; }
+    </style>
+    <h2>📊 Weekly Recap (${escapeHtml_(isoWeek)})</h2>
+    <div class="meta">${weekReviews.length} vendor${weekReviews.length !== 1 ? 's' : ''} reviewed this week</div>
+    <div class="recap">${escapeHtml_(recap)}</div>
+    <br>
+    <button class="btn btn-primary" onclick="google.script.host.close()">Done</button>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(650).setHeight(500);
+  ui.showModalDialog(htmlOutput, `📊 Weekly Recap: ${isoWeek}`);
+}
+
+/**
+ * Update To-Do Status - Shows pending todos from Inbox Reviews and allows marking done/skip.
+ */
+function inboxReviewUpdateTodos() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  const logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh || logSh.getLastRow() < 2) {
+    ui.alert('No review records found.\n\nUse "📋 Inbox Review (Q&A + Record)" to review vendors first.');
+    return;
+  }
+
+  const data = logSh.getDataRange().getValues();
+  const cols = BS_CFG.REVIEW_LOG_COLUMNS;
+
+  // Collect all pending todos across all reviews
+  const pendingTodos = [];
+  for (let i = 1; i < data.length; i++) {
+    let todoItems = [];
+    let todoStatuses = [];
+    try { todoItems = JSON.parse(data[i][cols.TODOS] || '[]'); } catch (e) { continue; }
+    try { todoStatuses = JSON.parse(data[i][cols.TODO_STATUS] || '[]'); } catch (e) { continue; }
+
+    const vendor = data[i][cols.VENDOR];
+    const ts = data[i][cols.TIMESTAMP];
+    const dateStr = ts instanceof Date ? Utilities.formatDate(ts, 'America/Los_Angeles', 'MMM d') : '';
+
+    for (let j = 0; j < todoItems.length; j++) {
+      if ((todoStatuses[j] || 'pending') === 'pending') {
+        pendingTodos.push({
+          rowIndex: i + 1, // 1-based sheet row
+          todoIndex: j,
+          vendor: vendor,
+          date: dateStr,
+          text: todoItems[j]
+        });
+      }
+    }
+  }
+
+  if (pendingTodos.length === 0) {
+    ui.alert('No pending to-dos found. All items are completed or skipped.');
+    return;
+  }
+
+  // Store pending todos for the callback
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('IR_PENDING_TODOS', JSON.stringify(pendingTodos));
+
+  const todoRows = pendingTodos.map((t, i) =>
+    `<tr>
+      <td style="padding:6px 8px">${escapeHtml_(t.vendor)}</td>
+      <td style="padding:6px 8px;font-size:12px;color:#666">${escapeHtml_(t.date)}</td>
+      <td style="padding:6px 8px">${escapeHtml_(t.text)}</td>
+      <td style="padding:6px 8px;text-align:center">
+        <button onclick="markTodo(${i},'done')" style="background:#34a853;color:white;border:none;border-radius:3px;padding:4px 10px;cursor:pointer;margin:2px" title="Mark done">✓</button>
+        <button onclick="markTodo(${i},'skip')" style="background:#f9ab00;color:white;border:none;border-radius:3px;padding:4px 10px;cursor:pointer;margin:2px" title="Skip">✗</button>
+      </td>
+    </tr>`
+  ).join('');
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .meta { color: #666; font-size: 12px; margin-bottom: 10px; }
+      table { width: 100%; border-collapse: collapse; }
+      th { background: #f5f5f5; text-align: left; padding: 8px; font-size: 13px; border-bottom: 2px solid #e0e0e0; }
+      td { border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+      tr.done { opacity: 0.4; text-decoration: line-through; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; margin-top: 15px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      #statusMsg { color: #137333; font-size: 13px; margin-top: 10px; display: none; }
+    </style>
+    <h2>✅ Pending To-Dos</h2>
+    <div class="meta">${pendingTodos.length} pending item${pendingTodos.length !== 1 ? 's' : ''} from Inbox Reviews</div>
+    <table>
+      <tr><th>Vendor</th><th>Date</th><th>To-Do</th><th>Action</th></tr>
+      ${todoRows}
+    </table>
+    <div id="statusMsg"></div>
+    <br>
+    <button class="btn btn-primary" onclick="google.script.host.close()">Done</button>
+
+    <script>
+      function markTodo(index, newStatus) {
+        var row = document.querySelectorAll('table tr')[index + 1]; // +1 for header
+        row.classList.add('done');
+        row.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+
+        google.script.run
+          .withSuccessHandler(function(msg) {
+            var el = document.getElementById('statusMsg');
+            el.textContent = msg;
+            el.style.display = 'block';
+          })
+          .withFailureHandler(function(err) {
+            alert('Error: ' + err.message);
+          })
+          .inboxReviewMarkTodo(index, newStatus);
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(700).setHeight(500);
+  ui.showModalDialog(htmlOutput, '✅ Update To-Do Status');
+}
+
+/**
+ * Mark a single to-do item as done or skip. Called from the Update To-Dos dialog.
+ */
+function inboxReviewMarkTodo(todoGlobalIndex, newStatus) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingTodos = JSON.parse(props.getProperty('IR_PENDING_TODOS') || '[]');
+
+  if (todoGlobalIndex < 0 || todoGlobalIndex >= pendingTodos.length) {
+    return 'Invalid todo index.';
+  }
+
+  const todo = pendingTodos[todoGlobalIndex];
+  const ss = SpreadsheetApp.getActive();
+  const logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh) return 'Review log sheet not found.';
+
+  const cols = BS_CFG.REVIEW_LOG_COLUMNS;
+
+  // Read the current todo statuses for this row
+  const cell = logSh.getRange(todo.rowIndex, cols.TODO_STATUS + 1);
+  let todoStatuses = [];
+  try { todoStatuses = JSON.parse(cell.getValue() || '[]'); } catch (e) { return 'Error parsing todo status.'; }
+
+  // Update the specific todo's status
+  todoStatuses[todo.todoIndex] = newStatus;
+  cell.setValue(JSON.stringify(todoStatuses));
+
+  // Remove from pending list in properties
+  pendingTodos.splice(todoGlobalIndex, 1);
+  props.setProperty('IR_PENDING_TODOS', JSON.stringify(pendingTodos));
+
+  const remaining = pendingTodos.length;
+  return `✓ Marked as ${newStatus}. ${remaining} pending item${remaining !== 1 ? 's' : ''} remaining.`;
 }
 
 /**
@@ -7968,8 +8537,7 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
 }
 
 /**
- * Call Claude API — supports direct Anthropic API or claude-max-api-proxy
- * Proxy mode auto-detected from Script Properties (CLAUDE_PROXY_URL)
+ * Call Claude API via direct Anthropic API
  */
 function callClaudeAPI_(prompt, apiKey, options) {
   options = options || {};
@@ -8043,104 +8611,6 @@ function callClaudeAPI_(prompt, apiKey, options) {
   } catch (e) {
     return { error: e.message };
   }
-}
-
-/**
- * Call Claude via claude-max-api-proxy (OpenAI-compatible format)
- * Uses Max subscription instead of per-token API billing
- */
-function callClaudeViaProxy_(prompt, proxyUrl, props, options) {
-  // Map Anthropic model names to proxy short names
-  const modelMap = {
-    'claude-sonnet-4-20250514': 'claude-sonnet-4',
-    'claude-opus-4-20250514': 'claude-opus-4',
-    'claude-haiku-4-20250514': 'claude-haiku-4',
-    'claude-haiku-4-5-20251001': 'claude-haiku-4-5'
-  };
-  const requestedModel = options.model || 'claude-sonnet-4-20250514';
-  const model = modelMap[requestedModel] || requestedModel;
-
-  // Build OpenAI-compatible messages array
-  const messages = [];
-  if (options.system) {
-    messages.push({ role: 'system', content: options.system });
-  }
-
-  // Support multimodal image input
-  if (options.image) {
-    messages.push({ role: 'user', content: [
-      { type: 'image_url', image_url: { url: `data:${options.image.mediaType};base64,${options.image.base64}` } },
-      { type: 'text', text: prompt }
-    ]});
-  } else {
-    messages.push({ role: 'user', content: prompt });
-  }
-
-  const payload = {
-    model: model,
-    messages: messages,
-    max_tokens: options.maxTokens || 2000
-  };
-
-  const headers = { 'Content-Type': 'application/json' };
-
-  // Add basic auth if configured
-  const proxyAuth = props.getProperty('CLAUDE_PROXY_AUTH');
-  if (proxyAuth) {
-    headers['Authorization'] = 'Basic ' + Utilities.base64Encode(proxyAuth);
-  }
-
-  const fetchOptions = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: headers,
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  // Retry with exponential backoff for transient proxy errors (502, 503, 504)
-  const maxRetries = 2;
-  const retryableStatusCodes = [502, 503, 504];
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = UrlFetchApp.fetch(proxyUrl + '/v1/chat/completions', fetchOptions);
-      const responseCode = response.getResponseCode();
-      const responseText = response.getContentText();
-
-      if (responseCode === 200) {
-        const result = JSON.parse(responseText);
-        // OpenAI format: { choices: [{ message: { content: "..." } }] }
-        if (result.choices && result.choices.length > 0 && result.choices[0].message) {
-          return { content: result.choices[0].message.content };
-        }
-        return { error: 'No content in proxy response' };
-      }
-
-      // Retry on transient gateway errors
-      if (retryableStatusCodes.includes(responseCode) && attempt < maxRetries) {
-        const delaySec = Math.pow(2, attempt + 1); // 2s, 4s
-        Logger.log(`[Claude Proxy] Got ${responseCode}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
-        Utilities.sleep(delaySec * 1000);
-        continue;
-      }
-
-      // Strip HTML from error responses for cleaner display
-      const cleanError = responseText.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      return { error: `Proxy returned ${responseCode}: ${cleanError || 'Gateway error'}` };
-
-    } catch (e) {
-      if (attempt < maxRetries) {
-        const delaySec = Math.pow(2, attempt + 1);
-        Logger.log(`[Claude Proxy] Exception: ${e.message}, retrying in ${delaySec}s (attempt ${attempt + 1}/${maxRetries})`);
-        Utilities.sleep(delaySec * 1000);
-        continue;
-      }
-      return { error: `Proxy error: ${e.message}` };
-    }
-  }
-
-  return { error: 'Proxy failed after retries' };
 }
 
 /**
@@ -11841,21 +12311,14 @@ function writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyer
 }
 
 /************************************************************
- * CLAUDE API / PROXY CONFIGURATION
- * Supports direct Anthropic API key OR claude-max-api-proxy
+ * CLAUDE API CONFIGURATION
  ************************************************************/
 
 /**
- * Get Claude API key - checks proxy first, then Script Properties, then BS_CFG
- * Returns 'PROXY_MODE' if proxy is configured, API key string, or null
+ * Get Claude API key - checks Script Properties first, then BS_CFG
  */
 function getClaudeApiKey_() {
   const props = PropertiesService.getScriptProperties();
-
-  // Proxy takes priority — no API key needed
-  const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
-  if (proxyUrl) return 'PROXY_MODE';
-
   const storedKey = props.getProperty('CLAUDE_API_KEY');
   if (storedKey && storedKey.length > 10) return storedKey;
   if (BS_CFG.CLAUDE_API_KEY && BS_CFG.CLAUDE_API_KEY !== 'YOUR_ANTHROPIC_API_KEY_HERE') {
@@ -11875,7 +12338,7 @@ function battleStationSetClaudeApiKey() {
 
   const response = ui.prompt(
     '⚙️ Set Claude API Key',
-    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):\n\n(Or use "Set Claude Proxy" for Max subscription proxy)`,
+    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):`,
     ui.ButtonSet.OK_CANCEL
   );
 
@@ -11889,62 +12352,6 @@ function battleStationSetClaudeApiKey() {
 
   props.setProperty('CLAUDE_API_KEY', newKey);
   SpreadsheetApp.getActive().toast('Claude API key saved!', '✅ Success', 3);
-}
-
-/**
- * Set Claude proxy URL for claude-max-api-proxy (uses Max subscription)
- * Stores proxy URL and optional basic auth credentials in Script Properties
- */
-function battleStationSetClaudeProxy() {
-  const ui = SpreadsheetApp.getUi();
-  const props = PropertiesService.getScriptProperties();
-  const currentUrl = props.getProperty('CLAUDE_PROXY_URL') || '(not set)';
-  const currentAuth = props.getProperty('CLAUDE_PROXY_AUTH');
-  const authStatus = currentAuth ? '(configured)' : '(none)';
-
-  const urlResponse = ui.prompt(
-    '🔌 Set Claude Proxy URL',
-    `Current: ${currentUrl}\nAuth: ${authStatus}\n\nEnter your claude-max-api-proxy URL:\n(e.g., https://your-vps.com)\n\nLeave blank and click OK to clear proxy settings.`,
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (urlResponse.getSelectedButton() !== ui.Button.OK) return;
-
-  const newUrl = urlResponse.getResponseText().trim();
-
-  // Clear proxy if blank
-  if (!newUrl) {
-    props.deleteProperty('CLAUDE_PROXY_URL');
-    props.deleteProperty('CLAUDE_PROXY_AUTH');
-    SpreadsheetApp.getActive().toast('Proxy settings cleared. Will use API key instead.', '✅ Cleared', 3);
-    return;
-  }
-
-  // Validate URL
-  if (!newUrl.startsWith('http://') && !newUrl.startsWith('https://')) {
-    ui.alert('Invalid URL. Must start with http:// or https://');
-    return;
-  }
-
-  props.setProperty('CLAUDE_PROXY_URL', newUrl.replace(/\/+$/, '')); // strip trailing slash
-
-  // Ask for basic auth
-  const authResponse = ui.prompt(
-    '🔐 Proxy Authentication',
-    'Enter basic auth credentials (user:password).\n\nLeave blank if your proxy has no authentication.\n\n⚠️ Strongly recommended to set auth to prevent unauthorized access!',
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (authResponse.getSelectedButton() === ui.Button.OK) {
-    const auth = authResponse.getResponseText().trim();
-    if (auth) {
-      props.setProperty('CLAUDE_PROXY_AUTH', auth);
-    } else {
-      props.deleteProperty('CLAUDE_PROXY_AUTH');
-    }
-  }
-
-  SpreadsheetApp.getActive().toast('Claude proxy configured! AI features will use your Max subscription.', '✅ Proxy Set', 3);
 }
 
 /**
