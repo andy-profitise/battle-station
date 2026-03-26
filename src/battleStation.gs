@@ -8542,21 +8542,6 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
 function callClaudeAPI_(prompt, apiKey, options) {
   options = options || {};
 
-  // Check for proxy configuration first
-  const props = PropertiesService.getScriptProperties();
-  const proxyUrl = props.getProperty('CLAUDE_PROXY_URL');
-
-  if (proxyUrl) {
-    const proxyResult = callClaudeViaProxy_(prompt, proxyUrl, props, options);
-    // If proxy fails with gateway error, fall back to direct API
-    if (proxyResult.error && /Proxy (returned|failed|error)/i.test(proxyResult.error) && apiKey) {
-      Logger.log(`[Claude] Proxy failed (${proxyResult.error}), falling back to direct API`);
-      SpreadsheetApp.getActive().toast('Proxy down, using direct API...', '🔄 Fallback', 3);
-    } else {
-      return proxyResult;
-    }
-  }
-
   // Direct Anthropic API
   const url = 'https://api.anthropic.com/v1/messages';
 
