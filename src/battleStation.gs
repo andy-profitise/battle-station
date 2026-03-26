@@ -19445,7 +19445,7 @@ UNMATCHED: <original text from user input> | <reason it couldn't be matched, e.g
 This helps the user see what was missed so they can rephrase or handle it manually. If everything was matched, output:
 UNMATCHED: (none)`;
 
-  const response = callClaudeAPI_(prompt, BS_CFG.CLAUDE_API_KEY, { maxTokens: 1500 });
+  const response = callClaudeAPI_(prompt, getClaudeApiKey_(), { maxTokens: 1500 });
 
   if (response.error) {
     ui.alert(`Claude API Error: ${response.error}`);
