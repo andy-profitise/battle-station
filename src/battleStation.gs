@@ -5666,7 +5666,7 @@ Brief situation + most important next step.
 Then on new lines:
 SUGGESTED_ACTION: <what to do> | <us or vendor> | <related blocker/task>`;
 
-    const apiKey = BS_CFG.CLAUDE_API_KEY;
+    const apiKey = getClaudeApiKey_();
     if (!apiKey) {
       // No API key - return raw data without analysis
       return {
@@ -7534,7 +7534,7 @@ function getEmailContactsData() {
  * @returns {object} Result with generated email content
  */
 function generateEmailWithClaude(vendor, purpose, tone, additionalContext) {
-  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  const claudeApiKey = getClaudeApiKey_();
 
   if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
     return { error: 'Claude API key not configured.' };
@@ -14115,7 +14115,7 @@ function showDirectionsDialog_(responseType, lastMsgSummary) {
  * Generate email response using Claude
  */
 function generateEmailWithClaude_(threadContent, subject, responseType, extraDirections, lastSenderIsMe) {
-  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  const claudeApiKey = getClaudeApiKey_();
 
   if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
     throw new Error('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
@@ -17670,7 +17670,7 @@ function analyzeTasksFromEmails() {
     return;
   }
 
-  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  const claudeApiKey = getClaudeApiKey_();
   if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
     ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
     return;
@@ -19314,7 +19314,7 @@ function battleStationBulkActions() {
     return;
   }
 
-  const claudeApiKey = BS_CFG.CLAUDE_API_KEY;
+  const claudeApiKey = getClaudeApiKey_();
   if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
     ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
     return;
