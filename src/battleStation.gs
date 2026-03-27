@@ -3327,6 +3327,16 @@ function loadVendorData(vendorIndex, options) {
       Logger.log(`Error checking OCR vendor: ${e.message}`);
     }
   }
+
+  // Check if vendor has no blocker tasks - prompt user to add one
+  if (blockerTasks.length === 0 && !turboMode) {
+    try {
+      showNoBlockerDialog_(vendor, source, status, contactData, emails, mondayNotes, allVendorTasks_);
+    } catch (e) {
+      Logger.log(`Error showing no-blocker dialog: ${e.message}`);
+    }
+  }
+
   } // end if (!isFastMode) - checksum generation
 
   const modeLabel = isFastMode ? '⚡ Fast' : '✅ Ready';
@@ -13755,6 +13765,295 @@ function createBlockerForVendor() {
   ss.toast(`Blocker created for ${vendor}!`, '✅ Blocker Added', 3);
 
   // Refresh the Battle Station to show the new blocker
+  battleStationRefresh();
+}
+
+/**
+ * Show a dialog when a vendor has no blocker tasks.
+ * Uses Claude to suggest possible blockers based on recent emails, notes, and tasks.
+ */
+function showNoBlockerDialog_(vendor, source, status, contactData, emails, mondayNotes, allTasks) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  // Build context from recent interactions
+  const unsnoozedEmails = (emails || []).filter(e => !e.isSnoozed).slice(0, 5);
+  const emailContext = unsnoozedEmails.map(e =>
+    `- "${e.subject}" (${e.date}, from: ${e.lastFrom}, labels: ${e.labels})`
+  ).join('\n') || '(no recent emails)';
+
+  const openTasks = (allTasks || []).filter(t => !t.isDone && !t.isBlocker).slice(0, 5);
+  const taskContext = openTasks.map(t =>
+    `- "${t.subject}" (Status: ${t.status}, Project: ${t.project})`
+  ).join('\n') || '(no open tasks)';
+
+  const currentBlockersText = contactData.blockers || '';
+
+  // Try to get AI suggestions
+  let suggestions = [];
+  try {
+    const apiKey = getClaudeApiKey_();
+    if (apiKey) {
+      const aiInstructions = getAiInstructions_();
+      const prompt = `You are Andy's vendor management assistant at Profitise (lead generation).
+${aiInstructions}
+A vendor was just loaded that has NO blocker task in Monday.com. Based on the context below, suggest 2-3 possible blockers that might apply. These are things that could be preventing progress or need attention.
+
+Vendor: ${vendor}
+Source: ${source}
+Status: ${status}
+Monday.com Blockers Field: ${currentBlockersText || '(empty)'}
+Monday.com Notes: ${mondayNotes || '(none)'}
+
+Recent Emails:
+${emailContext}
+
+Open Tasks:
+${taskContext}
+
+Live Verticals: ${contactData.liveVerticals || '(none)'}
+Live Modalities: ${contactData.liveModalities || '(none)'}
+
+Return ONLY a JSON array of 2-3 short blocker suggestions (strings). Each should be a concise phrase (5-15 words max) describing a potential blocker. Base them on actual signals from the data - overdue emails, missing setup, pending contracts, etc. If there's truly nothing blocking, include "No current blockers - relationship on track" as one option.
+
+Example format: ["Waiting on signed IO to go live", "Pending Phonexa campaign setup", "No current blockers - relationship on track"]`;
+
+      const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 200 });
+      if (!response.error) {
+        const content = response.content.trim();
+        const match = content.match(/\[[\s\S]*\]/);
+        if (match) {
+          suggestions = JSON.parse(match[0]);
+        }
+      }
+    }
+  } catch (e) {
+    Logger.log(`Error getting AI blocker suggestions: ${e.message}`);
+  }
+
+  // Fallback suggestions if AI fails
+  if (!suggestions || suggestions.length === 0) {
+    suggestions = [
+      'Waiting on signed IO/contract',
+      'Pending campaign setup in Phonexa',
+      'No current blockers - relationship on track'
+    ];
+  }
+
+  // Store context for the callback
+  const currentIndex = getCurrentVendorIndex_();
+  PropertiesService.getUserProperties().setProperty('noBlockerDialogContext', JSON.stringify({
+    vendor: vendor,
+    source: source,
+    listRow: currentIndex + 1
+  }));
+
+  // Build suggestion radio buttons
+  const suggestionsHtml = suggestions.map((s, i) =>
+    `<div class="suggestion-item">
+       <input type="radio" name="blockerChoice" id="sug${i}" value="${s.replace(/"/g, '&quot;')}">
+       <label for="sug${i}">${s.replace(/</g, '&lt;')}</label>
+     </div>`
+  ).join('\n');
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h3 { color: #e65100; margin-bottom: 5px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .suggestion-item {
+        display: flex; align-items: center; padding: 10px 12px; margin-bottom: 6px;
+        background: #fff8e1; border: 1px solid #ffe0b2; border-radius: 6px; cursor: pointer;
+      }
+      .suggestion-item:hover { background: #fff3e0; border-color: #ffcc80; }
+      .suggestion-item input[type="radio"] { width: 18px; height: 18px; margin-right: 10px; cursor: pointer; }
+      .suggestion-item label { cursor: pointer; flex: 1; }
+      .custom-section { margin-top: 12px; }
+      .custom-input {
+        width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 5px;
+        font-family: Arial; font-size: 13px; margin-top: 5px;
+      }
+      .custom-input:focus { border-color: #e65100; outline: none; }
+      .btn-row { margin-top: 15px; display: flex; gap: 8px; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; }
+      .btn-primary { background: #e65100; color: white; }
+      .btn-primary:hover { background: #bf360c; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-skip { background: #f1f3f4; color: #333; }
+      .btn-skip:hover { background: #e0e0e0; }
+      .status { margin-top: 10px; font-size: 12px; color: #666; display: none; }
+    </style>
+
+    <h3>🚧 No Blocker Found</h3>
+    <div class="subtitle">${vendor} has no active blocker task. Pick one or skip:</div>
+
+    ${suggestionsHtml}
+
+    <div class="custom-section">
+      <div class="suggestion-item">
+        <input type="radio" name="blockerChoice" id="sugCustom" value="__custom__">
+        <label for="sugCustom">Custom:</label>
+      </div>
+      <input type="text" class="custom-input" id="customBlocker" placeholder="Type a custom blocker..."
+             onfocus="document.getElementById('sugCustom').checked = true;">
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="createBtn" onclick="createBlocker()">Create Blocker</button>
+      <button class="btn btn-skip" onclick="google.script.host.close()">Skip</button>
+    </div>
+    <div class="status" id="statusMsg">Creating blocker...</div>
+
+    <script>
+      function createBlocker() {
+        var selected = document.querySelector('input[name="blockerChoice"]:checked');
+        if (!selected) { alert('Please select a blocker or type a custom one.'); return; }
+
+        var blockerText = selected.value;
+        if (blockerText === '__custom__') {
+          blockerText = document.getElementById('customBlocker').value.trim();
+          if (!blockerText) { alert('Please type a custom blocker.'); return; }
+        }
+
+        document.getElementById('createBtn').disabled = true;
+        document.getElementById('statusMsg').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(err) {
+            document.getElementById('createBtn').disabled = false;
+            document.getElementById('statusMsg').style.display = 'none';
+            alert('Error: ' + err.message);
+          })
+          .createBlockerFromSuggestion(blockerText);
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(480).setHeight(400);
+  ui.showModalDialog(htmlOutput, '🚧 Missing Blocker');
+}
+
+/**
+ * Create a blocker task from the no-blocker suggestion dialog.
+ * Duplicates the template, renames it to the selected blocker text, and links the vendor.
+ */
+function createBlockerFromSuggestion(blockerText) {
+  const ss = SpreadsheetApp.getActive();
+  const contextRaw = PropertiesService.getUserProperties().getProperty('noBlockerDialogContext');
+  if (!contextRaw) throw new Error('No dialog context found.');
+
+  const context = JSON.parse(contextRaw);
+  const vendor = context.vendor;
+  const source = context.source;
+  const listRow = context.listRow;
+
+  ss.toast(`Creating blocker for ${vendor}...`, '🚧 Blocker', 3);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+  const templateItemId = BS_CFG.BLOCKER_TEMPLATE_ITEM_ID;
+
+  // Step 1: Duplicate the template item
+  const dupMutation = `
+    mutation {
+      duplicate_item (
+        board_id: ${boardId},
+        item_id: ${templateItemId},
+        with_updates: false
+      ) { id }
+    }
+  `;
+
+  const dupResult = mondayApiRequest_(dupMutation, apiToken);
+  if (dupResult.errors && dupResult.errors.length > 0) {
+    throw new Error(`Error duplicating template: ${dupResult.errors[0].message}`);
+  }
+
+  const newItemId = dupResult.data?.duplicate_item?.id;
+  if (!newItemId) throw new Error('Failed to duplicate template item.');
+
+  // Step 2: Rename the item to vendor name
+  const escapedVendor = vendor.replace(/"/g, '\\"');
+  const renameMutation = `
+    mutation {
+      change_simple_column_value (
+        board_id: ${boardId},
+        item_id: ${newItemId},
+        column_id: "name",
+        value: "${escapedVendor}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 3: Move to Blockers group
+  const moveMutation = `
+    mutation {
+      move_item_to_group (
+        item_id: ${newItemId},
+        group_id: "${BS_CFG.BLOCKERS_GROUP_ID}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(moveMutation, apiToken);
+
+  // Step 4: Set the blocker text as notes on the item
+  const escapedBlocker = blockerText.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  const notesMutation = `
+    mutation {
+      change_simple_column_value (
+        board_id: ${boardId},
+        item_id: ${newItemId},
+        column_id: "notes",
+        value: "${escapedBlocker}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(notesMutation, apiToken);
+
+  // Step 5: Link the vendor item via board relation
+  const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
+
+  if (vendorItemId) {
+    const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type } } }`;
+    const colsResult = mondayApiRequest_(colsQuery, apiToken);
+    const cols = colsResult.data?.items?.[0]?.column_values || [];
+
+    for (const col of cols) {
+      if (col.type === 'board_relation' && col.id !== BS_CFG.TASKS_PROJECT_COLUMN) {
+        const linkMutation = `
+          mutation {
+            change_column_value (
+              board_id: ${boardId},
+              item_id: ${newItemId},
+              column_id: "${col.id}",
+              value: "{\\"item_ids\\": [${vendorItemId}]}"
+            ) { id }
+          }
+        `;
+        const linkResult = mondayApiRequest_(linkMutation, apiToken);
+        if (linkResult.data?.change_column_value?.id) {
+          Logger.log(`Linked vendor ${vendor} (${vendorItemId}) via column ${col.id}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // Also update the monday.com blockers text field
+  updateMondayBlockersForVendor_(vendor, blockerText, listRow);
+
+  // Clear task cache so the new blocker shows up
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+  setCachedData_('monday_tasks', cacheKey, []);
+
+  ss.toast(`Blocker created: "${blockerText}"`, '✅ Blocker Added', 3);
+
+  // Refresh to show the new blocker
   battleStationRefresh();
 }
 
