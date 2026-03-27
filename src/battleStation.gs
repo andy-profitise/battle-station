@@ -20194,8 +20194,14 @@ function inboxReviewStart() {
 
   ss.toast('Analyzing with Claude...', '🤖 Processing', 10);
 
-  // Claude prompt for the review
-  const prompt = `You are helping Andy, a vendor relationship manager at Profitise (lead generation in Home Services and Solar), review a vendor.
+  // Fetch any stored hints from previous reviews
+  const allHints = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_HINTS') || '{}'
+  );
+  const vendorHints = allHints[vendor] || '';
+
+  // Phase 1: Quick analysis — just the summary for user to review/refute before generating questions
+  const phase1Prompt = `You are helping Andy, a vendor relationship manager at Profitise (lead generation in Home Services and Solar), do a quick assessment of a vendor.
 
 VENDOR: ${vendor}
 STATUS: ${status}
@@ -20213,10 +20219,261 @@ ${taskSummary || '(no tasks)'}
 
 UNSNOOZED EMAILS (${unsnoozed.length} threads, ${overdue.length} overdue):
 ${emailContext || '(no emails)'}
+${vendorHints ? '\nPREVIOUS CORRECTIONS FROM USER:\n' + vendorHints : ''}
 
-Provide your analysis in this EXACT JSON format (no markdown, just raw JSON):
+Provide your quick analysis in this EXACT JSON format (no markdown, just raw JSON):
 {
   "vendorSummary": "2-3 sentence summary of overall vendor state and trajectory",
+  "keyAssumptions": [
+    "A specific factual assumption you are making based on the data (e.g. 'Vendor appears to be in active integration based on 2 open tasks')",
+    "Another assumption (e.g. 'Communication frequency seems healthy — 3 emails in the past week')",
+    "Another assumption about relationship state, blockers, or priorities"
+  ]
+}
+
+IMPORTANT:
+- Summary and assumptions should be specific to THIS vendor's actual data
+- Assumptions should be things the user can confirm or refute before you generate detailed questions
+- Surface assumptions that, if wrong, would significantly change your analysis`;
+
+  try {
+    const phase1Response = callClaudeAPI_(phase1Prompt, apiKey, { maxTokens: 600, model: 'claude-haiku-4-5-20251001' });
+
+    if (phase1Response.error) {
+      ui.alert(`Claude API Error: ${phase1Response.error}`);
+      return;
+    }
+
+    let quickAnalysis;
+    try {
+      let jsonStr = phase1Response.content.trim();
+      jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+      quickAnalysis = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      ui.alert(`Could not parse Claude's quick analysis.\n\nRaw response:\n${phase1Response.content.substring(0, 500)}`);
+      return;
+    }
+
+    // Store context for phase 2 callback
+    const previewData = {
+      vendor: vendor,
+      listRow: listRow,
+      status: status,
+      currentNotes: currentNotes,
+      contactSummary: contactSummary,
+      liveVerticals: contactData.liveVerticals || '(none)',
+      liveModalities: contactData.liveModalities || '(none)',
+      states: contactData.states || '(none)',
+      taskSummary: taskSummary || '(no tasks)',
+      openTaskCount: openTasks.length,
+      completedTaskCount: completedTasks.length,
+      emailContext: emailContext || '(no emails)',
+      unsnoozedCount: unsnoozed.length,
+      overdueCount: overdue.length,
+      vendorHints: vendorHints,
+      quickAnalysis: quickAnalysis,
+      timestamp: new Date().toISOString()
+    };
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_PREVIEW', JSON.stringify(previewData)
+    );
+
+    // Build Phase 1 preview dialog
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    const assumptionsHtml = (quickAnalysis.keyAssumptions || []).map((a, i) => `
+      <div class="assumption">
+        <div class="assumption-text">${esc(a)}</div>
+        <div class="assumption-controls">
+          <label class="pill pill-ok"><input type="radio" name="a${i}" value="ok" checked> OK</label>
+          <label class="pill pill-wrong"><input type="radio" name="a${i}" value="wrong"> Wrong</label>
+          <input type="text" name="a${i}_correction" placeholder="What's actually the case?" class="correction-input" disabled>
+        </div>
+      </div>
+    `).join('');
+
+    const previewHtml = `<!DOCTYPE html>
+<html><head>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 0; margin: 0; font-size: 13px; color: #333; }
+  .container { padding: 16px; }
+  h2 { color: #1a73e8; margin: 0 0 4px; font-size: 18px; }
+  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; border-bottom: 2px solid #e8f0fe; padding-bottom: 4px; }
+  .vendor-badge { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #1a73e8; display: inline-block; margin-bottom: 8px; }
+  .summary { background: #f8f9fa; padding: 10px 14px; border-radius: 8px; border-left: 4px solid #1a73e8; margin: 8px 0 16px; line-height: 1.5; }
+  .phase-note { background: #fff8e1; padding: 8px 12px; border-radius: 6px; border-left: 4px solid #f9a825; margin: 8px 0; font-size: 12px; line-height: 1.5; }
+  .assumption { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .assumption-text { font-weight: 500; margin-bottom: 6px; line-height: 1.4; }
+  .assumption-controls { display: flex; gap: 10px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 12px; font-size: 12px; cursor: pointer; border: 1px solid #ddd; }
+  .pill input[type="radio"] { margin: 0; }
+  .pill-ok { background: #e8f5e9; border-color: #a5d6a7; }
+  .pill-wrong { background: #fce4ec; border-color: #ef9a9a; }
+  .correction-input { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .correction-input:disabled { background: #f5f5f5; opacity: 0.5; }
+  .extra-context { width: 100%; min-height: 50px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; margin-top: 4px; }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #1a73e8; color: white; }
+  .btn-primary:hover { background: #1557b0; }
+  .btn-secondary { background: #f1f3f4; color: #333; }
+  .btn-secondary:hover { background: #e0e0e0; }
+  .btn-accept { background: #34a853; color: white; }
+  .btn-accept:hover { background: #2d9249; }
+  .spinner { display: none; text-align: center; padding: 20px; }
+  .spinner.active { display: block; }
+  .form-content.hidden { display: none; }
+</style>
+</head><body>
+<div class="container">
+  <h2>📋 Quick Analysis Preview</h2>
+  <span class="vendor-badge">${esc(vendor)} — ${esc(status)}</span>
+
+  <div class="phase-note">
+    Review the AI's analysis below. If any assumptions are wrong, mark them and provide corrections — the full Q&A will be generated based on this.
+  </div>
+
+  <h3>AI Summary</h3>
+  <div class="summary">${esc(quickAnalysis.vendorSummary)}</div>
+
+  <h3>Key Assumptions — Confirm or Refute</h3>
+  <div class="form-content" id="formContent">
+    ${assumptionsHtml}
+
+    <h3>Additional Context (optional)</h3>
+    <textarea class="extra-context" id="extraContext" placeholder="Anything else the AI should know before generating questions..."></textarea>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+      <button class="btn btn-accept" onclick="proceed('accept')">Looks Good — Continue</button>
+      <button class="btn btn-primary" onclick="proceed('refute')">Apply Corrections & Continue</button>
+    </div>
+  </div>
+
+  <div class="spinner" id="spinner">
+    <p>Regenerating with your corrections...</p>
+    <p style="font-size: 11px; color: #888;">This may take a few seconds</p>
+  </div>
+</div>
+
+<script>
+// Enable/disable correction input based on radio selection
+document.querySelectorAll('input[type="radio"]').forEach(function(radio) {
+  radio.addEventListener('change', function() {
+    var name = this.name;
+    var corrInput = document.getElementsByName(name + '_correction')[0];
+    if (corrInput) {
+      corrInput.disabled = (this.value === 'ok');
+      if (this.value === 'wrong') corrInput.focus();
+    }
+  });
+});
+
+function proceed(mode) {
+  var refutations = [];
+  var assumptionCount = ${(quickAnalysis.keyAssumptions || []).length};
+
+  for (var i = 0; i < assumptionCount; i++) {
+    var radios = document.getElementsByName('a' + i);
+    var status = 'ok';
+    for (var r = 0; r < radios.length; r++) {
+      if (radios[r].checked) { status = radios[r].value; break; }
+    }
+    var corrInput = document.getElementsByName('a' + i + '_correction')[0];
+    var correction = corrInput ? corrInput.value.trim() : '';
+    if (status === 'wrong') {
+      refutations.push({ index: i, correction: correction });
+    }
+  }
+
+  var extraContext = document.getElementById('extraContext').value.trim();
+
+  var payload = {
+    refutations: refutations,
+    extraContext: extraContext
+  };
+
+  // Show spinner, hide form
+  document.getElementById('formContent').classList.add('hidden');
+  document.getElementById('spinner').classList.add('active');
+
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) {
+      document.getElementById('formContent').classList.remove('hidden');
+      document.getElementById('spinner').classList.remove('active');
+      alert('Error: ' + e.message);
+    })
+    .inboxReviewProceedFromPreview(JSON.stringify(payload));
+}
+</script>
+</body></html>`;
+
+    const previewDialog = HtmlService.createHtmlOutput(previewHtml).setWidth(650).setHeight(550);
+    ui.showModalDialog(previewDialog, `📋 Quick Analysis — ${vendor}`);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Called from the Phase 1 preview dialog — generates the full Q&A review,
+ * incorporating any refutations/corrections the user provided.
+ */
+function inboxReviewProceedFromPreview(payloadJson) {
+  const payload = JSON.parse(payloadJson);
+  const stored = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_PREVIEW') || '{}'
+  );
+  if (!stored.vendor) throw new Error('No preview data found. Please start a new review.');
+
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const apiKey = getClaudeApiKey_();
+
+  // Build refutation context for the full analysis prompt
+  let refutationBlock = '';
+  if (payload.refutations && payload.refutations.length > 0) {
+    const assumptions = stored.quickAnalysis.keyAssumptions || [];
+    const lines = payload.refutations.map(r => {
+      const original = assumptions[r.index] || '(unknown assumption)';
+      return `- AI assumed: "${original}" → USER CORRECTION: ${r.correction || '(marked as wrong, no detail given)'}`;
+    });
+    refutationBlock = `\nUSER CORRECTIONS TO AI ASSUMPTIONS:\n${lines.join('\n')}\nIMPORTANT: The assumptions above were WRONG. Adjust your analysis accordingly.\n`;
+  }
+  if (payload.extraContext) {
+    refutationBlock += `\nADDITIONAL USER CONTEXT:\n${payload.extraContext}\n`;
+  }
+
+  // Phase 2: Full analysis with corrections incorporated
+  const phase2Prompt = `You are helping Andy, a vendor relationship manager at Profitise (lead generation in Home Services and Solar), review a vendor.
+
+VENDOR: ${stored.vendor}
+STATUS: ${stored.status}
+CURRENT NOTES: ${stored.currentNotes || '(none)'}
+
+CONTACTS:
+${stored.contactSummary}
+
+LIVE VERTICALS: ${stored.liveVerticals}
+LIVE MODALITIES: ${stored.liveModalities}
+STATES: ${stored.states}
+
+TASKS (${stored.openTaskCount} open, ${stored.completedTaskCount} completed):
+${stored.taskSummary}
+
+UNSNOOZED EMAILS (${stored.unsnoozedCount} threads, ${stored.overdueCount} overdue):
+${stored.emailContext}
+${stored.vendorHints ? '\nPREVIOUS CORRECTIONS FROM USER (from past reviews):\n' + stored.vendorHints : ''}
+
+QUICK ANALYSIS SUMMARY (already reviewed by user):
+${stored.quickAnalysis.vendorSummary}
+${refutationBlock}
+Provide your analysis in this EXACT JSON format (no markdown, just raw JSON):
+{
+  "vendorSummary": "2-3 sentence summary of overall vendor state and trajectory (incorporate any user corrections)",
   "questions": [
     {"q": "A true/false question about the vendor relationship", "suggestedAnswer": true, "reasoning": "Why you think this"},
     {"q": "Another true/false question", "suggestedAnswer": false, "reasoning": "Why you think this"},
@@ -20236,65 +20493,63 @@ Provide your analysis in this EXACT JSON format (no markdown, just raw JSON):
 
 IMPORTANT:
 - Questions should be specific to THIS vendor's data, not generic
+- If the user corrected any assumptions, make sure your questions and analysis reflect the CORRECTED understanding
 - Blocker should be the single most important next action
 - Todos should be concrete and actionable
 - Notes should be fresh, not repeating existing notes`;
 
+  ss.toast('Generating full review...', '🤖 Processing', 10);
+
+  const response = callClaudeAPI_(phase2Prompt, apiKey, { maxTokens: 1500, model: 'claude-haiku-4-5-20251001' });
+
+  if (response.error) throw new Error(`Claude API Error: ${response.error}`);
+
+  let analysis;
   try {
-    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 1500, model: 'claude-haiku-4-5-20251001' });
+    let jsonStr = response.content.trim();
+    jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+    analysis = JSON.parse(jsonStr);
+  } catch (parseErr) {
+    throw new Error(`Could not parse Claude's response as JSON: ${response.content.substring(0, 300)}`);
+  }
 
-    if (response.error) {
-      ui.alert(`Claude API Error: ${response.error}`);
-      return;
-    }
+  // Store analysis in script properties for the save callback
+  const reviewData = {
+    vendor: stored.vendor,
+    listRow: stored.listRow,
+    status: stored.status,
+    currentNotes: stored.currentNotes,
+    analysis: analysis,
+    refutations: refutationBlock,
+    timestamp: new Date().toISOString()
+  };
+  PropertiesService.getScriptProperties().setProperty(
+    'INBOX_REVIEW_DATA', JSON.stringify(reviewData)
+  );
+  PropertiesService.getScriptProperties().deleteProperty('INBOX_REVIEW_PREVIEW');
 
-    // Parse JSON from Claude's response
-    let analysis;
-    try {
-      // Strip any markdown code fences if present
-      let jsonStr = response.content.trim();
-      jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-      analysis = JSON.parse(jsonStr);
-    } catch (parseErr) {
-      ui.alert(`Could not parse Claude's response as JSON.\n\nRaw response:\n${response.content.substring(0, 500)}`);
-      return;
-    }
+  // Build the full review dialog HTML (Phase 2)
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-    // Store analysis in script properties for the dialog callbacks
-    const reviewData = {
-      vendor: vendor,
-      listRow: listRow,
-      status: status,
-      currentNotes: currentNotes,
-      analysis: analysis,
-      timestamp: new Date().toISOString()
-    };
-    PropertiesService.getScriptProperties().setProperty(
-      'INBOX_REVIEW_DATA', JSON.stringify(reviewData)
-    );
-
-    // Build the review dialog HTML
-    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-    const questionsHtml = (analysis.questions || []).map((q, i) => `
-      <div class="question">
-        <div class="q-text">${esc(q.q)}</div>
-        <div class="q-reasoning"><em>AI thinks: ${esc(q.reasoning)}</em></div>
-        <div class="q-controls">
-          <label><input type="radio" name="q${i}" value="true" ${q.suggestedAnswer ? 'checked' : ''}> True</label>
-          <label><input type="radio" name="q${i}" value="false" ${!q.suggestedAnswer ? 'checked' : ''}> False</label>
-          <input type="text" name="q${i}_note" placeholder="Add a note (optional)" class="q-note">
-        </div>
+  const questionsHtml = (analysis.questions || []).map((q, i) => `
+    <div class="question">
+      <div class="q-text">${esc(q.q)}</div>
+      <div class="q-reasoning"><em>AI thinks: ${esc(q.reasoning)}</em></div>
+      <div class="q-controls">
+        <label><input type="radio" name="q${i}" value="true" ${q.suggestedAnswer ? 'checked' : ''}> True</label>
+        <label><input type="radio" name="q${i}" value="false" ${!q.suggestedAnswer ? 'checked' : ''}> False</label>
+        <input type="text" name="q${i}_note" placeholder="Add a note (optional)" class="q-note">
       </div>
-    `).join('');
+    </div>
+  `).join('');
 
-    const todosHtml = (analysis.todos || []).map((t, i) => `
-      <div class="todo-item">
-        <label><input type="checkbox" name="todo${i}" checked> ${esc(t)}</label>
-      </div>
-    `).join('');
+  const todosHtml = (analysis.todos || []).map((t, i) => `
+    <div class="todo-item">
+      <label><input type="checkbox" name="todo${i}" checked> ${esc(t)}</label>
+    </div>
+  `).join('');
 
-    const htmlContent = `<!DOCTYPE html>
+  const htmlContent = `<!DOCTYPE html>
 <html><head>
 <style>
   * { box-sizing: border-box; }
@@ -20326,7 +20581,7 @@ IMPORTANT:
 </head><body>
 <div class="container">
   <h2>📋 Inbox Review</h2>
-  <span class="vendor-badge">${esc(vendor)} — ${esc(status)}</span>
+  <span class="vendor-badge">${esc(stored.vendor)} — ${esc(stored.status)}</span>
 
   <div class="summary">${esc(analysis.vendorSummary)}</div>
 
@@ -20400,12 +20655,8 @@ function submitReview() {
 </script>
 </body></html>`;
 
-    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(700).setHeight(750);
-    ui.showModalDialog(html, `📋 Inbox Review — ${vendor}`);
-
-  } catch (e) {
-    ui.alert(`Error: ${e.message}`);
-  }
+  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(700).setHeight(750);
+  ui.showModalDialog(html, `📋 Inbox Review — ${stored.vendor}`);
 }
 
 /**
