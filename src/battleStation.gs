@@ -13975,15 +13975,17 @@ function createBlockerFromSuggestion(blockerText) {
   const newItemId = dupResult.data?.duplicate_item?.id;
   if (!newItemId) throw new Error('Failed to duplicate template item.');
 
-  // Step 2: Rename the item to vendor name
+  // Step 2: Rename the item to "blockerText - vendorName"
+  const escapedBlockerTitle = blockerText.replace(/"/g, '\\"');
   const escapedVendor = vendor.replace(/"/g, '\\"');
+  const taskTitle = `${escapedBlockerTitle} - ${escapedVendor}`;
   const renameMutation = `
     mutation {
       change_simple_column_value (
         board_id: ${boardId},
         item_id: ${newItemId},
         column_id: "name",
-        value: "${escapedVendor}"
+        value: "${taskTitle}"
       ) { id }
     }
   `;
@@ -14014,15 +14016,42 @@ function createBlockerFromSuggestion(blockerText) {
   `;
   mondayApiRequest_(notesMutation, apiToken);
 
-  // Step 5: Link the vendor item via board relation
+  // Step 5: Set Scope to "Int/Ext" — discover scope column dynamically
+  const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type title } } }`;
+  const colsResult = mondayApiRequest_(colsQuery, apiToken);
+  const cols = colsResult.data?.items?.[0]?.column_values || [];
+
+  let scopeColumnId = null;
+  for (const col of cols) {
+    if ((col.title || '').toLowerCase() === 'scope') {
+      scopeColumnId = col.id;
+      break;
+    }
+  }
+
+  if (scopeColumnId) {
+    const scopeValue = JSON.stringify({ label: 'Int/Ext' }).replace(/"/g, '\\"');
+    const scopeMutation = `
+      mutation {
+        change_column_value (
+          board_id: ${boardId},
+          item_id: ${newItemId},
+          column_id: "${scopeColumnId}",
+          value: "${scopeValue}"
+        ) { id }
+      }
+    `;
+    mondayApiRequest_(scopeMutation, apiToken);
+    Logger.log(`Set Scope to "Int/Ext" via column ${scopeColumnId}`);
+  } else {
+    Logger.log('Scope column not found on Tasks board');
+  }
+
+  // Step 6: Link the vendor item via board relation
   const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
   const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
 
   if (vendorItemId) {
-    const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type } } }`;
-    const colsResult = mondayApiRequest_(colsQuery, apiToken);
-    const cols = colsResult.data?.items?.[0]?.column_values || [];
-
     for (const col of cols) {
       if (col.type === 'board_relation' && col.id !== BS_CFG.TASKS_PROJECT_COLUMN) {
         const linkMutation = `
