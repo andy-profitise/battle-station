@@ -366,6 +366,9 @@ function onOpen() {
     .addItem('🎯 Manage Goals', 'battleStationManageGoals')
     .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
     .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
+    .addSeparator()
+    .addItem('🔮 Dismiss Crystal Ball Action...', 'dismissCrystalBallAction')
+    .addItem('🔮 Clear Dismissed Actions', 'clearDismissedCrystalBallActions')
     .addToUi();
 
   // Check for pending vendor from URL deep link
@@ -5638,6 +5641,18 @@ function getCrystalBallData_(vendor, listRow, options) {
       `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
     ).join('\n\n');
 
+    // Load user standing instructions and dismissed actions
+    const standingInstructions = getCrystalBallInstructions_();
+    const dismissedActions = getDismissedCrystalBallActions_(vendor);
+
+    const standingCtx = standingInstructions.length > 0
+      ? '\n\nUSER STANDING INSTRUCTIONS (always follow these):\n' + standingInstructions.map((s, i) => `${i+1}. ${s}`).join('\n')
+      : '';
+
+    const dismissedCtx = dismissedActions.length > 0
+      ? '\n\nDISMISSED ACTIONS (user said these are NOT relevant — do NOT re-suggest):\n' + dismissedActions.map((d, i) => `${i+1}. "${d.description}" — Reason: ${d.reason}`).join('\n')
+      : '';
+
     // Call Claude for analysis with full vendor context
     // Prompt optimized for speed: concise instructions, structured data, minimal examples
     const prompt = `Analyze vendor "${vendor}" — what's OUTSTANDING and what are next actions?
@@ -5652,7 +5667,7 @@ BLOCKERS: ${blockerContext}
 OPEN TASKS: ${openTaskContext}
 COMPLETED (don't re-suggest): ${completedTaskContext}
 INBOX EMAILS: ${emailContext || 'None'}
-SNOOZED: ${snoozedContext || 'None'}
+SNOOZED: ${snoozedContext || 'None'}${standingCtx}${dismissedCtx}
 
 Cross-reference emails with blockers/tasks. Check if blockers appear resolved by emails or completed tasks.
 
@@ -5751,6 +5766,231 @@ SUGGESTED_ACTION: <what to do> | <us or vendor> | <related blocker/task>`;
     Logger.log(`[Crystal Ball] Error: ${e.message}`);
     return { items: [], snoozed: [], summary: '', suggestedActions: [], error: e.message };
   }
+}
+
+/**
+ * Get Crystal Ball standing instructions from Settings sheet.
+ * These are user-provided rules that shape how Crystal Ball interprets data
+ * (e.g., "Snoozed items are intentionally deferred", "Returns are handled ad hoc").
+ *
+ * Settings sheet format (Crystal Ball Instructions section):
+ * Row: "Crystal Ball Instructions" | (empty)
+ * Row: "Instruction"              | (empty)
+ * Row: "Snoozed items are intentionally deferred - don't flag as urgent or suggest follow-up" | (empty)
+ * Row: "Returns processing is handled ad hoc - don't suggest scheduling reminders" | (empty)
+ */
+function getCrystalBallInstructions_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return [];
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const instructions = [];
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'crystal ball instructions') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const cell = String(data[i][startCol] || '').trim();
+
+    // Skip header row
+    if (cell.toLowerCase() === 'instruction') {
+      continue;
+    }
+
+    // Exit on empty row
+    if (cell === '') {
+      break;
+    }
+
+    instructions.push(cell);
+  }
+
+  return instructions;
+}
+
+/**
+ * Get dismissed Crystal Ball actions for a vendor.
+ * Stored in BS_Cache sheet under key "CB_DISMISSED_<vendor>".
+ * Returns array of { description, reason, dismissedAt }.
+ */
+function getDismissedCrystalBallActions_(vendor) {
+  const ss = SpreadsheetApp.getActive();
+  const cacheSh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
+  if (!cacheSh) return [];
+
+  const cacheKey = 'CB_DISMISSED_' + vendor.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const data = cacheSh.getDataRange().getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0] || '') === cacheKey) {
+      try {
+        return JSON.parse(data[i][1]);
+      } catch (e) {
+        return [];
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * Save dismissed Crystal Ball actions for a vendor.
+ */
+function saveDismissedCrystalBallActions_(vendor, dismissed) {
+  const ss = SpreadsheetApp.getActive();
+  let cacheSh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
+  if (!cacheSh) return;
+
+  const cacheKey = 'CB_DISMISSED_' + vendor.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const data = cacheSh.getDataRange().getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0] || '') === cacheKey) {
+      cacheSh.getRange(i + 1, 2).setValue(JSON.stringify(dismissed));
+      return;
+    }
+  }
+
+  // New entry
+  const newRow = cacheSh.getLastRow() + 1;
+  cacheSh.getRange(newRow, 1, 1, 2).setValues([[cacheKey, JSON.stringify(dismissed)]]);
+}
+
+/**
+ * Dismiss a Crystal Ball suggested action with a reason.
+ * Menu-driven: scans the A(I)DEN sheet for suggested actions, presents a numbered list,
+ * and prompts for a reason. The dismissal is stored so Crystal Ball won't re-suggest it.
+ */
+function dismissCrystalBallAction() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  if (!bsSh) return;
+
+  // Get current vendor
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return;
+  const currentIndex = getCurrentVendorIndex_();
+  const vendor = String(listSh.getRange(currentIndex + 1, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  if (!vendor) { ui.alert('No vendor loaded.'); return; }
+
+  // Scan for suggested actions in the sheet (look for rows with action icons after SUGGESTED ACTIONS header)
+  const dataRange = bsSh.getDataRange();
+  const values = dataRange.getValues();
+  const actions = [];
+  let inActionSection = false;
+
+  for (let i = 0; i < values.length; i++) {
+    const cellF = String(values[i][5] || '').trim(); // Column F (0-indexed = 5)
+    if (cellF === '⚡ SUGGESTED ACTIONS') {
+      inActionSection = true;
+      continue;
+    }
+    if (inActionSection) {
+      if (cellF.startsWith('👤') || cellF.startsWith('👈')) {
+        actions.push({ row: i + 1, text: cellF.replace(/^[👤👈]\s*/, '') });
+      } else {
+        break; // End of action section
+      }
+    }
+  }
+
+  if (actions.length === 0) {
+    ui.alert('No suggested actions found for this vendor.\n\nLoad a vendor first, then try again.');
+    return;
+  }
+
+  // Present numbered list
+  const listText = actions.map((a, i) => `${i + 1}. ${a.text}`).join('\n');
+  const pickResponse = ui.prompt(
+    '🔮 Dismiss Suggested Action',
+    `Which action to dismiss? Enter the number:\n\n${listText}`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (pickResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const pickNum = parseInt(pickResponse.getResponseText().trim(), 10);
+  if (isNaN(pickNum) || pickNum < 1 || pickNum > actions.length) {
+    ui.alert(`Invalid selection. Enter a number between 1 and ${actions.length}.`);
+    return;
+  }
+
+  const chosen = actions[pickNum - 1];
+
+  // Ask for reason
+  const reasonResponse = ui.prompt(
+    '💬 Why dismiss this?',
+    `"${chosen.text}"\n\nProvide context so Crystal Ball understands (e.g., "handled ad hoc", "snoozed = not due yet"):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (reasonResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const reason = reasonResponse.getResponseText().trim();
+  if (!reason) {
+    ui.alert('Please provide a reason so Crystal Ball can learn from it.');
+    return;
+  }
+
+  // Store dismissal
+  const dismissed = getDismissedCrystalBallActions_(vendor);
+  dismissed.push({
+    description: chosen.text,
+    reason: reason,
+    dismissedAt: new Date().toISOString().split('T')[0]
+  });
+  saveDismissedCrystalBallActions_(vendor, dismissed);
+
+  // Visual feedback - strike through the action
+  bsSh.getRange(chosen.row, 6, 1, 4).merge()
+    .setValue('✅ Dismissed: ' + chosen.text)
+    .setFontColor('#999999')
+    .setFontStyle('italic');
+
+  ss.toast(`Action dismissed. Crystal Ball will factor in: "${reason}"`, '💬 Noted', 3);
+}
+
+/**
+ * Clear all dismissed Crystal Ball actions for the current vendor.
+ * Use this to reset if your workflow changes.
+ */
+function clearDismissedCrystalBallActions() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return;
+  const currentIndex = getCurrentVendorIndex_();
+  const vendor = String(listSh.getRange(currentIndex + 1, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  if (!vendor) { ui.alert('No vendor loaded.'); return; }
+
+  const dismissed = getDismissedCrystalBallActions_(vendor);
+  if (dismissed.length === 0) {
+    ui.alert(`No dismissed actions for ${vendor}.`);
+    return;
+  }
+
+  const confirm = ui.alert(
+    'Clear Dismissed Actions',
+    `Clear ${dismissed.length} dismissed action(s) for ${vendor}?\n\nCrystal Ball will start suggesting these again.`,
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  saveDismissedCrystalBallActions_(vendor, []);
+  ss.toast(`Cleared all dismissed actions for ${vendor}.`, '🔮 Reset', 3);
 }
 
 /**
