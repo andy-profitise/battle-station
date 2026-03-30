@@ -10722,14 +10722,11 @@ function inboxModeNext() {
     }
   }
 
-  // Show dialog for unlabeled inbox emails so user can fix them
-  if (unlabeledThreads.length > 0) {
-    showUnlabeledEmailsDialog_(unlabeledThreads);
-  }
-
   if (vendorThreads.length === 0) {
     if (unlabeledThreads.length === 0) {
       ui.alert('No Vendor Emails', 'No inbox emails found with vendor labels (zzzVendors/).', ui.ButtonSet.OK);
+    } else {
+      showUnlabeledEmailsDialog_(unlabeledThreads);
     }
     return;
   }
@@ -10739,6 +10736,20 @@ function inboxModeNext() {
 
   // Get the oldest one
   const oldest = vendorThreads[0];
+
+  // Show unlabeled dialog only if the next email after the current one is unlabeled
+  if (unlabeledThreads.length > 0) {
+    const currentDate = oldest.date;
+    // Find the next thread chronologically after the current vendor thread
+    const allOtherThreads = [
+      ...vendorThreads.slice(1).map(t => ({ ...t, hasVendorLabel: true })),
+      ...unlabeledThreads.map(t => ({ ...t, hasVendorLabel: false }))
+    ];
+    allOtherThreads.sort((a, b) => a.date - b.date);
+    if (allOtherThreads.length > 0 && !allOtherThreads[0].hasVendorLabel) {
+      showUnlabeledEmailsDialog_(unlabeledThreads);
+    }
+  }
   Logger.log(`Inbox Mode: Found ${vendorThreads.length} vendor emails. Oldest: ${oldest.vendorName} (${oldest.date})`);
 
   // Find vendor in list
