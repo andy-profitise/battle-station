@@ -10677,8 +10677,9 @@ function inboxModeNext() {
     return;
   }
 
-  // Find all threads with zzzVendors labels
+  // Find all threads with zzzVendors labels, and track unlabeled ones
   const vendorThreads = [];
+  const unlabeledThreads = [];
 
   for (const thread of threads) {
     // Check if last message is from me - skip if so
@@ -10693,6 +10694,7 @@ function inboxModeNext() {
 
     // Check for zzzVendors label
     const labels = thread.getLabels();
+    let hasVendorLabel = false;
     for (const label of labels) {
       const labelName = label.getName();
       if (labelName.startsWith('zzzVendors/')) {
@@ -10704,13 +10706,31 @@ function inboxModeNext() {
           date: thread.getLastMessageDate(),
           messageCount: thread.getMessageCount()
         });
+        hasVendorLabel = true;
         break; // Only need one vendor label per thread
       }
     }
+
+    // Track inbox emails missing a zzzVendors sublabel
+    if (!hasVendorLabel) {
+      unlabeledThreads.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        from: thread.getMessages()[0] ? thread.getMessages()[thread.getMessages().length - 1].getFrom() : '',
+        date: thread.getLastMessageDate()
+      });
+    }
+  }
+
+  // Show dialog for unlabeled inbox emails so user can fix them
+  if (unlabeledThreads.length > 0) {
+    showUnlabeledEmailsDialog_(unlabeledThreads);
   }
 
   if (vendorThreads.length === 0) {
-    ui.alert('No Vendor Emails', 'No inbox emails found with vendor labels (zzzVendors/).', ui.ButtonSet.OK);
+    if (unlabeledThreads.length === 0) {
+      ui.alert('No Vendor Emails', 'No inbox emails found with vendor labels (zzzVendors/).', ui.ButtonSet.OK);
+    }
     return;
   }
 
@@ -10763,6 +10783,63 @@ function inboxModeNext() {
     `${vendorThreads.length} vendor email(s) in inbox total.`,
     ui.ButtonSet.OK
   );
+}
+
+/**
+ * Show a dialog listing inbox emails that are missing a zzzVendors sublabel
+ * Each email is shown with a clickable Gmail link so the user can label it
+ * @param {Array} unlabeledThreads - Array of {threadId, subject, from, date}
+ */
+function showUnlabeledEmailsDialog_(unlabeledThreads) {
+  const maxToShow = 20;
+  const threadsToShow = unlabeledThreads.slice(0, maxToShow);
+
+  let rows = '';
+  for (const thread of threadsToShow) {
+    const gmailUrl = `https://mail.google.com/mail/u/0/#inbox/${thread.threadId}`;
+    const subject = (thread.subject || '(no subject)').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const from = (thread.from || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const dateStr = thread.date ? thread.date.toLocaleDateString() : '';
+
+    rows += `
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid #e0e0e0;">
+          <a href="${gmailUrl}" target="_blank" style="color:#1a73e8; text-decoration:none; font-weight:500;">${subject}</a>
+          <div style="font-size:11px; color:#666; margin-top:2px;">${from}</div>
+        </td>
+        <td style="padding:6px 8px; border-bottom:1px solid #e0e0e0; white-space:nowrap; color:#666; font-size:12px;">${dateStr}</td>
+      </tr>`;
+  }
+
+  const moreNote = unlabeledThreads.length > maxToShow
+    ? `<p style="color:#999; font-size:12px;">...and ${unlabeledThreads.length - maxToShow} more</p>`
+    : '';
+
+  const html = `
+    <html>
+    <body style="font-family: Google Sans, Roboto, Arial, sans-serif; padding: 16px; margin: 0;">
+      <p style="margin:0 0 12px 0; color:#333;">
+        These inbox emails are missing a <strong>zzzVendors</strong> sublabel. Click to open and label them:
+      </p>
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="background:#f5f5f5;">
+            <th style="text-align:left; padding:8px; border-bottom:2px solid #ddd;">Subject / From</th>
+            <th style="text-align:left; padding:8px; border-bottom:2px solid #ddd;">Date</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${moreNote}
+      <div style="text-align:right; margin-top:16px;">
+        <button onclick="google.script.host.close()" style="padding:8px 24px; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px;">Got it</button>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(600).setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '⚠️ Inbox Emails Missing Vendor Label');
 }
 
 /**
@@ -13975,15 +14052,17 @@ function createBlockerFromSuggestion(blockerText) {
   const newItemId = dupResult.data?.duplicate_item?.id;
   if (!newItemId) throw new Error('Failed to duplicate template item.');
 
-  // Step 2: Rename the item to vendor name
+  // Step 2: Rename the item to "blockerText - vendorName"
+  const escapedBlockerTitle = blockerText.replace(/"/g, '\\"');
   const escapedVendor = vendor.replace(/"/g, '\\"');
+  const taskTitle = `${escapedBlockerTitle} - ${escapedVendor}`;
   const renameMutation = `
     mutation {
       change_simple_column_value (
         board_id: ${boardId},
         item_id: ${newItemId},
         column_id: "name",
-        value: "${escapedVendor}"
+        value: "${taskTitle}"
       ) { id }
     }
   `;
@@ -14014,15 +14093,42 @@ function createBlockerFromSuggestion(blockerText) {
   `;
   mondayApiRequest_(notesMutation, apiToken);
 
-  // Step 5: Link the vendor item via board relation
+  // Step 5: Set Scope to "Int/Ext" — discover scope column dynamically
+  const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type title } } }`;
+  const colsResult = mondayApiRequest_(colsQuery, apiToken);
+  const cols = colsResult.data?.items?.[0]?.column_values || [];
+
+  let scopeColumnId = null;
+  for (const col of cols) {
+    if ((col.title || '').toLowerCase() === 'scope') {
+      scopeColumnId = col.id;
+      break;
+    }
+  }
+
+  if (scopeColumnId) {
+    const scopeValue = JSON.stringify({ label: 'Int/Ext' }).replace(/"/g, '\\"');
+    const scopeMutation = `
+      mutation {
+        change_column_value (
+          board_id: ${boardId},
+          item_id: ${newItemId},
+          column_id: "${scopeColumnId}",
+          value: "${scopeValue}"
+        ) { id }
+      }
+    `;
+    mondayApiRequest_(scopeMutation, apiToken);
+    Logger.log(`Set Scope to "Int/Ext" via column ${scopeColumnId}`);
+  } else {
+    Logger.log('Scope column not found on Tasks board');
+  }
+
+  // Step 6: Link the vendor item via board relation
   const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
   const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
 
   if (vendorItemId) {
-    const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type } } }`;
-    const colsResult = mondayApiRequest_(colsQuery, apiToken);
-    const cols = colsResult.data?.items?.[0]?.column_values || [];
-
     for (const col of cols) {
       if (col.type === 'board_relation' && col.id !== BS_CFG.TASKS_PROJECT_COLUMN) {
         const linkMutation = `
