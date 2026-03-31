@@ -167,6 +167,44 @@ class GmailClient:
             for t in threads
         ]
 
+    def get_vendor_open_emails(self, vendor_slug: str, max_results: int = 50) -> list[EmailThread]:
+        """
+        Get open/unsolved emails for a vendor: label:00.received AND label:zzzvendors-{slug}
+        within the last 90 days. These are problems that still need solving.
+        """
+        label_name = f"zzzvendors-{vendor_slug}"
+        query = f"label:{label_name} label:00.received newer_than:90d"
+        threads = self.search_threads(query, max_results=max_results)
+        return [
+            EmailThread(
+                thread_id=t["thread_id"],
+                subject=t["subject"],
+                snippet=t["snippet"],
+                from_addr=t.get("from", ""),
+                labels=t.get("labels", []),
+            )
+            for t in threads
+        ]
+
+    def get_vendor_resolved_emails(self, vendor_slug: str, max_results: int = 20) -> list[EmailThread]:
+        """
+        Get resolved/handled emails for a vendor: label:zzzvendors-{slug} but NOT label:00.received.
+        These have already been dealt with and provide context on how we've handled past issues.
+        """
+        label_name = f"zzzvendors-{vendor_slug}"
+        query = f"label:{label_name} -label:00.received newer_than:90d"
+        threads = self.search_threads(query, max_results=max_results)
+        return [
+            EmailThread(
+                thread_id=t["thread_id"],
+                subject=t["subject"],
+                snippet=t["snippet"],
+                from_addr=t.get("from", ""),
+                labels=t.get("labels", []),
+            )
+            for t in threads
+        ]
+
     def _extract_body(self, payload: dict) -> str:
         """Extract text body from a message payload."""
         if payload.get("mimeType") == "text/plain":

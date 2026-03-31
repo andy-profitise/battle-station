@@ -160,8 +160,10 @@ class VendorContext:
     monday_contacts: list[dict[str, Any]] = field(default_factory=list)
     monday_helpful_links: list[dict[str, Any]] = field(default_factory=list)
 
-    # Gmail - recent threads (not the trigger itself)
-    recent_emails: list[EmailThread] = field(default_factory=list)
+    # Gmail - split by resolution status
+    recent_emails: list[EmailThread] = field(default_factory=list)          # Legacy: all recent
+    open_emails: list[EmailThread] = field(default_factory=list)            # label:00.received (unsolved, last 90 days)
+    resolved_emails: list[EmailThread] = field(default_factory=list)        # vendor label but NOT 00.received (handled)
 
     # Calendar
     upcoming_meetings: list[CalendarEvent] = field(default_factory=list)
@@ -171,6 +173,9 @@ class VendorContext:
 
     # Airtable
     contracts: list[AirtableContract] = field(default_factory=list)
+
+    # Vendor-specific instructions (corrections / learnings from past mistakes)
+    vendor_instructions: str | None = None
 
     # Computed
     last_contact_date: datetime | None = None
@@ -192,6 +197,10 @@ class VendorContext:
         if self.upcoming_meetings:
             next_meeting = self.upcoming_meetings[0]
             parts.append(f"Next meeting: {next_meeting.summary} on {next_meeting.start}")
+        if self.open_emails:
+            parts.append(f"Open emails (00.received): {len(self.open_emails)}")
+        if self.resolved_emails:
+            parts.append(f"Resolved emails: {len(self.resolved_emails)}")
         if self.recent_emails:
             parts.append(f"Recent emails: {len(self.recent_emails)} threads")
         if self.contracts:
@@ -239,6 +248,10 @@ class SituationalAssessment:
     urgency: str = ""           # low, medium, high, critical
     sentiment: str = ""         # positive, neutral, negative, adversarial
     key_facts: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)          # Questions arising from the new email
+    resolution_plan: list[str] = field(default_factory=list)    # Steps to solve the issues
+    can_resolve_now: bool = False                               # True = do it now, False = defer and notify client
+    defer_reason: str = ""                                      # Why we're deferring (if applicable)
 
 
 @dataclass

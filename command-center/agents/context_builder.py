@@ -8,7 +8,9 @@ this work item.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
+from pathlib import Path
 
 from core.models import VendorContext
 from integrations.gmail import GmailClient
@@ -19,6 +21,9 @@ from integrations.airtable import AirtableClient
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+# Directory for per-vendor instruction files (corrections / learnings)
+VENDOR_INSTRUCTIONS_DIR = Path(__file__).parent.parent / "vendor-instructions"
 
 
 class ContextBuilder:
@@ -44,27 +49,32 @@ class ContextBuilder:
 
         Order matters - we gather from most reliable/fast to least:
         1. Monday.com (status, tasks, notes, contacts)
-        2. Gmail (recent threads, excluding the trigger)
-        3. Calendar (upcoming meetings)
-        4. Box.com (documents)
-        5. Airtable (contracts)
+        2. Gmail - open emails (00.received, last 90 days = unsolved problems)
+        3. Gmail - resolved emails (vendor label, no 00.received = already handled)
+        4. Calendar (upcoming meetings)
+        5. Box.com (documents)
+        6. Airtable (contracts)
+        7. Vendor instructions (per-vendor corrections/learnings)
         """
         ctx = VendorContext(vendor_name=vendor_name, vendor_slug=vendor_slug)
 
         # 1. Monday.com - try both buyer and affiliate boards
         self._load_monday_data(ctx)
 
-        # 2. Gmail - recent threads for this vendor
+        # 2 & 3. Gmail - split into open vs resolved
         self._load_email_history(ctx)
 
-        # 3. Calendar
+        # 4. Calendar
         self._load_calendar(ctx)
 
-        # 4. Box.com
+        # 5. Box.com
         self._load_box_docs(ctx)
 
-        # 5. Airtable contracts
+        # 6. Airtable contracts
         self._load_contracts(ctx)
+
+        # 7. Vendor-specific instructions
+        self._load_vendor_instructions(ctx)
 
         # Compute derived fields
         self._compute_derived(ctx)
@@ -109,11 +119,35 @@ class ContextBuilder:
             logger.warning(f"Failed to load Monday.com data for {ctx.vendor_name}: {e}")
 
     def _load_email_history(self, ctx: VendorContext) -> None:
-        """Load recent email threads for this vendor."""
+        """
+        Load email threads for this vendor, split by resolution status.
+
+        - open_emails: label:00.received (last 90 days) — unsolved problems
+        - resolved_emails: vendor label but NOT 00.received — already handled
+        - recent_emails: kept for backward compat (all vendor threads)
+        """
         try:
-            ctx.recent_emails = self.gmail.get_vendor_threads(ctx.vendor_slug, max_results=10)
+            ctx.open_emails = self.gmail.get_vendor_open_emails(
+                ctx.vendor_slug, max_results=50
+            )
+            logger.info(
+                f"  {ctx.vendor_name}: {len(ctx.open_emails)} open emails (00.received)"
+            )
         except Exception as e:
-            logger.warning(f"Failed to load email history for {ctx.vendor_name}: {e}")
+            logger.warning(f"Failed to load open emails for {ctx.vendor_name}: {e}")
+
+        try:
+            ctx.resolved_emails = self.gmail.get_vendor_resolved_emails(
+                ctx.vendor_slug, max_results=20
+            )
+            logger.info(
+                f"  {ctx.vendor_name}: {len(ctx.resolved_emails)} resolved emails"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to load resolved emails for {ctx.vendor_name}: {e}")
+
+        # Backward compat: merge into recent_emails
+        ctx.recent_emails = ctx.open_emails + ctx.resolved_emails
 
     def _load_calendar(self, ctx: VendorContext) -> None:
         """Load upcoming meetings for this vendor."""
@@ -135,6 +169,26 @@ class ContextBuilder:
             ctx.contracts = self.airtable.get_vendor_contracts(ctx.vendor_name)
         except Exception as e:
             logger.warning(f"Failed to load contracts for {ctx.vendor_name}: {e}")
+
+    def _load_vendor_instructions(self, ctx: VendorContext) -> None:
+        """
+        Load per-vendor instructions from the vendor-instructions directory.
+
+        These are plain text files named by vendor slug (e.g., vendor-instructions/acme-corp.md).
+        They contain corrections and learnings from past mistakes so the system doesn't
+        repeat them. Users can edit these files directly to guide future processing.
+        """
+        instructions_file = VENDOR_INSTRUCTIONS_DIR / f"{ctx.vendor_slug}.md"
+        if instructions_file.exists():
+            try:
+                ctx.vendor_instructions = instructions_file.read_text().strip()
+                if ctx.vendor_instructions:
+                    logger.info(
+                        f"  Loaded vendor instructions for {ctx.vendor_name} "
+                        f"({len(ctx.vendor_instructions)} chars)"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to read instructions for {ctx.vendor_name}: {e}")
 
     def _compute_derived(self, ctx: VendorContext) -> None:
         """Compute derived fields from the gathered data."""

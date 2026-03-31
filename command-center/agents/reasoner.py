@@ -34,11 +34,44 @@ SYSTEM_PROMPT = """You are A(I)DEN, an AI vendor relationship manager for Profit
 You help manage vendor relationships by analyzing emails and vendor data, then
 recommending specific actions.
 
-Your job is to:
-1. Assess the current situation with this vendor
-2. Understand what the incoming email/message is about in context
-3. Recommend specific, actionable next steps
-4. Draft any emails that need to be sent
+## How Email Status Works
+
+- **Open emails (label:00.received)**: These are UNSOLVED problems. They landed in
+  the received queue and have not been handled yet. Each one represents something
+  that needs attention — a question, a request, a complaint, etc.
+- **Resolved emails (no 00.received label)**: These have already been dealt with.
+  They show how we've handled past issues with this vendor and give you patterns to
+  follow.
+
+## Your Job
+
+Given a vendor's full context (open problems, resolved history, tasks, meetings,
+documents, contracts) and a trigger (new email or message):
+
+1. **Present our stance**: What is our current position with this vendor? What do
+   we want from this relationship? What leverage or obligations do we have?
+
+2. **Identify questions**: What questions arise from the new email/trigger?
+   What information is missing? What do we need to clarify?
+
+3. **Analyze open problems**: Look at ALL open (00.received) emails. How do they
+   relate to each other? Is there a pattern? What's the priority order?
+
+4. **Create a resolution plan**: For each issue, how do we solve it? Be specific.
+   Reference supporting data from Monday.com tasks, calendar meetings, Box docs,
+   Airtable contracts, and Google Drive files.
+
+5. **Decide: do it now or defer**: Can we resolve this immediately (draft the email,
+   create the task, update the status)? Or do we need to tell the client what we're
+   planning and then process it later?
+
+6. **Draft actions**: Write the emails, create the tasks, update the notes.
+
+## Vendor-Specific Instructions
+
+If vendor instructions are provided, they represent corrections and learnings from
+past mistakes. ALWAYS follow these instructions — they override your default behavior.
+They exist because the system got something wrong before, and the human corrected it.
 
 You should be professional, proactive, and thorough. When drafting emails, match the
 tone of the existing relationship. Be concise but complete.
@@ -56,12 +89,17 @@ def _build_context_prompt(ctx: VendorContext, trigger_email: EmailThread | None,
     parts.append(f"Type: {ctx.vendor_type or 'Unknown'}")
     parts.append(f"Status: {ctx.monday_status or 'Unknown'}")
 
+    # Vendor-specific instructions (corrections / learnings)
+    if ctx.vendor_instructions:
+        parts.append(f"\n### VENDOR-SPECIFIC INSTRUCTIONS (MUST FOLLOW)")
+        parts.append(ctx.vendor_instructions)
+
     if ctx.monday_notes:
         parts.append(f"\n### Internal Notes\n{ctx.monday_notes}")
 
     # Tasks
     if ctx.monday_tasks:
-        parts.append("\n### Open Tasks")
+        parts.append("\n### Open Tasks (Monday.com)")
         for task in ctx.monday_tasks:
             status = task.status or "no status"
             due = f" (due: {task.due_date})" if task.due_date else ""
@@ -69,25 +107,48 @@ def _build_context_prompt(ctx: VendorContext, trigger_email: EmailThread | None,
 
     # Contacts
     if ctx.monday_contacts:
-        parts.append("\n### Contacts")
+        parts.append("\n### Contacts (Monday.com)")
         for contact in ctx.monday_contacts:
             parts.append(f"- {contact.get('name', 'Unknown')}: {contact.get('email', '')}")
 
     # Upcoming meetings
     if ctx.upcoming_meetings:
-        parts.append("\n### Upcoming Meetings")
+        parts.append("\n### Upcoming Meetings (Google Calendar)")
         for meeting in ctx.upcoming_meetings:
             parts.append(f"- {meeting.summary} on {meeting.start}")
+            if meeting.attendees:
+                parts.append(f"  Attendees: {', '.join(meeting.attendees)}")
 
-    # Recent email history (summaries only, not the trigger)
-    if ctx.recent_emails:
-        parts.append("\n### Recent Email History")
-        for email in ctx.recent_emails[:5]:
-            parts.append(f"- [{email.date}] {email.subject}: {email.snippet[:100]}")
+    # Open emails (00.received) — UNSOLVED problems
+    if ctx.open_emails:
+        parts.append(f"\n### OPEN EMAILS — {len(ctx.open_emails)} unsolved problems (label:00.received, last 90 days)")
+        parts.append("Each of these is an unresolved issue that needs attention:")
+        for i, email in enumerate(ctx.open_emails, 1):
+            parts.append(f"\n**Open #{i}**: {email.subject}")
+            parts.append(f"  From: {email.from_addr or 'unknown'} | Date: {email.date or 'unknown'}")
+            if email.snippet:
+                parts.append(f"  Preview: {email.snippet[:200]}")
+    else:
+        parts.append("\n### OPEN EMAILS: None (no 00.received emails in last 90 days)")
+
+    # Resolved emails — already handled, for pattern reference
+    if ctx.resolved_emails:
+        parts.append(f"\n### RESOLVED EMAILS — {len(ctx.resolved_emails)} handled threads (last 90 days)")
+        parts.append("These show how we've dealt with past issues:")
+        for email in ctx.resolved_emails[:10]:
+            parts.append(f"- {email.subject} (from: {email.from_addr or 'unknown'})")
+            if email.snippet:
+                parts.append(f"  {email.snippet[:150]}")
+
+    # Box.com documents
+    if ctx.box_documents:
+        parts.append(f"\n### Documents (Box.com)")
+        for doc in ctx.box_documents:
+            parts.append(f"- {doc.name} (modified: {doc.modified_at or 'unknown'})")
 
     # Contracts
     if ctx.contracts:
-        parts.append("\n### Contracts")
+        parts.append("\n### Contracts (Airtable)")
         for c in ctx.contracts:
             parts.append(f"- {c.contract_type}: {c.status} ({c.start_date} to {c.end_date})")
 
@@ -124,12 +185,48 @@ ACTION_SCHEMA = {
             "properties": {
                 "summary": {"type": "string", "description": "2-3 sentence summary of what's happening"},
                 "vendor_needs": {"type": "string", "description": "What the vendor wants/needs from us"},
-                "our_position": {"type": "string", "description": "Our current stance/position"},
+                "our_position": {
+                    "type": "string",
+                    "description": (
+                        "Our current stance/position. What do we want from this relationship? "
+                        "What leverage or obligations do we have? Be specific."
+                    ),
+                },
                 "urgency": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                 "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative", "adversarial"]},
                 "key_facts": {"type": "array", "items": {"type": "string"}},
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Questions arising from the new email/trigger. What information is missing? "
+                        "What do we need to clarify before we can fully resolve this?"
+                    ),
+                },
+                "resolution_plan": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Step-by-step plan to solve the issues. Reference supporting data "
+                        "(tasks, meetings, docs, contracts) where applicable."
+                    ),
+                },
+                "can_resolve_now": {
+                    "type": "boolean",
+                    "description": (
+                        "True if we can resolve this immediately (send email, create task, etc). "
+                        "False if we need to inform the client of our plan and process later."
+                    ),
+                },
+                "defer_reason": {
+                    "type": "string",
+                    "description": "If can_resolve_now is false, explain why we need to defer.",
+                },
             },
-            "required": ["summary", "vendor_needs", "our_position", "urgency", "sentiment"],
+            "required": [
+                "summary", "vendor_needs", "our_position", "urgency",
+                "sentiment", "questions", "resolution_plan", "can_resolve_now",
+            ],
         },
         "actions": {
             "type": "array",
@@ -189,11 +286,20 @@ class Reasoner:
                     "role": "user",
                     "content": (
                         f"{context_prompt}\n\n---\n\n"
-                        "Analyze this situation and provide your assessment and recommended actions.\n"
+                        "Analyze this situation following these steps:\n\n"
+                        "1. **Our stance**: What is our position with this vendor? What do we want?\n"
+                        "2. **Questions**: What questions arise from the new email? What's unclear?\n"
+                        "3. **Open problems**: Look at ALL open (00.received) emails. How do they relate?\n"
+                        "4. **Resolution plan**: For each issue, what specific steps solve it?\n"
+                        "   Reference Monday.com tasks, calendar meetings, Box docs, contracts.\n"
+                        "5. **Do now or defer**: Can we act immediately, or do we need to tell the\n"
+                        "   client our plan and process later?\n"
+                        "6. **Actions**: Draft emails, create tasks, update notes as needed.\n\n"
                         "Respond with JSON matching this schema:\n"
                         f"```json\n{json.dumps(ACTION_SCHEMA, indent=2)}\n```\n\n"
                         "If an email reply is needed, draft the full email body.\n"
                         "If tasks need to be created, provide clear task names.\n"
+                        "If we're deferring, draft the 'here's what we're going to do' email.\n"
                         "Be specific and actionable."
                     ),
                 }
@@ -244,6 +350,10 @@ class Reasoner:
             urgency=assessment_data.get("urgency", "medium"),
             sentiment=assessment_data.get("sentiment", "neutral"),
             key_facts=assessment_data.get("key_facts", []),
+            questions=assessment_data.get("questions", []),
+            resolution_plan=assessment_data.get("resolution_plan", []),
+            can_resolve_now=assessment_data.get("can_resolve_now", False),
+            defer_reason=assessment_data.get("defer_reason", ""),
         )
 
         # Build actions
