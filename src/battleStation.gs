@@ -236,6 +236,9 @@ const BS_CFG = {
   },
 
   // Vendor Review Log sheet (records Q&A, narratives, to-dos from Inbox Review sessions)
+  // Vendor Instructions sheet (per-vendor corrections that persist across sessions)
+  VENDOR_INSTRUCTIONS_SHEET: 'Vendor Instructions',
+
   REVIEW_LOG_SHEET: 'Vendor Review Log',
   REVIEW_LOG_COLUMNS: {
     TIMESTAMP: 0,        // A - When the review happened
@@ -280,6 +283,8 @@ function onOpen() {
     .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
     .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
     .addItem('✅ Update Review Todos', 'inboxReviewUpdateTodos')
+    .addSeparator()
+    .addItem('🔄 Vendor Ops Loop', 'vendorOpsLoop')
     .addToUi();
 
   // Email Actions menu - reply templates + email management
