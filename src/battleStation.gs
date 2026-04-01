@@ -13273,6 +13273,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
     <div class="buttons" style="margin-top: 15px;">
       <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Notes</button>
       <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="doKeepCurrentNotes()" style="background:#e3f2fd;color:#1565c0;">Keep Current</button>
       <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
     </div>
 
@@ -13294,6 +13295,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
     <div class="buttons" style="margin-top: 15px;">
       <button id="blockerSaveBtn" class="btn btn-success" onclick="doSaveBlockers()">Save Blockers</button>
       <button id="blockerReviseBtn" class="btn btn-secondary" onclick="doShowBlockerRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()" style="background:#e3f2fd;color:#1565c0;">Keep Current</button>
       <button class="btn btn-secondary" onclick="google.script.host.close()">Skip</button>
     </div>
 
@@ -13315,6 +13317,34 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
     }
 
     // ========== NOTES SCREEN ==========
+    function doKeepCurrentNotes() {
+      // Skip saving notes, go straight to blocker screen
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Generating blocker summary...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(data) {
+          document.getElementById('notesScreen').style.display = 'none';
+          document.getElementById('blockerScreen').style.display = 'block';
+          document.getElementById('loadingMsg').style.display = 'none';
+
+          if (data.currentBlockers) {
+            document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label">Current blocker(s):</div>';
+            document.getElementById('blockerCurrentNotes').innerHTML = esc(data.currentBlockers);
+            document.getElementById('blockerCurrentNotes').style.display = 'block';
+          } else {
+            document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>';
+          }
+          document.getElementById('blockerPreview').innerHTML = esc(data.suggestedBlockers);
+        })
+        .withFailureHandler(function() {
+          google.script.host.close();
+        })
+        .generateBlockerSummary();
+    }
+
     function doSave() {
       document.getElementById('saveBtn').disabled = true;
       document.getElementById('reviseBtn').disabled = true;
