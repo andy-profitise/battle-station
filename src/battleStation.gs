@@ -19993,6 +19993,28 @@ Group by urgency: overdue first, then waiting-on-vendor, then waiting-on-us.]
 
 Be direct, concise, and strategic. Andy is busy — make every word count.`;
 
+  // Add previous action plan and notes for this vendor
+  const prevPlan = getPreviousActionPlan_(vendor);
+  if (prevPlan && prevPlan.actionPlan) {
+    prompt += `\n\n═══ PREVIOUS ACTION PLAN (${prevPlan.timestamp}) ═══\n${prevPlan.actionPlan}`;
+    if (prevPlan.userNotes) {
+      prompt += `\n\nANDY'S NOTES ON PREVIOUS PLAN:\n${prevPlan.userNotes}`;
+    }
+    prompt += `\n\nIMPORTANT: Check if any previous action items are still unresolved and carry them forward. Mark any that appear resolved based on current data.`;
+  }
+
+  // Add general notes that apply across all vendors
+  const generalNotes = getGeneralNotes_();
+  if (generalNotes) {
+    prompt += `\n\n═══ GENERAL CONTEXT (applies across all vendors) ═══\n${generalNotes}`;
+  }
+
+  // Add recent notes from other vendors for cross-vendor awareness
+  const recentVendorNotes = getRecentVendorNotes_();
+  if (recentVendorNotes) {
+    prompt += `\n\n═══ RECENT NOTES FROM OTHER VENDORS (for context only) ═══\n${recentVendorNotes}\n(Use these only if directly relevant to ${vendor}.)`;
+  }
+
   try {
     const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
 
@@ -20066,8 +20088,8 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
       <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
       <div id="briefing-content">${content}</div>
       <div class="revise-section">
-        <div class="revise-label">Add notes or corrections to revise the action plan:</div>
-        <textarea id="reviseInput" class="revise-input" placeholder="e.g., Returns are already processed. NDA was already signed. We do weekly check-ins per calendar..."></textarea>
+        <div class="revise-label">Add notes or corrections to revise the action plan. Prefix with GENERAL: for notes that apply to all vendors.</div>
+        <textarea id="reviseInput" class="revise-input" placeholder="e.g., Returns are already processed. NDA was already signed.&#10;GENERAL: Inbound calls program is on hold across all vendors."></textarea>
         <button id="reviseBtn" class="btn-revise" onclick="doRevise()">Revise Action Plan</button>
         <div id="reviseLoading" class="loading">Revising with Claude...</div>
       </div>
@@ -22201,6 +22223,67 @@ function getPreviousActionPlan_(vendor) {
 }
 
 /**
+ * Get general notes (vendor = "_GENERAL") — most recent entry
+ */
+function getGeneralNotes_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return '';
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === '_GENERAL') {
+      return String(data[i][4] || '');
+    }
+  }
+  return '';
+}
+
+/**
+ * Save or update general notes
+ */
+function saveGeneralNotes_(notes) {
+  var sheet = getOrCreateActionPlansSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  // Find existing _GENERAL row
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === '_GENERAL') {
+      sheet.getRange(i + 1, 5).setValue(notes);
+      sheet.getRange(i + 1, 2).setValue(new Date().toISOString());
+      return;
+    }
+  }
+
+  // No existing row — create one
+  sheet.appendRow(['_GENERAL', new Date().toISOString(), '', '', notes]);
+}
+
+/**
+ * Collect all recent user notes across vendors for general context.
+ * Returns the last note from each vendor (up to 20 vendors).
+ */
+function getRecentVendorNotes_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return '';
+
+  var data = sheet.getDataRange().getValues();
+  var seen = {};
+  var notes = [];
+
+  // Walk backwards to get most recent note per vendor
+  for (var i = data.length - 1; i >= 1; i--) {
+    var vendor = String(data[i][0]);
+    var userNote = String(data[i][4] || '').trim();
+    if (vendor === '_GENERAL' || !userNote || seen[vendor]) continue;
+    seen[vendor] = true;
+    notes.push(vendor + ': ' + userNote);
+    if (notes.length >= 20) break;
+  }
+
+  return notes.join('\n');
+}
+
+/**
  * Revise the briefing action plan based on user feedback.
  * Compares against the previous action plan to track what's changed/closed.
  * Called from the briefing dialog.
@@ -22223,13 +22306,22 @@ function reviseBriefingActionPlan(feedback) {
     }
   }
 
+  // Get general notes that apply across all vendors
+  var generalNotes = getGeneralNotes_();
+  var generalContext = '';
+  if (generalNotes) {
+    generalContext = '\n\nGENERAL NOTES (apply across all vendors):\n' + generalNotes;
+  }
+
   var prompt = 'You previously generated this vendor briefing for ' + context.vendor + ':\n\n' +
     context.rawContent +
     prevPlanContext +
+    generalContext +
     '\n\nAndy has these corrections and notes about the current action plan:\n"' + feedback + '"' +
     '\n\nPlease revise the ENTIRE briefing incorporating Andy\'s corrections. Key rules:' +
     '\n- Remove or mark as DONE any items Andy says are already handled' +
     '\n- Update items based on Andy\'s new information' +
+    '\n- Factor in the general notes — these are standing facts/context Andy has shared across all vendors' +
     '\n- If there was a previous action plan, check for items that were on it but missing from the current one - re-add if still relevant' +
     '\n- Keep the same section format (## headers)' +
     '\n- Be factual - use Andy\'s corrections as ground truth' +
@@ -22249,10 +22341,25 @@ function reviseBriefingActionPlan(feedback) {
 
   // Save revised version and user notes to Action Plans sheet
   saveBriefingToSheet_(context.vendor, revised);
-  // Update user notes on the latest row
   var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
   if (sheet && sheet.getLastRow() > 1) {
     sheet.getRange(sheet.getLastRow(), 5).setValue(feedback);
+  }
+
+  // Extract general notes from feedback (lines starting with "GENERAL:" or "ALL:")
+  // and save them separately
+  var lines = feedback.split('\n');
+  var generalLines = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (/^(GENERAL|ALL|GLOBAL):/i.test(line)) {
+      generalLines.push(line.replace(/^(GENERAL|ALL|GLOBAL):\s*/i, ''));
+    }
+  }
+  if (generalLines.length > 0) {
+    var existing = getGeneralNotes_();
+    var updated = existing ? existing + '\n' + generalLines.join('\n') : generalLines.join('\n');
+    saveGeneralNotes_(updated);
   }
 
   // Format for HTML display
