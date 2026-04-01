@@ -19,5 +19,5 @@ jobs:
       
       - name: Auth & Push
         run: |
-          echo '${{ secrets.CLASP_CREDENTIALS }}' > ~/.clasprc.json
+          echo '${{ secrets.CLASPRC_JSON }}' > ~/.clasprc.json
           clasp push
