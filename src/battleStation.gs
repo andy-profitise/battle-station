@@ -21785,7 +21785,10 @@ function vw_smartBriefing_(state) {
 
   state.vendorQueue = queue;
   state.stepIdx = 3;
-  return state;
+  // Auto-pause: Smart Briefing opens a sidebar - let user review it
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Smart Briefing loaded (' + queue.length + ' vendors queued). Review the sidebar, then use "Workflow: Next Step" to continue.', 'Paused', 10);
+  return null;
 }
 
 function vw_loadVendor_(state) {
@@ -21825,13 +21828,19 @@ function vw_loadVendor_(state) {
 function vw_vendorBriefing_(state) {
   battleStationVendorBriefing();
   state.stepIdx = 5;
-  return state;
+  // Auto-pause: Vendor Briefing opens a sidebar - let user review it
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Vendor Briefing loaded for ' + (state.currentVendor || 'vendor') + '. Review the sidebar, then use "Workflow: Next Step" to continue.', 'Paused', 10);
+  return null;
 }
 
 function vw_bulkActions_(state) {
   battleStationBulkActions();
   state.stepIdx = 6;
-  return state;
+  // Auto-pause: Bulk Actions opens a sidebar - let user review and act
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Bulk Actions loaded. Review and execute actions, then use "Workflow: Next Step" to continue.', 'Paused', 10);
+  return null;
 }
 
 function vw_createTasks_(state) {
@@ -21890,11 +21899,16 @@ function vw_settleEmails_(state) {
     ui.ButtonSet.YES_NO
   );
 
+  state.stepIdx = 8;
+
   if (resp === ui.Button.YES) {
     battleStationDraftReply();
+    // Auto-pause: Draft Reply opens a sidebar
+    vwSetState_(state);
+    SpreadsheetApp.getActive().toast('Draft Reply loaded. Compose your email, then use "Workflow: Next Step" to continue.', 'Paused', 10);
+    return null;
   }
 
-  state.stepIdx = 8;
   return state;
 }
 
