@@ -19934,7 +19934,7 @@ function battleStationVendorBriefing() {
     `- ${c.name} (${c.contactType || 'Unknown'}, ${c.status || 'N/A'}) ${c.email || ''} ${c.phone || ''}`
   ).join('\n') || '(no contacts)';
 
-  const prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
+  let prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
 
 This briefing should give Andy everything he needs to walk into a call, meeting, or email exchange and be fully prepared. Think of it as a pre-meeting intelligence packet.
 ${aiInstructions}
