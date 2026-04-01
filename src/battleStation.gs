@@ -20001,6 +20001,20 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
       return;
     }
 
+    // Save the raw briefing to the Action Plans sheet
+    saveBriefingToSheet_(vendor, response.content);
+
+    // Store context for revision
+    const briefingContext = {
+      vendor: vendor,
+      source: source,
+      status: contactData.liveStatus || status,
+      rawContent: response.content,
+      listRow: listRow,
+      tranche: tranche
+    };
+    PropertiesService.getUserProperties().setProperty('vendorBriefingContext', JSON.stringify(briefingContext));
+
     // Format the response for HTML display
     let content = response.content
       .replace(/&/g, '&amp;')
@@ -20034,6 +20048,13 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
         .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
         .copy-btn:hover { background: #1557b0; }
         .copied { background: #4caf50 !important; }
+        .revise-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e0e0e0; }
+        .revise-input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box; min-height: 60px; }
+        .revise-label { font-size: 12px; color: #5f6368; margin-bottom: 4px; }
+        .btn-revise { background: #f57c00; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 6px; }
+        .btn-revise:hover { background: #e65100; }
+        .btn-revise:disabled { background: #ccc; cursor: not-allowed; }
+        .loading { color: #5f6368; font-style: italic; margin-top: 6px; display: none; }
       </style>
       <h2>📋 Vendor Briefing: ${escapeHtml_(vendor)}</h2>
       <div class="vendor-card">
@@ -20044,6 +20065,12 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
       <button class="copy-btn" onclick="copyBriefing()">📋 Copy to Clipboard</button>
       <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
       <div id="briefing-content">${content}</div>
+      <div class="revise-section">
+        <div class="revise-label">Add notes or corrections to revise the action plan:</div>
+        <textarea id="reviseInput" class="revise-input" placeholder="e.g., Returns are already processed. NDA was already signed. We do weekly check-ins per calendar..."></textarea>
+        <button id="reviseBtn" class="btn-revise" onclick="doRevise()">Revise Action Plan</button>
+        <div id="reviseLoading" class="loading">Revising with Claude...</div>
+      </div>
       <script>
         function copyBriefing() {
           var el = document.getElementById('briefing-content');
@@ -20058,6 +20085,25 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
           btn.textContent = '✅ Copied!';
           btn.classList.add('copied');
           setTimeout(function() { btn.textContent = '📋 Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+        function doRevise() {
+          var feedback = document.getElementById('reviseInput').value.trim();
+          if (!feedback) { alert('Please enter your notes or corrections.'); return; }
+          document.getElementById('reviseBtn').disabled = true;
+          document.getElementById('reviseLoading').style.display = 'block';
+          google.script.run
+            .withSuccessHandler(function(newContent) {
+              document.getElementById('briefing-content').innerHTML = newContent;
+              document.getElementById('reviseInput').value = '';
+              document.getElementById('reviseBtn').disabled = false;
+              document.getElementById('reviseLoading').style.display = 'none';
+            })
+            .withFailureHandler(function(err) {
+              alert('Error: ' + (err.message || err));
+              document.getElementById('reviseBtn').disabled = false;
+              document.getElementById('reviseLoading').style.display = 'none';
+            })
+            .reviseBriefingActionPlan(feedback);
         }
       </script>
     `;
@@ -22083,4 +22129,140 @@ function vw_nextVendor_(state) {
   state.stepIdx = 1; // Back to loadVendor
   state.currentVendor = null;
   return state;
+}
+
+/************************************************************
+ * VENDOR BRIEFING - Action Plan persistence and revision
+ ************************************************************/
+
+/**
+ * Get or create the hidden Action Plans sheet
+ */
+function getOrCreateActionPlansSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName('Action Plans');
+  if (!sheet) {
+    sheet = ss.insertSheet('Action Plans');
+    sheet.getRange(1, 1).setValue('Vendor');
+    sheet.getRange(1, 2).setValue('Timestamp');
+    sheet.getRange(1, 3).setValue('Action Plan');
+    sheet.getRange(1, 4).setValue('Full Briefing');
+    sheet.getRange(1, 5).setValue('User Notes');
+    sheet.getRange(1, 1, 1, 5).setFontWeight('bold');
+    sheet.hideSheet();
+  }
+  return sheet;
+}
+
+/**
+ * Save a vendor briefing to the Action Plans sheet.
+ * Keeps history - each briefing is a new row.
+ */
+function saveBriefingToSheet_(vendor, rawContent) {
+  var sheet = getOrCreateActionPlansSheet_();
+
+  // Extract action plan section
+  var actionPlan = '';
+  var planMatch = rawContent.match(/## 🎯 ACTION PLAN[\s\S]*/);
+  if (planMatch) {
+    actionPlan = planMatch[0].replace(/## 🎯 ACTION PLAN\s*\n?/, '').trim();
+  }
+
+  sheet.appendRow([
+    vendor,
+    new Date().toISOString(),
+    actionPlan,
+    rawContent,
+    ''
+  ]);
+}
+
+/**
+ * Get the previous action plan for a vendor (most recent entry)
+ */
+function getPreviousActionPlan_(vendor) {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+
+  var data = sheet.getDataRange().getValues();
+  // Search from bottom up for most recent match
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return {
+        timestamp: data[i][1],
+        actionPlan: data[i][2],
+        fullBriefing: data[i][3],
+        userNotes: data[i][4],
+        row: i + 1
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Revise the briefing action plan based on user feedback.
+ * Compares against the previous action plan to track what's changed/closed.
+ * Called from the briefing dialog.
+ */
+function reviseBriefingActionPlan(feedback) {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('vendorBriefingContext');
+  if (!contextRaw) throw new Error('No briefing context found. Please regenerate the briefing.');
+
+  var context = JSON.parse(contextRaw);
+  var apiKey = getClaudeApiKey_();
+  if (!apiKey) throw new Error('No Claude API key configured.');
+
+  // Get previous action plan for comparison
+  var prev = getPreviousActionPlan_(context.vendor);
+  var prevPlanContext = '';
+  if (prev && prev.actionPlan) {
+    prevPlanContext = '\n\nPREVIOUS ACTION PLAN (from ' + prev.timestamp + '):\n' + prev.actionPlan;
+    if (prev.userNotes) {
+      prevPlanContext += '\n\nUSER NOTES ON PREVIOUS PLAN:\n' + prev.userNotes;
+    }
+  }
+
+  var prompt = 'You previously generated this vendor briefing for ' + context.vendor + ':\n\n' +
+    context.rawContent +
+    prevPlanContext +
+    '\n\nAndy has these corrections and notes about the current action plan:\n"' + feedback + '"' +
+    '\n\nPlease revise the ENTIRE briefing incorporating Andy\'s corrections. Key rules:' +
+    '\n- Remove or mark as DONE any items Andy says are already handled' +
+    '\n- Update items based on Andy\'s new information' +
+    '\n- If there was a previous action plan, check for items that were on it but missing from the current one - re-add if still relevant' +
+    '\n- Keep the same section format (## headers)' +
+    '\n- Be factual - use Andy\'s corrections as ground truth' +
+    '\n- Output ONLY the revised briefing content, same format as before';
+
+  var response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+  if (response.error) {
+    throw new Error('Claude API Error: ' + response.error);
+  }
+
+  var revised = response.content.trim();
+
+  // Update stored context with revised content
+  context.rawContent = revised;
+  PropertiesService.getUserProperties().setProperty('vendorBriefingContext', JSON.stringify(context));
+
+  // Save revised version and user notes to Action Plans sheet
+  saveBriefingToSheet_(context.vendor, revised);
+  // Update user notes on the latest row
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (sheet && sheet.getLastRow() > 1) {
+    sheet.getRange(sheet.getLastRow(), 5).setValue(feedback);
+  }
+
+  // Format for HTML display
+  var content = revised
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+  return content;
 }
