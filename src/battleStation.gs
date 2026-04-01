@@ -21739,16 +21739,14 @@ function inboxReviewMarkTodosDone(indicesJson) {
  ************************************************************/
 
 var VW_STEPS = [
-  { id: 'sync',       label: 'Sync monday.com Data',         fn: 'vw_syncMonday_' },
-  { id: 'buildList',  label: 'Build List',                    fn: 'vw_buildList_' },
-  { id: 'briefing',   label: 'Smart Briefing',               fn: 'vw_smartBriefing_' },
-  { id: 'loadVendor', label: 'Load Next Vendor',             fn: 'vw_loadVendor_' },
-  { id: 'vendorBrief',label: 'Vendor Briefing (Full Intel)',  fn: 'vw_vendorBriefing_' },
-  { id: 'bulkFix',    label: 'Auto-Fix (Bulk Actions)',       fn: 'vw_bulkActions_' },
-  { id: 'createTasks',label: 'Create Tasks for Manual Items', fn: 'vw_createTasks_' },
-  { id: 'settleEmail',label: 'Settle Emails',                 fn: 'vw_settleEmails_' },
-  { id: 'updateNotes',label: 'Update Notes & Blockers',       fn: 'vw_updateNotes_' },
-  { id: 'nextVendor', label: 'Next Vendor (Loop)',            fn: 'vw_nextVendor_' }
+  { id: 'setup',      label: 'Sync + Build List + Briefing',  fn: 'vw_setup_' },
+  { id: 'loadVendor', label: 'Load Next Vendor',              fn: 'vw_loadVendor_' },
+  { id: 'vendorBrief',label: 'Vendor Briefing (Full Intel)',   fn: 'vw_vendorBriefing_' },
+  { id: 'settleEmail',label: 'Settle Emails',                  fn: 'vw_settleEmails_' },
+  { id: 'bulkFix',    label: 'Bulk Actions + Tasks',           fn: 'vw_bulkAndTasks_' },
+  { id: 'updateNotes',label: 'Update Notes & Blockers',        fn: 'vw_updateNotes_' },
+  { id: 'fillFields', label: 'Fill Empty Monday.com Fields',   fn: 'vw_fillEmptyFields_' },
+  { id: 'nextVendor', label: 'Next Vendor (Loop)',             fn: 'vw_nextVendor_' }
 ];
 
 function vwGetState_() {
@@ -21810,15 +21808,13 @@ function vendorWorkflowNextStep() {
 
   try {
     var stepFunctions = {
-      'vw_syncMonday_': vw_syncMonday_,
-      'vw_buildList_': vw_buildList_,
-      'vw_smartBriefing_': vw_smartBriefing_,
+      'vw_setup_': vw_setup_,
       'vw_loadVendor_': vw_loadVendor_,
       'vw_vendorBriefing_': vw_vendorBriefing_,
-      'vw_bulkActions_': vw_bulkActions_,
-      'vw_createTasks_': vw_createTasks_,
       'vw_settleEmails_': vw_settleEmails_,
+      'vw_bulkAndTasks_': vw_bulkAndTasks_,
       'vw_updateNotes_': vw_updateNotes_,
+      'vw_fillEmptyFields_': vw_fillEmptyFields_,
       'vw_nextVendor_': vw_nextVendor_
     };
 
@@ -21872,22 +21868,20 @@ function vendorWorkflowCancel() {
   }
 }
 
-function vw_syncMonday_(state) {
+/** Step 0: Sync + Build List + Smart Briefing — all automatic, no user input */
+function vw_setup_(state) {
+  var ss = SpreadsheetApp.getActive();
+
+  ss.toast('Syncing monday.com boards...', 'Workflow', 5);
   syncMondayComBoards();
-  state.stepIdx = 1;
-  return state;
-}
 
-function vw_buildList_(state) {
+  ss.toast('Building vendor list from Gmail...', 'Workflow', 5);
   buildListWithGmailAndNotes();
-  state.stepIdx = 2;
-  return state;
-}
 
-function vw_smartBriefing_(state) {
+  ss.toast('Running Smart Briefing...', 'Workflow', 5);
   battleStationSmartBriefing();
 
-  var ss = SpreadsheetApp.getActive();
+  // Build vendor queue from List sheet
   var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
   if (!listSheet) throw new Error('List sheet not found');
 
@@ -21901,13 +21895,12 @@ function vw_smartBriefing_(state) {
   }
 
   state.vendorQueue = queue;
-  state.stepIdx = 3;
-  // Auto-pause: Smart Briefing opens a sidebar - let user review it
-  vwSetState_(state);
-  SpreadsheetApp.getActive().toast('Smart Briefing loaded (' + queue.length + ' vendors queued). Review the sidebar, then use "Workflow: Next Step" to continue.', 'Paused', 10);
-  return null;
+  state.stepIdx = 1;
+  ss.toast('Setup complete. ' + queue.length + ' vendors queued. Loading first vendor...', 'Workflow', 3);
+  return state;
 }
 
+/** Step 1: Load next vendor — no dialog, just load oldest email vendor */
 function vw_loadVendor_(state) {
   if (state.vendorQueue.length === 0) {
     SpreadsheetApp.getActive().toast(
@@ -21932,120 +21925,140 @@ function vw_loadVendor_(state) {
   }
 
   if (vendorIdx === -1) {
-    SpreadsheetApp.getActive().toast('Vendor "' + vendorName + '" not found in List. Skipping...', 'Warning', 3);
-    state.stepIdx = 3;
+    SpreadsheetApp.getActive().toast('Vendor "' + vendorName + '" not found. Skipping...', 'Warning', 3);
+    state.stepIdx = 1; // Loop back to loadVendor
     return state;
   }
 
   loadVendorData(vendorIdx, { loadMode: 'fast' });
-  state.stepIdx = 4;
+  state.stepIdx = 2;
   return state;
 }
 
+/** Step 2: Vendor Briefing — pause so user can read the analysis */
 function vw_vendorBriefing_(state) {
   battleStationVendorBriefing();
-  state.stepIdx = 5;
-  // Auto-pause: Vendor Briefing opens a sidebar - let user review it
+  state.stepIdx = 3;
   vwSetState_(state);
-  SpreadsheetApp.getActive().toast('Vendor Briefing loaded for ' + (state.currentVendor || 'vendor') + '. Review the sidebar, then use "Workflow: Next Step" to continue.', 'Paused', 10);
+  SpreadsheetApp.getActive().toast('Vendor Briefing loaded for ' + (state.currentVendor || 'vendor') + '. Review, then "Workflow: Next Step".', 'Paused', 10);
   return null;
 }
 
-function vw_bulkActions_(state) {
-  battleStationBulkActions();
-  state.stepIdx = 6;
-  // Auto-pause: Bulk Actions opens a sidebar - let user review and act
-  vwSetState_(state);
-  SpreadsheetApp.getActive().toast('Bulk Actions loaded. Review and execute actions, then use "Workflow: Next Step" to continue.', 'Paused', 10);
-  return null;
-}
-
-function vw_createTasks_(state) {
-  var ui = SpreadsheetApp.getUi();
-  var vendor = state.currentVendor || '(unknown)';
-
-  var resp = ui.prompt(
-    'Tasks for ' + vendor,
-    'Enter tasks to create on monday.com (one per line), or leave blank to skip:\n\nExample:\n  Follow up on invoice #1234\n  Schedule onboarding call\n  Request updated contract',
-    ui.ButtonSet.OK_CANCEL
-  );
-
-  if (resp.getSelectedButton() !== ui.Button.OK) {
-    state.stepIdx = 7;
-    return state;
-  }
-
-  var taskText = resp.getResponseText().trim();
-  if (!taskText) {
-    SpreadsheetApp.getActive().toast('No tasks to create. Moving on.', 'Skipped', 3);
-    state.stepIdx = 7;
-    return state;
-  }
-
-  var tasks = taskText.split('\n').map(function(t) { return t.trim(); }).filter(function(t) { return t; });
-  var apiToken = BS_CFG.MONDAY_API_TOKEN;
-  var boardId = BS_CFG.TASKS_BOARD_ID;
-  var created = 0;
-
-  for (var j = 0; j < tasks.length; j++) {
-    var escapedName = (vendor + ': ' + tasks[j]).replace(/"/g, '\\"');
-    var mutation = 'mutation { create_item (board_id: ' + boardId + ', item_name: "' + escapedName + '") { id } }';
-    try {
-      var result = mondayApiRequest_(mutation, apiToken);
-      if (result.data && result.data.create_item && result.data.create_item.id) created++;
-    } catch (e) {
-      Logger.log('Error creating task: ' + e.message);
-    }
-  }
-
-  SpreadsheetApp.getActive().toast('Created ' + created + '/' + tasks.length + ' task(s) on monday.com.', 'Tasks', 5);
-  for (var k = 0; k < tasks.length; k++) {
-    state.tasksPending.push({ vendor: vendor, task: tasks[k] });
-  }
-  state.stepIdx = 7;
-  return state;
-}
-
+/** Step 3: Settle Emails — pause if drafting */
 function vw_settleEmails_(state) {
   var ui = SpreadsheetApp.getUi();
   var vendor = state.currentVendor || '(unknown)';
 
   var resp = ui.alert(
     'Settle Emails for ' + vendor,
-    'Would you like to draft email replies now?\n\nYES = Open Draft Reply (Claude will help compose)\nNO = Skip email settling for this vendor',
+    'Draft email replies now?\n\nYES = Open Draft Reply\nNO = Skip',
     ui.ButtonSet.YES_NO
   );
 
-  state.stepIdx = 8;
+  state.stepIdx = 4;
 
   if (resp === ui.Button.YES) {
     battleStationDraftReply();
-    // Auto-pause: Draft Reply opens a sidebar
     vwSetState_(state);
-    SpreadsheetApp.getActive().toast('Draft Reply loaded. Compose your email, then use "Workflow: Next Step" to continue.', 'Paused', 10);
+    SpreadsheetApp.getActive().toast('Draft Reply loaded. Compose, then "Workflow: Next Step".', 'Paused', 10);
     return null;
   }
 
   return state;
 }
 
-function vw_updateNotes_(state) {
-  var vendor = state.currentVendor || '(unknown)';
-
-  // Run the existing Summarize to Notes flow - it opens a preview dialog
-  // where you can review/revise the AI-generated notes, then chains to blockers
-  battleStationSummarizeToNotes();
-
-  state.stepIdx = 9;
-  // Auto-pause: the notes/blockers preview dialog is open
+/** Step 4: Bulk Actions + Tasks — runs bulk actions, pauses for review */
+function vw_bulkAndTasks_(state) {
+  battleStationBulkActions();
+  state.stepIdx = 5;
   vwSetState_(state);
-  SpreadsheetApp.getActive().toast(
-    'Review the Notes & Blockers preview for ' + vendor + '. Save or revise, then use "Workflow: Next Step" to continue.',
-    'Paused', 10
-  );
+  SpreadsheetApp.getActive().toast('Bulk Actions loaded. Review and act, then "Workflow: Next Step".', 'Paused', 10);
   return null;
 }
 
+/** Step 5: Update Notes & Blockers — no dialog, just run it and pause for review */
+function vw_updateNotes_(state) {
+  battleStationSummarizeToNotes();
+  state.stepIdx = 6;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Notes & Blockers preview loaded. Review/save, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/** Step 6: Fill empty monday.com fields — check for missing data and suggest fills */
+function vw_fillEmptyFields_(state) {
+  var ss = SpreadsheetApp.getActive();
+  var bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  var vendor = state.currentVendor || '(unknown)';
+
+  // Scan the A(I)DEN sheet for cells with "Add in monday.com" warnings
+  var values = bsSh.getDataRange().getValues();
+  var formulas = bsSh.getDataRange().getFormulas();
+  var emptyFields = [];
+
+  for (var i = 0; i < formulas.length; i++) {
+    for (var j = 0; j < formulas[i].length; j++) {
+      var formula = String(formulas[i][j] || '');
+      if (formula.indexOf('Add in monday') !== -1 || formula.indexOf('Add notes in monday') !== -1) {
+        // Figure out the field name by looking at the label in the same row
+        var label = '';
+        if (j > 0) {
+          label = String(values[i][0] || '').replace(/:/g, '').trim();
+        }
+        if (!label) {
+          // Check the row above for section headers
+          label = String(values[i > 0 ? i - 1 : i][0] || '').replace(/:/g, '').trim();
+        }
+        emptyFields.push({
+          row: i + 1,
+          col: j + 1,
+          label: label || 'Row ' + (i + 1),
+          formula: formula
+        });
+      }
+    }
+  }
+
+  if (emptyFields.length === 0) {
+    SpreadsheetApp.getActive().toast('No empty monday.com fields found for ' + vendor + '.', 'All Good', 5);
+    state.stepIdx = 7;
+    return state;
+  }
+
+  // Build a summary of what's missing
+  var fieldList = emptyFields.map(function(f) { return '- ' + f.label; }).join('\n');
+
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.alert(
+    'Empty Fields for ' + vendor,
+    'The following fields need data in monday.com:\n\n' + fieldList + '\n\n' +
+    emptyFields.length + ' empty field(s) found.\n\nWould you like to open monday.com to fill them?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (resp === ui.Button.YES) {
+    // Build the monday.com link for this vendor
+    var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    var currentIndex = getCurrentVendorIndex_();
+    var listRow = currentIndex + 1;
+    var source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+    var boardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+    var mondayUrl = 'https://profitise-company.monday.com/boards/' + boardId + '?term=' + encodeURIComponent(vendor);
+
+    // Show the link in a small dialog so the user can click it
+    var html = HtmlService.createHtmlOutput(
+      '<p>Open monday.com to update <strong>' + vendor + '</strong>:</p>' +
+      '<p><a href="' + mondayUrl + '" target="_blank" style="font-size:16px;">' + mondayUrl + '</a></p>' +
+      '<p style="color:#666;font-size:12px;">Missing: ' + emptyFields.map(function(f) { return f.label; }).join(', ') + '</p>'
+    ).setWidth(500).setHeight(150);
+    ui.showModalDialog(html, 'Update monday.com Fields');
+  }
+
+  state.stepIdx = 7;
+  return state;
+}
+
+/** Step 7: Next vendor — loop back to loadVendor */
 function vw_nextVendor_(state) {
   var vendor = state.currentVendor;
   if (vendor) {
@@ -22054,7 +22067,7 @@ function vw_nextVendor_(state) {
 
   var remaining = state.vendorQueue.length;
   SpreadsheetApp.getActive().toast(
-    vendor + ' complete! ' + remaining + ' vendor(s) remaining in queue.',
+    vendor + ' done! ' + remaining + ' vendor(s) remaining.',
     'Next Vendor', 5
   );
 
@@ -22067,7 +22080,7 @@ function vw_nextVendor_(state) {
     return null;
   }
 
-  state.stepIdx = 3;
+  state.stepIdx = 1; // Back to loadVendor
   state.currentVendor = null;
   return state;
 }
