@@ -19993,26 +19993,20 @@ Group by urgency: overdue first, then waiting-on-vendor, then waiting-on-us.]
 
 Be direct, concise, and strategic. Andy is busy — make every word count.`;
 
-  // Add previous action plan and notes for this vendor
+  // Add previous action plan and notes for this vendor (truncated to avoid timeout)
   const prevPlan = getPreviousActionPlan_(vendor);
   if (prevPlan && prevPlan.actionPlan) {
-    prompt += `\n\n═══ PREVIOUS ACTION PLAN (${prevPlan.timestamp}) ═══\n${prevPlan.actionPlan}`;
+    prompt += `\n\n═══ PREVIOUS ACTION PLAN ═══\n${prevPlan.actionPlan.substring(0, 1500)}`;
     if (prevPlan.userNotes) {
-      prompt += `\n\nANDY'S NOTES ON PREVIOUS PLAN:\n${prevPlan.userNotes}`;
+      prompt += `\n\nANDY'S NOTES ON PREVIOUS PLAN:\n${prevPlan.userNotes.substring(0, 800)}`;
     }
-    prompt += `\n\nIMPORTANT: Check if any previous action items are still unresolved and carry them forward. Mark any that appear resolved based on current data.`;
+    prompt += `\n\nCheck if any previous action items are still unresolved and carry them forward.`;
   }
 
   // Add general notes that apply across all vendors
   const generalNotes = getGeneralNotes_();
   if (generalNotes) {
-    prompt += `\n\n═══ GENERAL CONTEXT (applies across all vendors) ═══\n${generalNotes}`;
-  }
-
-  // Add recent notes from other vendors for cross-vendor awareness
-  const recentVendorNotes = getRecentVendorNotes_();
-  if (recentVendorNotes) {
-    prompt += `\n\n═══ RECENT NOTES FROM OTHER VENDORS (for context only) ═══\n${recentVendorNotes}\n(Use these only if directly relevant to ${vendor}.)`;
+    prompt += `\n\n═══ GENERAL CONTEXT ═══\n${generalNotes.substring(0, 800)}`;
   }
 
   try {
@@ -20134,11 +20128,12 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(850).setHeight(750);
-    ui.showModalDialog(html, `📋 Vendor Briefing: ${vendor}`);
-    ss.toast('Briefing ready!', '✅ Done', 3);
+    // Re-acquire UI reference in case it went stale during long API calls
+    SpreadsheetApp.getUi().showModalDialog(html, `📋 Vendor Briefing: ${vendor}`);
+    SpreadsheetApp.getActive().toast('Briefing ready!', '✅ Done', 3);
 
   } catch (e) {
-    ui.alert(`Error generating briefing: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`Error generating briefing: ${e.message}`);
   }
 }
 
