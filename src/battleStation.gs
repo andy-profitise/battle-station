@@ -24,11 +24,12 @@
  * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
  * NEW: Vendor Briefing (full intel aggregation), Bulk Actions match transparency
  * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
+ * NEW: 🚀 Vendor Workflow - Full proactive loop (sync → build → brief → vendor review → tasks → emails → repeat)
  ************************************************************/
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-03-25 10:00AM PST',
+  CODE_VERSION: '2026-03-31 10:00AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -280,6 +281,10 @@ function onOpen() {
     .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
     .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
     .addItem('✅ Update Review Todos', 'inboxReviewUpdateTodos')
+    .addSeparator()
+    .addItem('🚀 Vendor Workflow (Full Loop)', 'vendorWorkflowStart')
+    .addItem('⏭️ Workflow: Next Step', 'vendorWorkflowNextStep')
+    .addItem('❌ Workflow: Cancel', 'vendorWorkflowCancel')
     .addToUi();
 
   // Email Actions menu - reply templates + email management
@@ -21600,4 +21605,348 @@ function inboxReviewMarkTodosDone(indicesJson) {
   SpreadsheetApp.getActive().toast(
     `Marked ${indices.size} todo(s) as done. ${remaining} remaining.`, '✅ Updated', 3
   );
+}
+
+
+/************************************************************
+ * VENDOR WORKFLOW - Full proactive loop
+ *
+ * Steps:
+ *   1. Sync monday.com data
+ *   2. Build List (refresh vendor list from Gmail)
+ *   3. Smart Briefing (priority order for vendors)
+ *   4. Setup A(I)DEN on vendor #1 (oldest inbox email)
+ *   5. Vendor Briefing (full intel on current vendor)
+ *   6. Auto-fix with Bulk Actions where possible
+ *   7. Create monday.com tasks for manual items
+ *   8. Settle emails (draft/send replies)
+ *   9. Move to next vendor, repeat from step 4
+ ************************************************************/
+
+const VW_STEPS = [
+  { id: 'sync',       label: '🔄 Sync monday.com Data',         fn: 'vw_syncMonday_' },
+  { id: 'buildList',  label: '📋 Build List',                    fn: 'vw_buildList_' },
+  { id: 'briefing',   label: '🧠 Smart Briefing',               fn: 'vw_smartBriefing_' },
+  { id: 'loadVendor', label: '🎯 Load Next Vendor',             fn: 'vw_loadVendor_' },
+  { id: 'vendorBrief',label: '📋 Vendor Briefing (Full Intel)',  fn: 'vw_vendorBriefing_' },
+  { id: 'bulkFix',    label: '⚡ Auto-Fix (Bulk Actions)',       fn: 'vw_bulkActions_' },
+  { id: 'createTasks',label: '📝 Create Tasks for Manual Items', fn: 'vw_createTasks_' },
+  { id: 'settleEmail',label: '✉️ Settle Emails',                 fn: 'vw_settleEmails_' },
+  { id: 'nextVendor', label: '⏭️ Next Vendor (Loop)',            fn: 'vw_nextVendor_' },
+];
+
+/** Get/set workflow state from Script Properties */
+function vwGetState_() {
+  const raw = PropertiesService.getScriptProperties().getProperty('VENDOR_WORKFLOW_STATE');
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch(e) { return null; }
+}
+
+function vwSetState_(state) {
+  PropertiesService.getScriptProperties().setProperty(
+    'VENDOR_WORKFLOW_STATE', JSON.stringify(state)
+  );
+}
+
+function vwClearState_() {
+  PropertiesService.getScriptProperties().deleteProperty('VENDOR_WORKFLOW_STATE');
+}
+
+/** Start the full vendor workflow loop */
+function vendorWorkflowStart() {
+  const ui = SpreadsheetApp.getUi();
+  const existing = vwGetState_();
+  if (existing) {
+    const resp = ui.alert(
+      '🚀 Workflow Already Running',
+      `You're on step "${VW_STEPS[existing.stepIdx].label}" for vendor "${existing.currentVendor || '(none yet)'}".\\n\\nRestart from scratch?`,
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) return;
+  }
+
+  vwSetState_({
+    stepIdx: 0,
+    currentVendor: null,
+    vendorQueue: [],
+    vendorsCompleted: [],
+    tasksPending: [],
+    startedAt: new Date().toISOString(),
+  });
+
+  SpreadsheetApp.getActive().toast('Starting Vendor Workflow...', '🚀 Workflow', 3);
+  vendorWorkflowNextStep();
+}
+
+/** Execute the current step, then prompt for next */
+function vendorWorkflowNextStep() {
+  const state = vwGetState_();
+  if (!state) {
+    SpreadsheetApp.getActive().toast('No active workflow. Use "Vendor Workflow (Full Loop)" to start.', '⚠️', 5);
+    return;
+  }
+
+  const step = VW_STEPS[state.stepIdx];
+  if (!step) {
+    SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', '🎉 Done', 5);
+    vwClearState_();
+    return;
+  }
+
+  SpreadsheetApp.getActive().toast(`Running: ${step.label}...`, '🚀 Workflow', 3);
+
+  try {
+    // Call the step function by name
+    const fn = this[step.fn] || eval(step.fn);  // GAS doesn't have globalThis
+    const result = fn(state);
+
+    // Step function returns updated state (or null to stop)
+    if (result === null) {
+      SpreadsheetApp.getActive().toast('Workflow paused. Use "Next Step" to continue.', '⏸️', 5);
+      return;
+    }
+
+    vwSetState_(result);
+
+    // Show progress and prompt for next
+    const nextStep = VW_STEPS[result.stepIdx];
+    if (nextStep) {
+      const ui = SpreadsheetApp.getUi();
+      const resp = ui.alert(
+        `✅ ${step.label} Complete`,
+        `Next: ${nextStep.label}${result.currentVendor ? '\\nVendor: ' + result.currentVendor : ''}\\n\\nContinue?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (resp === ui.Button.YES) {
+        vendorWorkflowNextStep();
+      } else {
+        SpreadsheetApp.getActive().toast('Paused. Use "Workflow: Next Step" to resume.', '⏸️', 5);
+      }
+    } else {
+      SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', '🎉 Done', 5);
+      vwClearState_();
+    }
+  } catch (e) {
+    Logger.log('Workflow error: ' + e.message + '\\n' + e.stack);
+    SpreadsheetApp.getActive().toast(`Error in ${step.label}: ${e.message}. Use "Next Step" to retry.`, '❌ Error', 10);
+  }
+}
+
+/** Cancel the workflow */
+function vendorWorkflowCancel() {
+  const state = vwGetState_();
+  if (!state) {
+    SpreadsheetApp.getActive().toast('No active workflow.', '⚠️', 3);
+    return;
+  }
+  const ui = SpreadsheetApp.getUi();
+  const resp = ui.alert(
+    '❌ Cancel Workflow?',
+    `You've completed ${state.vendorsCompleted.length} vendor(s). Cancel?`,
+    ui.ButtonSet.YES_NO
+  );
+  if (resp === ui.Button.YES) {
+    vwClearState_();
+    SpreadsheetApp.getActive().toast('Workflow cancelled.', '❌', 3);
+  }
+}
+
+/************************************************************
+ * WORKFLOW STEP FUNCTIONS
+ * Each receives state, returns updated state (or null to pause)
+ ************************************************************/
+
+/** Step 1: Sync monday.com data */
+function vw_syncMonday_(state) {
+  syncMondayComBoards();  // existing function
+  state.stepIdx = 1;
+  return state;
+}
+
+/** Step 2: Build the vendor list from Gmail */
+function vw_buildList_(state) {
+  buildListWithGmailAndNotes();  // existing function
+  state.stepIdx = 2;
+  return state;
+}
+
+/** Step 3: Run Smart Briefing to get priority-ordered vendor list */
+function vw_smartBriefing_(state) {
+  // Run existing smart briefing - it produces the priority analysis
+  battleStationSmartBriefing();
+
+  // Build the vendor queue from the List sheet (oldest emails first = inbox mode)
+  const ss = SpreadsheetApp.getActive();
+  const listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSheet) throw new Error('List sheet not found');
+
+  const data = listSheet.getDataRange().getValues();
+  const queue = [];
+  for (let i = 1; i < data.length; i++) {
+    const vendor = data[i][BS_CFG.L_VENDOR];
+    const status = String(data[i][BS_CFG.L_STATUS] || '').toLowerCase();
+    if (!vendor || status === 'complete' || status === 'snoozed') continue;
+    queue.push(vendor);
+  }
+
+  state.vendorQueue = queue;
+  state.stepIdx = 3;
+  return state;
+}
+
+/** Step 4: Load the next vendor into A(I)DEN */
+function vw_loadVendor_(state) {
+  if (state.vendorQueue.length === 0) {
+    SpreadsheetApp.getActive().toast(
+      `Workflow complete! Processed ${state.vendorsCompleted.length} vendor(s).`, '🎉', 10
+    );
+    return null; // Signal completion
+  }
+
+  const vendorName = state.vendorQueue.shift();
+  state.currentVendor = vendorName;
+
+  // Find vendor in List sheet and load into A(I)DEN
+  const ss = SpreadsheetApp.getActive();
+  const listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const data = listSheet.getDataRange().getValues();
+
+  let vendorIdx = -1;
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase() === vendorName.toLowerCase()) {
+      vendorIdx = i;
+      break;
+    }
+  }
+
+  if (vendorIdx === -1) {
+    SpreadsheetApp.getActive().toast(`Vendor "${vendorName}" not found in List. Skipping...`, '⚠️', 3);
+    state.stepIdx = 3; // Go back to loadVendor step to try next
+    return state;
+  }
+
+  loadVendorData(vendorIdx, { loadMode: 'fast' });
+  state.stepIdx = 4;
+  return state;
+}
+
+/** Step 5: Run Vendor Briefing for full intel */
+function vw_vendorBriefing_(state) {
+  battleStationVendorBriefing();  // existing function - shows full intel sidebar
+  state.stepIdx = 5;
+  return state;
+}
+
+/** Step 6: Run Bulk Actions to auto-fix what we can */
+function vw_bulkActions_(state) {
+  // Run existing bulk actions - Claude analyzes and suggests automatable fixes
+  battleStationBulkActions();
+  state.stepIdx = 6;
+  return state;
+}
+
+/** Step 7: Create monday.com tasks for items that need manual follow-up */
+function vw_createTasks_(state) {
+  const ui = SpreadsheetApp.getUi();
+  const vendor = state.currentVendor || '(unknown)';
+
+  // Ask user what tasks to create based on what they learned from briefing + bulk actions
+  const resp = ui.prompt(
+    `📝 Tasks for ${vendor}`,
+    'Enter tasks to create on monday.com (one per line), or leave blank to skip:\n\n' +
+    'Example:\n  Follow up on invoice #1234\n  Schedule onboarding call\n  Request updated contract',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (resp.getSelectedButton() !== ui.Button.OK) {
+    state.stepIdx = 7;
+    return state;
+  }
+
+  const taskText = resp.getResponseText().trim();
+  if (!taskText) {
+    SpreadsheetApp.getActive().toast('No tasks to create. Moving on.', '⏭️', 3);
+    state.stepIdx = 7;
+    return state;
+  }
+
+  const tasks = taskText.split('\n').map(t => t.trim()).filter(t => t);
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+  let created = 0;
+
+  for (const taskName of tasks) {
+    const escapedName = `${vendor}: ${taskName}`.replace(/"/g, '\\"');
+    const mutation = `
+      mutation {
+        create_item (
+          board_id: ${boardId},
+          item_name: "${escapedName}"
+        ) { id }
+      }
+    `;
+    try {
+      const result = mondayApiRequest_(mutation, apiToken);
+      if (result.data?.create_item?.id) created++;
+    } catch (e) {
+      Logger.log('Error creating task: ' + e.message);
+    }
+  }
+
+  SpreadsheetApp.getActive().toast(
+    `Created ${created}/${tasks.length} task(s) on monday.com.`, '✅ Tasks', 5
+  );
+  state.tasksPending.push(...tasks.map(t => ({ vendor, task: t })));
+  state.stepIdx = 7;
+  return state;
+}
+
+/** Step 8: Settle emails - draft/send replies based on new info */
+function vw_settleEmails_(state) {
+  const ui = SpreadsheetApp.getUi();
+  const vendor = state.currentVendor || '(unknown)';
+
+  const resp = ui.alert(
+    `✉️ Settle Emails for ${vendor}`,
+    'Would you like to draft email replies now?\n\n' +
+    '• YES = Open Draft Reply (Claude will help compose)\n' +
+    '• NO = Skip email settling for this vendor',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (resp === ui.Button.YES) {
+    // Use existing Draft Reply function
+    battleStationDraftReply();
+  }
+
+  state.stepIdx = 8;
+  return state;
+}
+
+/** Step 9: Mark vendor complete and loop back to load next vendor */
+function vw_nextVendor_(state) {
+  const vendor = state.currentVendor;
+  if (vendor) {
+    state.vendorsCompleted.push(vendor);
+  }
+
+  const remaining = state.vendorQueue.length;
+  SpreadsheetApp.getActive().toast(
+    `✅ ${vendor} complete! ${remaining} vendor(s) remaining in queue.`,
+    '🔄 Next Vendor', 5
+  );
+
+  if (remaining === 0) {
+    SpreadsheetApp.getUi().alert(
+      '🎉 Workflow Complete!',
+      `All vendors processed!\n\nCompleted: ${state.vendorsCompleted.length}\nTasks created: ${state.tasksPending.length}`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return null; // Signal completion
+  }
+
+  // Loop back to step 4 (loadVendor) to process next vendor
+  state.stepIdx = 3; // Index 3 = loadVendor step
+  state.currentVendor = null;
+  return state;
 }
