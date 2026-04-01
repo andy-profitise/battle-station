@@ -13606,13 +13606,40 @@ function saveBlockersFromPreview() {
   const blockers = context.suggestedBlockers;
   const blockerText = (blockers.toLowerCase() === '(none)') ? '' : blockers;
 
-  // Update monday.com
+  // 1. Update the vendor's "Current Blocker(s)" field on monday.com
   const result = updateMondayBlockersForVendor_(context.vendor, blockerText, context.listRow);
 
   if (result.success) {
     ss.toast(`Blockers updated for ${context.vendor}`, '✅ Blockers Saved', 3);
   } else {
     throw new Error(`Monday.com update failed: ${result.error}`);
+  }
+
+  // 2. Also post the blocker text as an update (note) on the blocker Task if one exists
+  if (blockerText) {
+    try {
+      const tasks = getTasksForVendor_(context.vendor, context.listRow) || [];
+      const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+      if (blockerTasks.length > 0) {
+        const blockerTask = blockerTasks[0];
+        const escapedBody = blockerText.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+        const updateMutation = `
+          mutation {
+            create_update (
+              item_id: ${blockerTask.itemId},
+              body: "${escapedBody}"
+            ) { id }
+          }
+        `;
+        const updateResult = mondayApiRequest_(updateMutation, BS_CFG.MONDAY_API_TOKEN);
+        if (updateResult.data?.create_update?.id) {
+          Logger.log('Posted blocker update to task: ' + blockerTask.subject + ' (ID: ' + blockerTask.itemId + ')');
+          ss.toast('Also posted to blocker task: ' + blockerTask.subject, '📝 Task Updated', 3);
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not post to blocker task: ' + e.message);
+    }
   }
 
   // Update the blocker section on the Battle Station sheet if it exists
