@@ -20088,7 +20088,10 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
       <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
       <div id="briefing-content">${content}</div>
       <div class="revise-section">
-        <div class="revise-label">Add notes or corrections to revise the action plan. Prefix with GENERAL: for notes that apply to all vendors.</div>
+        <div class="revise-label">Add notes or corrections to revise the action plan:</div>
+        <div style="background:#e8f5e9;padding:6px 10px;border-radius:4px;font-size:11px;margin-bottom:6px;color:#2e7d32;border:1px solid #c8e6c9;">
+          <strong>Tip:</strong> Start a line with <code>GENERAL:</code> to save a note that applies to <em>all</em> vendors (e.g., <code>GENERAL: Inbound calls program is on hold</code>). Regular notes only apply to this vendor.
+        </div>
         <textarea id="reviseInput" class="revise-input" placeholder="e.g., Returns are already processed. NDA was already signed.&#10;GENERAL: Inbound calls program is on hold across all vendors."></textarea>
         <button id="reviseBtn" class="btn-revise" onclick="doRevise()">Revise Action Plan</button>
         <div id="reviseLoading" class="loading">Revising with Claude...</div>
