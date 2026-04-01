@@ -14860,6 +14860,63 @@ ${threadContent}
 }
 
 /**
+ * Compute who a reply-all draft would go to, without creating the draft.
+ * Returns { to, cc, bcc } as comma-separated strings.
+ */
+function computeDraftRecipients_(threadId) {
+  if (!threadId) return { to: '', cc: '', bcc: '' };
+
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return { to: '', cc: '', bcc: '' };
+
+  const messages = thread.getMessages();
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+  const isInternal = (email) => internalDomains.some(d => email.toLowerCase().includes('@' + d));
+  const extractEmail = (str) => { const m = str.match(/<([^>]+)>/); return m ? m[1].toLowerCase() : str.toLowerCase().trim(); };
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addrs = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === '"') { inQ = !inQ; cur += str[i]; }
+      else if (str[i] === ',' && !inQ) { if (cur.trim()) addrs.push(cur.trim()); cur = ''; }
+      else { cur += str[i]; }
+    }
+    if (cur.trim()) addrs.push(cur.trim());
+    return addrs;
+  };
+
+  const allParticipants = new Set();
+  for (const msg of messages) {
+    const all = [...splitAddresses(msg.getFrom() || ''), ...splitAddresses(msg.getTo() || ''), ...splitAddresses(msg.getCc() || '')];
+    for (const addr of all) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  const ext = []; const int = [];
+  for (const addr of allParticipants) {
+    if (isInternal(extractEmail(addr))) int.push(addr); else ext.push(addr);
+  }
+
+  let to = '', cc = '', bcc = '';
+  if (ext.length > 0) { to = ext.join(', '); cc = int.join(', '); }
+  else { to = int.join(', '); }
+
+  const allStr = [...allParticipants].join(',').toLowerCase();
+  if (!allStr.includes('sales@profitise.com')) {
+    if (cc) bcc = 'sales@profitise.com';
+    else bcc = 'sales@profitise.com';
+  }
+
+  return { to: to, cc: cc, bcc: bcc };
+}
+
+/**
  * Create Gmail draft and return the URL
  * Uses createDraftReplyAll for proper threading, then updates content via Gmail API
  */
@@ -15569,6 +15626,17 @@ function showDraftPreviewDialog_(responseBody, threadId) {
   // Build Gmail thread URL
   const threadUrl = threadId ? `https://mail.google.com/mail/u/0/#inbox/${threadId}` : '';
 
+  // Compute recipients so user can see who the email will go to
+  let toDisplay = '', ccDisplay = '', bccDisplay = '';
+  try {
+    const recipients = computeDraftRecipients_(threadId);
+    toDisplay = recipients.to || '';
+    ccDisplay = recipients.cc || '';
+    bccDisplay = recipients.bcc || '';
+  } catch (e) {
+    Logger.log('Could not compute recipients: ' + e.message);
+  }
+
   // Safely escape the response for embedding in HTML
   const escapedResponse = responseBody
     .replace(/&/g, '&amp;')
@@ -15626,10 +15694,18 @@ function showDraftPreviewDialog_(responseBody, threadId) {
     }
     .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
     .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+    .recipients { background: #fff3e0; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; line-height: 1.6; border: 1px solid #ffe0b2; }
+    .recipients strong { color: #e65100; }
+    .rcpt-label { display: inline-block; min-width: 32px; font-weight: bold; color: #5f6368; }
   </style>
 </head>
 <body>
   <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
+  ${toDisplay ? `<div class="recipients">
+    <div><span class="rcpt-label">To:</span> ${toDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+    ${ccDisplay ? `<div><span class="rcpt-label">Cc:</span> ${ccDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+    ${bccDisplay ? `<div><span class="rcpt-label">Bcc:</span> ${bccDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+  </div>` : ''}
   <div class="buttons">
     <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft</button>
     <button id="sendBtn" class="btn btn-primary" style="background: #34a853;" onclick="doSendNow()">Send Now</button>
