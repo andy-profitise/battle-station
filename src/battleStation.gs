@@ -21896,16 +21896,8 @@ function vendorWorkflowNextStep() {
 
     var nextStep = VW_STEPS[result.stepIdx];
     if (nextStep) {
-      var ui = SpreadsheetApp.getUi();
-      var msg = 'Next: ' + nextStep.label;
-      if (result.currentVendor) msg += '\nVendor: ' + result.currentVendor;
-      msg += '\n\nContinue?';
-      var resp = ui.alert(step.label + ' Complete', msg, ui.ButtonSet.YES_NO);
-      if (resp === ui.Button.YES) {
-        vendorWorkflowNextStep();
-      } else {
-        SpreadsheetApp.getActive().toast('Paused. Use "Workflow: Next Step" to resume.', 'Paused', 5);
-      }
+      // Auto-advance to next step — no confirmation dialog
+      vendorWorkflowNextStep();
     } else {
       SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', 'Done', 5);
       vwClearState_();
