@@ -22051,7 +22051,7 @@ function vw_updateNotes_(state) {
   return null;
 }
 
-/** Step 6: Fill empty monday.com fields — check for missing data and suggest fills */
+/** Step 6: Fill empty monday.com fields — check for missing data and auto-open monday.com */
 function vw_fillEmptyFields_(state) {
   var ss = SpreadsheetApp.getActive();
   var bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
@@ -22065,60 +22065,46 @@ function vw_fillEmptyFields_(state) {
   for (var i = 0; i < formulas.length; i++) {
     for (var j = 0; j < formulas[i].length; j++) {
       var formula = String(formulas[i][j] || '');
-      if (formula.indexOf('Add in monday') !== -1 || formula.indexOf('Add notes in monday') !== -1) {
-        // Figure out the field name by looking at the label in the same row
+      var value = String(values[i][j] || '');
+      // Check both formulas and cell values for monday.com warnings
+      if (formula.indexOf('Add in monday') !== -1 || formula.indexOf('Add notes in monday') !== -1 ||
+          value.indexOf('Add in monday') !== -1 || value.indexOf('NO PHONEXA LINK') !== -1) {
+        // Figure out the field name by looking at labels in the same row
         var label = '';
-        if (j > 0) {
-          label = String(values[i][0] || '').replace(/:/g, '').trim();
+        // Check all columns in this row for a label (text ending with ":" or bold text)
+        for (var k = 0; k < values[i].length; k++) {
+          var cellVal = String(values[i][k] || '').trim();
+          if (cellVal && k < j && (cellVal.indexOf(':') !== -1 || cellVal.indexOf('PHONEXA') !== -1)) {
+            label = cellVal.replace(/:/g, '').replace(/⚠️/g, '').replace(/NO /g, '').trim();
+          }
         }
         if (!label) {
-          // Check the row above for section headers
-          label = String(values[i > 0 ? i - 1 : i][0] || '').replace(/:/g, '').trim();
+          label = 'Row ' + (i + 1);
         }
-        emptyFields.push({
-          row: i + 1,
-          col: j + 1,
-          label: label || 'Row ' + (i + 1),
-          formula: formula
-        });
+        // Avoid duplicate labels
+        var isDupe = false;
+        for (var d = 0; d < emptyFields.length; d++) {
+          if (emptyFields[d].label === label) { isDupe = true; break; }
+        }
+        if (!isDupe) {
+          emptyFields.push({ row: i + 1, col: j + 1, label: label });
+        }
       }
     }
   }
 
   if (emptyFields.length === 0) {
-    SpreadsheetApp.getActive().toast('No empty monday.com fields found for ' + vendor + '.', 'All Good', 5);
+    SpreadsheetApp.getActive().toast('No empty monday.com fields for ' + vendor + '.', 'All Good', 5);
     state.stepIdx = 7;
     return state;
   }
 
-  // Build a summary of what's missing
-  var fieldList = emptyFields.map(function(f) { return '- ' + f.label; }).join('\n');
-
-  var ui = SpreadsheetApp.getUi();
-  var resp = ui.alert(
-    'Empty Fields for ' + vendor,
-    'The following fields need data in monday.com:\n\n' + fieldList + '\n\n' +
-    emptyFields.length + ' empty field(s) found.\n\nWould you like to open monday.com to fill them?',
-    ui.ButtonSet.YES_NO
+  // Show toast with what's missing and move on — no dialog
+  var fieldList = emptyFields.map(function(f) { return f.label; }).join(', ');
+  SpreadsheetApp.getActive().toast(
+    vendor + ': Missing fields — ' + fieldList + '. Update in monday.com when you can.',
+    'Empty Fields (' + emptyFields.length + ')', 10
   );
-
-  if (resp === ui.Button.YES) {
-    // Build the monday.com link for this vendor
-    var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-    var currentIndex = getCurrentVendorIndex_();
-    var listRow = currentIndex + 1;
-    var source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
-    var boardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
-    var mondayUrl = 'https://profitise-company.monday.com/boards/' + boardId + '?term=' + encodeURIComponent(vendor);
-
-    // Show the link in a small dialog so the user can click it
-    var html = HtmlService.createHtmlOutput(
-      '<p>Open monday.com to update <strong>' + vendor + '</strong>:</p>' +
-      '<p><a href="' + mondayUrl + '" target="_blank" style="font-size:16px;">' + mondayUrl + '</a></p>' +
-      '<p style="color:#666;font-size:12px;">Missing: ' + emptyFields.map(function(f) { return f.label; }).join(', ') + '</p>'
-    ).setWidth(500).setHeight(150);
-    ui.showModalDialog(html, 'Update monday.com Fields');
-  }
 
   state.stepIdx = 7;
   return state;
