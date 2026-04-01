@@ -14462,51 +14462,54 @@ function battleStationDraftReply() {
 
   // Get the most recent unsnoozed email thread
   const targetEmail = unsnoozed[0];
-  let threadContent = '';
   let thread = null;
+  let threadContent = '';
+  let lastSenderIsMe = false;
 
   try {
     thread = GmailApp.getThreadById(targetEmail.threadId);
     if (thread) {
-      const messages = thread.getMessages();
-      for (const msg of messages.slice(-3)) {
-        threadContent += `\nFrom: ${msg.getFrom()}\nDate: ${msg.getDate()}\n${msg.getPlainBody().substring(0, 1000)}\n---`;
-      }
+      const result = getThreadContent_(thread);
+      threadContent = result.content;
+      lastSenderIsMe = result.lastSenderIsMe;
     }
   } catch (e) {
     threadContent = `Subject: ${targetEmail.subject}\n(Could not fetch thread content)`;
   }
 
+  // Ask for extra directions
+  const dirResponse = ui.prompt(
+    'Draft Reply for ' + vendor,
+    'Subject: ' + targetEmail.subject + '\n\nAny specific directions for this reply? (leave blank for auto):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (dirResponse.getSelectedButton() !== ui.Button.OK) return;
+  const extraDirections = dirResponse.getResponseText().trim();
+
   ss.toast('Generating reply with Claude...', '🤖 Drafting', 5);
 
-  const prompt = `You are drafting an email reply for Andy Worford at Profitise (a lead generation company in Home Services and Solar).
-
-Vendor: ${vendor}
-Notes about this vendor: ${notes || '(none)'}
-
-Email thread:
-${threadContent}
-
-Write a professional, concise reply. Be helpful and move the conversation forward. Sign off as "Andy Worford, Profitise".
-
-Write ONLY the email body. No meta-commentary.`;
-
   try {
-    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 800 });
+    // Use the same generateEmailWithClaude_ as Email Actions for consistent quality
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      targetEmail.subject,
+      'General Follow Up',
+      extraDirections || ('Vendor notes: ' + (notes || 'none')),
+      lastSenderIsMe
+    );
 
-    if (response.error) {
-      ui.alert(`Claude API Error: ${response.error}`);
-      return;
-    }
+    // Store context for revision/draft creation (same as Email Actions flow)
+    const revisionContext = {
+      threadId: targetEmail.threadId,
+      responseType: 'Draft Reply',
+      originalDirections: extraDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
 
-    // Create a Gmail draft reply
-    if (thread) {
-      thread.createDraftReply(response.content);
-      ss.toast(`Draft reply created for "${targetEmail.subject}"`, '✅ Draft Ready', 3);
-      ui.alert(`✓ Draft reply created!\n\nSubject: Re: ${targetEmail.subject}\n\nCheck your Gmail drafts to review and send.`);
-    } else {
-      ui.alert(`Reply generated but couldn't create draft.\n\nCopy this reply:\n\n${response.content}`);
-    }
+    // Show preview dialog with recipients, revise option, and Create Draft button
+    showDraftPreviewDialog_(responseBody, targetEmail.threadId);
+
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
   }
@@ -15731,8 +15734,11 @@ function showDraftPreviewDialog_(responseBody, threadId) {
 
       google.script.run
         .withSuccessHandler(function(url) {
+          // Show clickable link in case popup is blocked
+          document.getElementById('loadingMsg').innerHTML = '<a href="' + url + '" target="_blank" style="color:#1a73e8;font-weight:bold;font-size:14px;">Open Draft in Gmail</a>';
+          document.getElementById('loadingMsg').style.display = 'block';
+          document.getElementById('loadingMsg').style.fontStyle = 'normal';
           window.open(url, '_blank');
-          google.script.host.close();
         })
         .withFailureHandler(function(err) {
           alert('Error: ' + (err.message || err));
