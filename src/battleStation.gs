@@ -2515,12 +2515,24 @@ function loadVendorData(vendorIndex, options) {
   // Fetch tasks once and reuse for blockers, task display, and Crystal Ball
   const allVendorTasks_ = getTasksForVendor_(vendor, listRow);
 
-  // Current Blocker(s) section - show first blocker task's notes (or item name as fallback)
+  // Current Blocker(s) section - check ALL blocker tasks for notes
   const blockerTasks = allVendorTasks_.filter(t => t.isBlocker && !t.isDone);
   if (blockerTasks.length > 0) {
-    const firstBlocker = blockerTasks[0];
-    const hasNotes = !!firstBlocker.notes;
-    const blockerText = hasNotes ? firstBlocker.notes : firstBlocker.subject;
+    // Collect notes from all blocker tasks that have them
+    const blockerNotes = [];
+    const blockerNames = [];
+    for (var bt = 0; bt < blockerTasks.length; bt++) {
+      if (blockerTasks[bt].notes) {
+        blockerNotes.push(blockerTasks[bt].notes);
+      }
+      blockerNames.push(blockerTasks[bt].subject);
+    }
+
+    // Use aggregated notes if any task has them, otherwise show task names
+    const hasNotes = blockerNotes.length > 0;
+    const blockerText = hasNotes
+      ? blockerNotes.join('\n---\n')
+      : blockerNames.join('; ');
 
     bsSh.getRange(currentRow, 1, 1, 3).merge()
       .setValue('🚧 CURRENT BLOCKER(S)')
@@ -13541,9 +13553,28 @@ function generateBlockerSummary() {
 
   ss.toast(`Analyzing blockers for ${vendor}...`, '🚧 Blockers', 5);
 
-  // Get current blockers from monday.com
+  // Get current blockers from monday.com vendor field
   const contactData = getVendorContacts_(vendor, listRow);
-  const currentBlockers = contactData.blockers || '';
+  let currentBlockers = contactData.blockers || '';
+
+  // Also check all blocker tasks for notes
+  try {
+    const tasks = getTasksForVendor_(vendor, listRow) || [];
+    const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+    const taskBlockerNotes = [];
+    for (let bt = 0; bt < blockerTasks.length; bt++) {
+      if (blockerTasks[bt].notes) {
+        taskBlockerNotes.push(blockerTasks[bt].subject + ': ' + blockerTasks[bt].notes);
+      } else {
+        taskBlockerNotes.push(blockerTasks[bt].subject + ' (no notes)');
+      }
+    }
+    if (taskBlockerNotes.length > 0) {
+      currentBlockers += (currentBlockers ? '\n\n' : '') + 'Blocker Tasks:\n' + taskBlockerNotes.join('\n');
+    }
+  } catch (e) {
+    Logger.log('Could not fetch blocker tasks for summary: ' + e.message);
+  }
 
   const apiKey = getClaudeApiKey_();
   if (!apiKey) throw new Error('No Claude API key configured.');
@@ -13615,13 +13646,14 @@ function saveBlockersFromPreview() {
     throw new Error(`Monday.com update failed: ${result.error}`);
   }
 
-  // 2. Also post the blocker text as an update (note) on the blocker Task if one exists
+  // 2. Also post the blocker text as an update (note) on ALL active blocker tasks
   if (blockerText) {
     try {
       const tasks = getTasksForVendor_(context.vendor, context.listRow) || [];
       const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
-      if (blockerTasks.length > 0) {
-        const blockerTask = blockerTasks[0];
+      let posted = 0;
+      for (let bt = 0; bt < blockerTasks.length; bt++) {
+        const blockerTask = blockerTasks[bt];
         const escapedBody = blockerText.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
         const updateMutation = `
           mutation {
@@ -13634,11 +13666,14 @@ function saveBlockersFromPreview() {
         const updateResult = mondayApiRequest_(updateMutation, BS_CFG.MONDAY_API_TOKEN);
         if (updateResult.data?.create_update?.id) {
           Logger.log('Posted blocker update to task: ' + blockerTask.subject + ' (ID: ' + blockerTask.itemId + ')');
-          ss.toast('Also posted to blocker task: ' + blockerTask.subject, '📝 Task Updated', 3);
+          posted++;
         }
       }
+      if (posted > 0) {
+        ss.toast('Posted to ' + posted + ' blocker task(s)', '📝 Tasks Updated', 3);
+      }
     } catch (e) {
-      Logger.log('Could not post to blocker task: ' + e.message);
+      Logger.log('Could not post to blocker tasks: ' + e.message);
     }
   }
 
