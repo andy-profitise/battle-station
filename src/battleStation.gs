@@ -15196,6 +15196,8 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Step 4: Build the updated message preserving threading headers
   // Use thread's first message subject to avoid [External] tags added by recipients
   let subject = thread.getFirstMessageSubject();
+  // Strip emojis and normalize smart quotes to ASCII to prevent MIME encoding issues
+  subject = cleanSubjectLine_(subject);
   if (!subject.toLowerCase().startsWith('re:')) {
     subject = 'Re: ' + subject;
   }
@@ -17106,6 +17108,7 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
 
       // Get subject from thread
       let subject = thread.getFirstMessageSubject();
+      subject = cleanSubjectLine_(subject);
       if (!subject.toLowerCase().startsWith('re:')) {
         subject = 'Re: ' + subject;
       }
@@ -22383,4 +22386,26 @@ function reviseBriefingActionPlan(feedback) {
     .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
 
   return content;
+}
+
+/**
+ * Clean a subject line for use in MIME headers.
+ * Strips emojis and normalizes smart quotes/dashes to ASCII.
+ */
+function cleanSubjectLine_(subject) {
+  if (!subject) return '';
+  return subject
+    // Smart quotes to ASCII
+    .replace(/[\u2018\u2019\u201A]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    // Smart dashes to ASCII
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u2026/g, '...')
+    // Non-breaking spaces
+    .replace(/\u00A0/g, ' ')
+    // Strip emojis and other non-ASCII symbols (keep basic Latin + extended Latin)
+    .replace(/[^\x00-\x7F\u00C0-\u024F]/g, '')
+    // Clean up multiple spaces left by removed characters
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
