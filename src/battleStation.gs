@@ -21714,6 +21714,7 @@ var VW_STEPS = [
   { id: 'bulkFix',    label: 'Auto-Fix (Bulk Actions)',       fn: 'vw_bulkActions_' },
   { id: 'createTasks',label: 'Create Tasks for Manual Items', fn: 'vw_createTasks_' },
   { id: 'settleEmail',label: 'Settle Emails',                 fn: 'vw_settleEmails_' },
+  { id: 'updateNotes',label: 'Update Notes & Blockers',       fn: 'vw_updateNotes_' },
   { id: 'nextVendor', label: 'Next Vendor (Loop)',            fn: 'vw_nextVendor_' }
 ];
 
@@ -21784,6 +21785,7 @@ function vendorWorkflowNextStep() {
       'vw_bulkActions_': vw_bulkActions_,
       'vw_createTasks_': vw_createTasks_,
       'vw_settleEmails_': vw_settleEmails_,
+      'vw_updateNotes_': vw_updateNotes_,
       'vw_nextVendor_': vw_nextVendor_
     };
 
@@ -21992,6 +21994,23 @@ function vw_settleEmails_(state) {
   }
 
   return state;
+}
+
+function vw_updateNotes_(state) {
+  var vendor = state.currentVendor || '(unknown)';
+
+  // Run the existing Summarize to Notes flow - it opens a preview dialog
+  // where you can review/revise the AI-generated notes, then chains to blockers
+  battleStationSummarizeToNotes();
+
+  state.stepIdx = 9;
+  // Auto-pause: the notes/blockers preview dialog is open
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast(
+    'Review the Notes & Blockers preview for ' + vendor + '. Save or revise, then use "Workflow: Next Step" to continue.',
+    'Paused', 10
+  );
+  return null;
 }
 
 function vw_nextVendor_(state) {
