@@ -13899,6 +13899,18 @@ function createBlockerForVendor() {
   `;
   mondayApiRequest_(renameMutation, apiToken);
 
+  // Step 2b: Add the title as an update (note) on the item so it shows in Battle Station
+  // Without this, the blocker task has no notes and displays greyed out
+  const noteMutation = `
+    mutation {
+      create_update (
+        item_id: ${newItemId},
+        body: "${escapedVendor}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(noteMutation, apiToken);
+
   // Step 3: Move to Blockers group
   const moveMutation = `
     mutation {
@@ -14175,6 +14187,17 @@ function createBlockerFromSuggestion(blockerText) {
     }
   `;
   mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 2b: Add the title as notes so it shows in Battle Station
+  const noteMutation = `
+    mutation {
+      create_update (
+        item_id: ${newItemId},
+        body: "${taskTitle}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(noteMutation, apiToken);
 
   // Step 3: Move to Blockers group
   const moveMutation = `
