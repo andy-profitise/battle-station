@@ -263,6 +263,136 @@ function searchBoxForVendor(vendorName) {
 }
 
 /**
+ * Search Box for multiple vendor name variants in parallel using UrlFetchApp.fetchAll()
+ * Much faster than sequential searches when vendor has alternate names.
+ *
+ * @param {string} primaryName - The primary vendor name
+ * @param {string} otherName - Comma-separated alternate names (optional)
+ * @returns {array} Array of unique matching documents
+ */
+function searchBoxForVendorParallel(primaryName, otherName) {
+  if (!primaryName || primaryName.trim() === '') {
+    Logger.log('No vendor name provided');
+    return [];
+  }
+
+  const service = getBoxService_();
+  if (!service.hasAccess()) {
+    Logger.log('Box not authorized, skipping parallel search');
+    return [];
+  }
+
+  // Build list of all search terms
+  const searchTerms = [primaryName.trim()];
+
+  if (otherName) {
+    // Add full other name as a term
+    searchTerms.push(otherName.trim());
+
+    // If other name has commas, add individual values too
+    if (otherName.includes(',')) {
+      const skipTerms = (typeof BS_CFG !== 'undefined' && BS_CFG.SKIP_SEARCH_TERMS) || ['LLC', 'Inc', 'Inc.', 'Corp', 'Corp.', 'Co', 'Co.', 'Ltd', 'Ltd.', 'LP', 'LLP', 'PC', 'PLLC', 'NA', 'N/A'];
+      const parts = otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+      for (const part of parts) {
+        if (!skipTerms.some(term => term.toLowerCase() === part.toLowerCase())) {
+          searchTerms.push(part);
+        }
+      }
+    }
+  }
+
+  // Also add suffix-stripped variants
+  const allTerms = [];
+  for (const term of searchTerms) {
+    allTerms.push(term);
+    const stripped = term
+      .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.|L\.?L\.?C\.?)$/i, '')
+      .trim();
+    if (stripped !== term && stripped.length > 0) {
+      allTerms.push(stripped);
+    }
+  }
+
+  // Dedupe search terms (case-insensitive)
+  const seen = new Set();
+  const uniqueTerms = [];
+  for (const term of allTerms) {
+    const key = term.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueTerms.push(term);
+    }
+  }
+
+  Logger.log(`Box parallel search: ${uniqueTerms.length} unique search terms`);
+
+  // Build all fetch requests at once
+  const accessToken = service.getAccessToken();
+  const requests = uniqueTerms.map(term => {
+    const searchUrl = `${BOX_CFG.API_BASE}/search?query=${encodeURIComponent('"' + term + '"')}&limit=${BOX_CFG.DEFAULT_LIMIT}&type=file&fields=id,name,type,description,created_at,modified_at,size,parent,path_collection,shared_link`;
+    return {
+      url: searchUrl,
+      method: 'get',
+      headers: {
+        'Authorization': 'Bearer ' + accessToken,
+        'Content-Type': 'application/json'
+      },
+      muteHttpExceptions: true
+    };
+  });
+
+  // Execute ALL searches in parallel
+  const responses = UrlFetchApp.fetchAll(requests);
+
+  // Process results and dedupe
+  const existingIds = new Set();
+  const allDocs = [];
+
+  for (let i = 0; i < responses.length; i++) {
+    const resp = responses[i];
+    const code = resp.getResponseCode();
+    const term = uniqueTerms[i];
+
+    if (code < 200 || code >= 300) {
+      Logger.log(`Box parallel search error for "${term}": HTTP ${code}`);
+      continue;
+    }
+
+    try {
+      const result = JSON.parse(resp.getContentText());
+      const entries = result.entries || [];
+      Logger.log(`Box parallel search "${term}": ${entries.length} results`);
+
+      for (const item of entries) {
+        if (existingIds.has(item.id)) continue;
+        existingIds.add(item.id);
+        allDocs.push({
+          id: item.id,
+          name: item.name,
+          type: item.type,
+          description: item.description || '',
+          createdAt: item.created_at,
+          modifiedAt: item.modified_at,
+          size: item.size,
+          folderPath: item.path_collection?.entries?.map(e => e.name).join('/') || '',
+          parentFolder: item.parent?.name || '',
+          parentFolderId: item.parent?.id || '',
+          parentFolderUrl: item.parent?.id ? `https://app.box.com/folder/${item.parent.id}` : '',
+          sharedLink: item.shared_link?.url || null,
+          webUrl: item.type === 'folder' ? `https://app.box.com/folder/${item.id}` : `https://app.box.com/file/${item.id}`,
+          matchedOn: term
+        });
+      }
+    } catch (e) {
+      Logger.log(`Box parallel search parse error for "${term}": ${e.message}`);
+    }
+  }
+
+  Logger.log(`Box parallel search: ${allDocs.length} unique documents total`);
+  return allDocs;
+}
+
+/**
  * Get current user info (useful for testing)
  */
 function getBoxCurrentUser() {
@@ -406,4 +536,215 @@ function getBoxDocumentsForBattleStation(vendorName) {
       url: doc.webUrl
     }))
   };
+}
+
+
+/************************************************************
+ * BATCH BOX OPERATIONS
+ *
+ * For Turbo Traverse - fetch all documents once, filter locally
+ ************************************************************/
+
+/**
+ * List all items in a Box folder (non-recursive)
+ * @param {string} folderId - The folder ID (use '0' for root)
+ * @param {number} limit - Max items to return per page
+ * @returns {array} Array of items in the folder
+ */
+function listBoxFolder_(folderId, limit = 1000) {
+  const items = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const url = `/folders/${folderId}/items?limit=${limit}&offset=${offset}&fields=id,name,type,description,created_at,modified_at,size,parent,path_collection,shared_link`;
+
+    try {
+      const result = boxApiRequest_(url);
+
+      for (const item of result.entries) {
+        items.push({
+          id: item.id,
+          name: item.name,
+          type: item.type,
+          description: item.description || '',
+          createdAt: item.created_at,
+          modifiedAt: item.modified_at,
+          size: item.size,
+          folderPath: item.path_collection?.entries?.map(e => e.name).join('/') || '',
+          parentFolder: item.parent?.name || '',
+          parentFolderId: item.parent?.id || '',
+          parentFolderUrl: item.parent?.id ? `https://app.box.com/folder/${item.parent.id}` : '',
+          sharedLink: item.shared_link?.url || null,
+          webUrl: item.type === 'folder' ? `https://app.box.com/folder/${item.id}` : `https://app.box.com/file/${item.id}`
+        });
+      }
+
+      offset += result.entries.length;
+      hasMore = result.entries.length === limit && offset < result.total_count;
+
+    } catch (e) {
+      Logger.log(`Error listing Box folder ${folderId}: ${e.message}`);
+      hasMore = false;
+    }
+  }
+
+  return items;
+}
+
+/**
+ * Recursively list all files in Box from root folder
+ * @param {string} folderId - Starting folder ID (default '0' for root)
+ * @param {number} maxDepth - Maximum folder depth to traverse
+ * @param {number} currentDepth - Current depth (internal)
+ * @returns {array} All files found
+ */
+function listAllBoxFiles_(folderId = '0', maxDepth = 5, currentDepth = 0) {
+  if (currentDepth >= maxDepth) {
+    return [];
+  }
+
+  const items = listBoxFolder_(folderId);
+  const allFiles = [];
+  const subfolders = [];
+
+  for (const item of items) {
+    if (item.type === 'file') {
+      allFiles.push(item);
+    } else if (item.type === 'folder') {
+      // Skip certain folders that are unlikely to have vendor docs
+      const skipFolders = ['Trash', 'Archive', 'Old', 'Backup'];
+      if (!skipFolders.some(skip => item.name.toLowerCase().includes(skip.toLowerCase()))) {
+        subfolders.push(item);
+      }
+    }
+  }
+
+  // Recursively get files from subfolders
+  for (const folder of subfolders) {
+    const subFiles = listAllBoxFiles_(folder.id, maxDepth, currentDepth + 1);
+    allFiles.push(...subFiles);
+  }
+
+  return allFiles;
+}
+
+/**
+ * Get all Box documents for batch processing (with caching)
+ * Fetches all files from Box once and caches for the session
+ * @returns {array} All Box files
+ */
+function getAllBoxDocuments_() {
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'box_all_documents';
+
+  // Check script-level cache first (faster than sheet cache)
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const docs = JSON.parse(cached);
+      Logger.log(`Box batch: loaded ${docs.length} documents from cache`);
+      return docs;
+    } catch (e) {
+      // Cache corrupted, continue to fetch
+    }
+  }
+
+  Logger.log('Box batch: fetching all documents from Box...');
+
+  const boxService = getBoxService_();
+  if (!boxService.hasAccess()) {
+    Logger.log('Box not authorized - cannot batch fetch');
+    return [];
+  }
+
+  const startTime = Date.now();
+  const allDocs = listAllBoxFiles_('0', 4); // Max 4 levels deep
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+  Logger.log(`Box batch: fetched ${allDocs.length} documents in ${elapsed}s`);
+
+  // Cache for 30 minutes (1800 seconds) - CacheService max is 6 hours
+  // Split into chunks if too large (100KB limit per key)
+  try {
+    const jsonStr = JSON.stringify(allDocs);
+    if (jsonStr.length < 90000) {
+      cache.put(cacheKey, jsonStr, 1800);
+    } else {
+      // Too large for single cache entry - store count only and skip caching
+      Logger.log(`Box batch: ${allDocs.length} docs too large for cache (${Math.round(jsonStr.length/1024)}KB)`);
+    }
+  } catch (e) {
+    Logger.log(`Box batch cache error: ${e.message}`);
+  }
+
+  return allDocs;
+}
+
+/**
+ * Filter Box documents for a specific vendor (local matching)
+ * @param {array} allDocs - All Box documents (from getAllBoxDocuments_)
+ * @param {string} vendorName - Vendor name to search for
+ * @param {string} otherName - Optional alternate vendor name
+ * @returns {array} Matching documents
+ */
+function filterBoxDocumentsForVendor_(allDocs, vendorName, otherName) {
+  if (!allDocs || allDocs.length === 0 || !vendorName) {
+    return [];
+  }
+
+  const matches = [];
+  const seenIds = new Set();
+
+  // Build search terms
+  const searchTerms = [vendorName.toLowerCase().trim()];
+
+  // Add version without suffix
+  const withoutSuffix = vendorName
+    .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.|L\.?L\.?C\.?)$/i, '')
+    .trim().toLowerCase();
+  if (withoutSuffix !== searchTerms[0]) {
+    searchTerms.push(withoutSuffix);
+  }
+
+  // Add other name variants
+  if (otherName) {
+    const otherNames = otherName.split(',').map(n => n.trim().toLowerCase()).filter(n => n);
+    searchTerms.push(...otherNames);
+
+    // Add without suffix for each
+    for (const name of otherNames) {
+      const clean = name.replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.|L\.?L\.?C\.?)$/i, '').trim();
+      if (clean !== name && !searchTerms.includes(clean)) {
+        searchTerms.push(clean);
+      }
+    }
+  }
+
+  for (const doc of allDocs) {
+    if (seenIds.has(doc.id)) continue;
+
+    // Check file name and folder path
+    const searchText = (doc.name + ' ' + doc.folderPath + ' ' + doc.parentFolder).toLowerCase();
+
+    for (const term of searchTerms) {
+      if (searchText.includes(term)) {
+        doc.matchedOn = term;
+        matches.push(doc);
+        seenIds.add(doc.id);
+        break;
+      }
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Clear the Box batch cache
+ */
+function clearBoxBatchCache() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('box_all_documents');
+  Logger.log('Box batch cache cleared');
 }
