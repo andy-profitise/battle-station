@@ -19734,11 +19734,17 @@ function battleStationVendorBriefing() {
 
   // ─── 7. GOOGLE DRIVE DOCS ───
   let gDriveFiles = [];
-  try { gDriveFiles = getGDriveFilesForVendor_(vendor); } catch (e) { Logger.log(`[Briefing] GDrive error: ${e.message}`); }
+  try {
+    const gDriveResult = getGDriveFilesForVendor_(vendor);
+    gDriveFiles = Array.isArray(gDriveResult) ? gDriveResult : (gDriveResult && gDriveResult.files ? gDriveResult.files : []);
+  } catch (e) { Logger.log(`[Briefing] GDrive error: ${e.message}`); }
 
   // ─── 8. BOX DOCUMENTS ───
   let boxDocs = [];
-  try { boxDocs = searchBoxForVendor(vendor); } catch (e) { Logger.log(`[Briefing] Box error: ${e.message}`); }
+  try {
+    const boxResult = searchBoxForVendor(vendor);
+    boxDocs = Array.isArray(boxResult) ? boxResult : [];
+  } catch (e) { Logger.log(`[Briefing] Box error: ${e.message}`); }
 
   // ─── 9. GOALS & AI INSTRUCTIONS ───
   const goalsContext = getGoalsContext_();
