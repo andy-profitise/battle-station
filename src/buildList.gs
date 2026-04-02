@@ -191,7 +191,7 @@ function buildListWithGmailAndNotes() {
   // LAYER 4: If Profitise Internal has 00.received emails, put at very top
   let profitiseInternalVendor = null;
   if (profitiseInternal) {
-    // Check if it's already in one of the lists, or create a placeholder
+    // Check if it's already in one of the lists
     const allLists = [inboxVendors, actionableNotInbox, restAfterActionable];
     for (const list of allLists) {
       for (let i = 0; i < list.length; i++) {
@@ -202,6 +202,18 @@ function buildListWithGmailAndNotes() {
         }
       }
       if (profitiseInternalVendor) break;
+    }
+    // If not found in any list (not on monday.com), create a synthetic entry
+    if (!profitiseInternalVendor) {
+      profitiseInternalVendor = {
+        name: 'Profitise Internal',
+        ttl: 0,
+        type: 'Buyer',
+        source: 'internal',
+        status: '',
+        notes: '',
+        tranche: '🔴 Internal'
+      };
     }
   }
 
