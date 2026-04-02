@@ -239,11 +239,21 @@ function buildListWithGmailAndNotes() {
   }
 
   // Sort inbox zone by oldest email date (oldest first)
+  console.log('=== INBOX ZONE SORTING ===');
+  console.log('inboxOldestDate keys:', Object.keys(inboxOldestDate).join(', '));
+  console.log('inboxZone vendors:', inboxZone.map(v => v.name).join(', '));
+  for (const v of inboxZone) {
+    const key = v.name.toLowerCase();
+    const date = inboxOldestDate[key];
+    console.log(`  ${v.name} -> key="${key}", date=${date || 'NO MATCH'}`);
+  }
   inboxZone.sort((a, b) => {
     const dateA = inboxOldestDate[a.name.toLowerCase()] || new Date();
     const dateB = inboxOldestDate[b.name.toLowerCase()] || new Date();
     return dateA - dateB;
   });
+  console.log('Sorted order:', inboxZone.map(v => v.name).join(', '));
+  console.log('=== END SORTING ===');
 
   // Final list: Inbox at top (oldest first), then chat, monthly returns, hot, then normal zone
   const finalList = [...inboxZone, ...chatZone, ...monthlyReturnsZone, ...hotZone, ...normalZone];
