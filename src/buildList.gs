@@ -177,7 +177,7 @@ function buildListWithGmailAndNotes() {
   // 4. MONTHLY RETURNS - vendors with open Monthly Returns tasks
   // 5. NORMAL - everything else
   console.log('Detecting priority vendors...');
-  const { inboxSet, hotSet } = getHotVendorsFromGmail_(all);
+  const { inboxSet, hotSet, inboxOldestDate } = getHotVendorsFromGmail_(all);
   console.log('Inbox vendors found:', inboxSet.size);
   console.log('Hot vendors found:', hotSet.size);
 
@@ -218,7 +218,7 @@ function buildListWithGmailAndNotes() {
   for (const r of all) {
     const nameLower = r.name.toLowerCase();
     if (inboxSet.has(nameLower)) {
-      r.tranche = '📥 Inbox';
+      r.tranche = '📥 Actionable';
       inboxZone.push(r);
     } else if (chatSet.has(nameLower)) {
       r.tranche = '💬 Chat';
@@ -238,8 +238,14 @@ function buildListWithGmailAndNotes() {
     }
   }
 
-  // Final list: Inbox at top, then chat, monthly returns, hot, then normal zone
-  // Each zone keeps same sort order as `all` (already sorted)
+  // Sort inbox zone by oldest email date (oldest first)
+  inboxZone.sort((a, b) => {
+    const dateA = inboxOldestDate[a.name.toLowerCase()] || new Date();
+    const dateB = inboxOldestDate[b.name.toLowerCase()] || new Date();
+    return dateA - dateB;
+  });
+
+  // Final list: Inbox at top (oldest first), then chat, monthly returns, hot, then normal zone
   const finalList = [...inboxZone, ...chatZone, ...monthlyReturnsZone, ...hotZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
@@ -396,6 +402,7 @@ function getVendorsWithOpenMonthlyReturns_() {
 function getHotVendorsFromGmail_(allVendors) {
   const inboxSet = new Set();  // Highest priority - vendors with emails in inbox
   const hotSet = new Set();    // Other hot vendors (00.received, recent sent)
+  const inboxOldestDate = {};  // vendor name (lowercase) -> oldest inbox email date
 
   try {
     // Build vendor name lookup for fast matching
@@ -412,25 +419,20 @@ function getHotVendorsFromGmail_(allVendors) {
     let labelMatches = 0;
     let exactMatches = 0;
 
-    // SEARCH 1: Inbox emails (highest priority)
-    console.log('Searching inbox for vendor emails...');
-    const inboxThreads = GmailApp.search('label:inbox', 0, 200);
-    console.log(`Found ${inboxThreads.length} inbox threads`);
+    // SEARCH 1: Inbox + 00.received (combined, excluding snoozed) — the actionable pool
+    console.log('Searching inbox + 00.received for vendor emails (excluding snoozed)...');
+    const actionableThreads = GmailApp.search('(label:inbox OR label:00.received) AND -is:snoozed', 0, 500);
+    console.log(`Found ${actionableThreads.length} actionable threads`);
 
-    // SEARCH 2: Emails with label:00.received (hot but not inbox priority)
-    console.log('Searching for emails with label:00.received...');
-    const recentThreads = GmailApp.search('label:00.received', 0, 200);
-    console.log(`Found ${recentThreads.length} threads with label:00.received`);
-
-    // SEARCH 3: Sent emails in last 188 hours (approx 7.8 days)
+    // SEARCH 2: Sent emails in last 188 hours (approx 7.8 days) — for "hot" detection only
     console.log('Searching for recently sent emails...');
     const sentThreads = GmailApp.search('label:sent newer_than:188h', 0, 200);
     console.log(`Found ${sentThreads.length} sent threads in last 188h`);
 
-    // Track inbox thread IDs separately for priority detection
-    const inboxThreadIds = new Set(inboxThreads.map(t => t.getId()));
+    // Track actionable thread IDs (inbox + 00.received, unsnoozed)
+    const actionableThreadIds = new Set(actionableThreads.map(t => t.getId()));
 
-    // Process inbox threads first (these get highest priority)
+    // Process all threads
     const processedThreadIds = new Set();
 
     // Helper function to match vendor from thread
@@ -472,7 +474,7 @@ function getHotVendorsFromGmail_(allVendors) {
     };
 
     // Combine all threads for processing
-    const allThreads = [...inboxThreads, ...recentThreads, ...sentThreads];
+    const allThreads = [...actionableThreads, ...sentThreads];
 
     for (const thread of allThreads) {
       try {
@@ -482,12 +484,17 @@ function getHotVendorsFromGmail_(allVendors) {
 
         const match = matchVendorFromThread(thread);
         if (match) {
-          // If this thread is in inbox, add to inbox set (highest priority)
-          if (inboxThreadIds.has(threadId)) {
+          // If this thread is actionable (inbox OR 00.received, unsnoozed)
+          if (actionableThreadIds.has(threadId)) {
             inboxSet.add(match.vendor);
-            console.log(`INBOX: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
+            // Track oldest email date per vendor for sorting
+            var threadDate = thread.getLastMessageDate();
+            if (!inboxOldestDate[match.vendor] || threadDate < inboxOldestDate[match.vendor]) {
+              inboxOldestDate[match.vendor] = threadDate;
+            }
+            console.log(`ACTIONABLE: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType}, date: ${threadDate})`);
           } else {
-            // Only add to hotSet if not already in inboxSet
+            // Sent-only threads go to hot (vendor we've emailed but no inbox/received thread)
             if (!inboxSet.has(match.vendor)) {
               hotSet.add(match.vendor);
               console.log(`HOT: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
@@ -512,7 +519,7 @@ function getHotVendorsFromGmail_(allVendors) {
     console.log(`Error searching Gmail: ${e.message}`);
   }
 
-  return { inboxSet, hotSet };
+  return { inboxSet, hotSet, inboxOldestDate };
 }
 
 

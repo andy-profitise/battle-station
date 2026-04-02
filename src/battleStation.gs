@@ -24,12 +24,12 @@
  * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
  * NEW: Vendor Briefing (full intel aggregation), Bulk Actions match transparency
  * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
- * NEW: 🚀 Vendor Workflow - Full proactive loop (sync → build → brief → vendor review → tasks → emails → repeat)
+ * NEW: Vendor Workflow - Full proactive loop (sync, build, brief, vendor review, tasks, emails, repeat)
  ************************************************************/
 
 const BS_CFG = {
   // Code version - displayed in UI to confirm deployment
-  CODE_VERSION: '2026-03-31 10:00AM PST',
+  CODE_VERSION: '2026-04-01 08:00AM PST',
 
   // Sheet names
   LIST_SHEET: 'List',
@@ -306,10 +306,6 @@ function onOpen() {
     .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
     .addItem('📧 Open Gmail Search (00.received)', 'battleStationOpenGmailReceived')
     .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
-    .addSeparator()
-    .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
-    .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
-    .addItem('✅ Update Review Todos', 'inboxReviewUpdateTodos')
     .addSeparator()
     .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
     .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
@@ -1565,8 +1561,8 @@ function loadVendorData(vendorIndex, options) {
   // Row 2: Source | Total USD
   bsSh.getRange(currentRow, 1).setValue('Source:').setFontWeight('bold');
   bsSh.getRange(currentRow, 2).setValue(source);
-  bsSh.getRange(currentRow, 3).setValue('Total USD:').setFontWeight('bold');
-  bsSh.getRange(currentRow, 4).setValue(`$${Number(ttlUsd).toLocaleString()}`).setHorizontalAlignment('left');
+  // bsSh.getRange(currentRow, 3).setValue('Total USD:').setFontWeight('bold'); // TODO: Re-enable TTL when actively used
+  // bsSh.getRange(currentRow, 4).setValue(`$${Number(ttlUsd).toLocaleString()}`).setHorizontalAlignment('left'); // TODO: Re-enable TTL when actively used
   currentRow++;
   
   // Row 3: Live Verticals | Live Modalities
@@ -2519,12 +2515,24 @@ function loadVendorData(vendorIndex, options) {
   // Fetch tasks once and reuse for blockers, task display, and Crystal Ball
   const allVendorTasks_ = getTasksForVendor_(vendor, listRow);
 
-  // Current Blocker(s) section - show first blocker task's notes (or item name as fallback)
+  // Current Blocker(s) section - check ALL blocker tasks for notes
   const blockerTasks = allVendorTasks_.filter(t => t.isBlocker && !t.isDone);
   if (blockerTasks.length > 0) {
-    const firstBlocker = blockerTasks[0];
-    const hasNotes = !!firstBlocker.notes;
-    const blockerText = hasNotes ? firstBlocker.notes : firstBlocker.subject;
+    // Collect notes from all blocker tasks that have them
+    const blockerNotes = [];
+    const blockerNames = [];
+    for (var bt = 0; bt < blockerTasks.length; bt++) {
+      if (blockerTasks[bt].notes) {
+        blockerNotes.push(blockerTasks[bt].notes);
+      }
+      blockerNames.push(blockerTasks[bt].subject);
+    }
+
+    // Use aggregated notes if any task has them, otherwise show task names
+    const hasNotes = blockerNotes.length > 0;
+    const blockerText = hasNotes
+      ? blockerNotes.join('\n---\n')
+      : blockerNames.join('; ');
 
     bsSh.getRange(currentRow, 1, 1, 3).merge()
       .setValue('🚧 CURRENT BLOCKER(S)')
@@ -6127,8 +6135,8 @@ ${content}`;
   let vendorProfile = `## Vendor Profile
 Name: ${vendor}
 Type: ${source}
-Status: ${status}
-TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}`;
+Status: ${status}`;
+// TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
 
   if (contactData.liveVerticals) vendorProfile += `\nLive Verticals: ${contactData.liveVerticals}`;
   if (contactData.otherVerticals) vendorProfile += `\nOther Verticals: ${contactData.otherVerticals}`;
@@ -6183,15 +6191,33 @@ Answer the question above based on all available context — vendor profile, ema
       .btn-secondary:hover { background: #5a6268; }
       .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
       #loading { display: none; color: #666; margin-top: 10px; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
     <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
     <div class="question">Q: ${escapeHtml_(question)}</div>
     <div class="answer" id="answerBox">${escapeHtml_(result.content)}</div>
     <div class="meta" id="metaBox">Searched emails 1-${Math.min(emails.length, 50)} of ${emails.length} retrieved</div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
     <button class="btn btn-secondary" id="searchMoreBtn" onclick="searchMore()">🔍 Search Older Emails (101-200)</button>
     <div id="loading">⏳ Searching older emails...</div>
 
     <script>
+      function copyContent() {
+        var el = document.getElementById('answerBox');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
       function searchMore() {
         document.getElementById('searchMoreBtn').disabled = true;
         document.getElementById('loading').style.display = 'block';
@@ -8742,10 +8768,14 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
         .btn-write:hover { background: #1b5e20; }
         .btn-write:disabled { background: #a5d6a7; cursor: not-allowed; }
         .loading-msg { color: #666; font-style: italic; margin-top: 10px; display: none; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🤖 Claude Analysis: ${vendor}</h2>
       <p><em>Analyzed ${emailData.length} unsnoozed email threads</em></p>
-      <div class="content">${formattedContent}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div class="content" id="analysis-content">${formattedContent}</div>
 
       <div class="write-response-section">
         <h3>✍️ Write Response</h3>
@@ -8764,6 +8794,20 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
       </div>
 
       <script>
+        function copyContent() {
+          var el = document.getElementById('analysis-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
         function doWriteResponse() {
           var emailIndex = document.getElementById('emailSelect').value;
           var directions = document.getElementById('directions').value.trim();
@@ -12944,11 +12988,31 @@ IMPORTANT: At the very end of your response, include a section exactly like this
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
         .reorder-note { background: #e8f0fe; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🧠 Smart Briefing</h2>
       <p class="meta">Analyzed ${vendorSummaries.length} vendors | ${new Date().toLocaleString()}</p>
       ${priorityNames.length > 0 ? '<div class="reorder-note">✅ List has been reordered — hit <strong>Next Vendor</strong> to work through them in priority order.</div>' : ''}
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="briefing-content-smart">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('briefing-content-smart');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(650);
@@ -13265,6 +13329,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
     <div class="buttons" style="margin-top: 15px;">
       <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Notes</button>
       <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="doKeepCurrentNotes()" style="background:#e3f2fd;color:#1565c0;">Keep Current</button>
       <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
     </div>
 
@@ -13286,6 +13351,7 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
     <div class="buttons" style="margin-top: 15px;">
       <button id="blockerSaveBtn" class="btn btn-success" onclick="doSaveBlockers()">Save Blockers</button>
       <button id="blockerReviseBtn" class="btn btn-secondary" onclick="doShowBlockerRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()" style="background:#e3f2fd;color:#1565c0;">Keep Current</button>
       <button class="btn btn-secondary" onclick="google.script.host.close()">Skip</button>
     </div>
 
@@ -13307,6 +13373,34 @@ function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
     }
 
     // ========== NOTES SCREEN ==========
+    function doKeepCurrentNotes() {
+      // Skip saving notes, go straight to blocker screen
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Generating blocker summary...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(data) {
+          document.getElementById('notesScreen').style.display = 'none';
+          document.getElementById('blockerScreen').style.display = 'block';
+          document.getElementById('loadingMsg').style.display = 'none';
+
+          if (data.currentBlockers) {
+            document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label">Current blocker(s):</div>';
+            document.getElementById('blockerCurrentNotes').innerHTML = esc(data.currentBlockers);
+            document.getElementById('blockerCurrentNotes').style.display = 'block';
+          } else {
+            document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>';
+          }
+          document.getElementById('blockerPreview').innerHTML = esc(data.suggestedBlockers);
+        })
+        .withFailureHandler(function() {
+          google.script.host.close();
+        })
+        .generateBlockerSummary();
+    }
+
     function doSave() {
       document.getElementById('saveBtn').disabled = true;
       document.getElementById('reviseBtn').disabled = true;
@@ -13545,9 +13639,28 @@ function generateBlockerSummary() {
 
   ss.toast(`Analyzing blockers for ${vendor}...`, '🚧 Blockers', 5);
 
-  // Get current blockers from monday.com
+  // Get current blockers from monday.com vendor field
   const contactData = getVendorContacts_(vendor, listRow);
-  const currentBlockers = contactData.blockers || '';
+  let currentBlockers = contactData.blockers || '';
+
+  // Also check all blocker tasks for notes
+  try {
+    const tasks = getTasksForVendor_(vendor, listRow) || [];
+    const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+    const taskBlockerNotes = [];
+    for (let bt = 0; bt < blockerTasks.length; bt++) {
+      if (blockerTasks[bt].notes) {
+        taskBlockerNotes.push(blockerTasks[bt].subject + ': ' + blockerTasks[bt].notes);
+      } else {
+        taskBlockerNotes.push(blockerTasks[bt].subject + ' (no notes)');
+      }
+    }
+    if (taskBlockerNotes.length > 0) {
+      currentBlockers += (currentBlockers ? '\n\n' : '') + 'Blocker Tasks:\n' + taskBlockerNotes.join('\n');
+    }
+  } catch (e) {
+    Logger.log('Could not fetch blocker tasks for summary: ' + e.message);
+  }
 
   const apiKey = getClaudeApiKey_();
   if (!apiKey) throw new Error('No Claude API key configured.');
@@ -13610,13 +13723,44 @@ function saveBlockersFromPreview() {
   const blockers = context.suggestedBlockers;
   const blockerText = (blockers.toLowerCase() === '(none)') ? '' : blockers;
 
-  // Update monday.com
+  // 1. Update the vendor's "Current Blocker(s)" field on monday.com
   const result = updateMondayBlockersForVendor_(context.vendor, blockerText, context.listRow);
 
   if (result.success) {
     ss.toast(`Blockers updated for ${context.vendor}`, '✅ Blockers Saved', 3);
   } else {
     throw new Error(`Monday.com update failed: ${result.error}`);
+  }
+
+  // 2. Also post the blocker text as an update (note) on ALL active blocker tasks
+  if (blockerText) {
+    try {
+      const tasks = getTasksForVendor_(context.vendor, context.listRow) || [];
+      const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+      let posted = 0;
+      for (let bt = 0; bt < blockerTasks.length; bt++) {
+        const blockerTask = blockerTasks[bt];
+        const escapedBody = blockerText.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+        const updateMutation = `
+          mutation {
+            create_update (
+              item_id: ${blockerTask.itemId},
+              body: "${escapedBody}"
+            ) { id }
+          }
+        `;
+        const updateResult = mondayApiRequest_(updateMutation, BS_CFG.MONDAY_API_TOKEN);
+        if (updateResult.data?.create_update?.id) {
+          Logger.log('Posted blocker update to task: ' + blockerTask.subject + ' (ID: ' + blockerTask.itemId + ')');
+          posted++;
+        }
+      }
+      if (posted > 0) {
+        ss.toast('Posted to ' + posted + ' blocker task(s)', '📝 Tasks Updated', 3);
+      }
+    } catch (e) {
+      Logger.log('Could not post to blocker tasks: ' + e.message);
+    }
   }
 
   // Update the blocker section on the Battle Station sheet if it exists
@@ -13810,6 +13954,18 @@ function createBlockerForVendor() {
     }
   `;
   mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 2b: Add the title as an update (note) on the item so it shows in Battle Station
+  // Without this, the blocker task has no notes and displays greyed out
+  const noteMutation = `
+    mutation {
+      create_update (
+        item_id: ${newItemId},
+        body: "${escapedVendor}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(noteMutation, apiToken);
 
   // Step 3: Move to Blockers group
   const moveMutation = `
@@ -14087,6 +14243,17 @@ function createBlockerFromSuggestion(blockerText) {
     }
   `;
   mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 2b: Add the title as notes so it shows in Battle Station
+  const noteMutation = `
+    mutation {
+      create_update (
+        item_id: ${newItemId},
+        body: "${taskTitle}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(noteMutation, apiToken);
 
   // Step 3: Move to Blockers group
   const moveMutation = `
@@ -14466,51 +14633,54 @@ function battleStationDraftReply() {
 
   // Get the most recent unsnoozed email thread
   const targetEmail = unsnoozed[0];
-  let threadContent = '';
   let thread = null;
+  let threadContent = '';
+  let lastSenderIsMe = false;
 
   try {
     thread = GmailApp.getThreadById(targetEmail.threadId);
     if (thread) {
-      const messages = thread.getMessages();
-      for (const msg of messages.slice(-3)) {
-        threadContent += `\nFrom: ${msg.getFrom()}\nDate: ${msg.getDate()}\n${msg.getPlainBody().substring(0, 1000)}\n---`;
-      }
+      const result = getThreadContent_(thread);
+      threadContent = result.content;
+      lastSenderIsMe = result.lastSenderIsMe;
     }
   } catch (e) {
     threadContent = `Subject: ${targetEmail.subject}\n(Could not fetch thread content)`;
   }
 
+  // Ask for extra directions
+  const dirResponse = ui.prompt(
+    'Draft Reply for ' + vendor,
+    'Subject: ' + targetEmail.subject + '\n\nAny specific directions for this reply? (leave blank for auto):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (dirResponse.getSelectedButton() !== ui.Button.OK) return;
+  const extraDirections = dirResponse.getResponseText().trim();
+
   ss.toast('Generating reply with Claude...', '🤖 Drafting', 5);
 
-  const prompt = `You are drafting an email reply for Andy Worford at Profitise (a lead generation company in Home Services and Solar).
-
-Vendor: ${vendor}
-Notes about this vendor: ${notes || '(none)'}
-
-Email thread:
-${threadContent}
-
-Write a professional, concise reply. Be helpful and move the conversation forward. Sign off as "Andy Worford, Profitise".
-
-Write ONLY the email body. No meta-commentary.`;
-
   try {
-    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 800 });
+    // Use the same generateEmailWithClaude_ as Email Actions for consistent quality
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      targetEmail.subject,
+      'General Follow Up',
+      extraDirections || ('Vendor notes: ' + (notes || 'none')),
+      lastSenderIsMe
+    );
 
-    if (response.error) {
-      ui.alert(`Claude API Error: ${response.error}`);
-      return;
-    }
+    // Store context for revision/draft creation (same as Email Actions flow)
+    const revisionContext = {
+      threadId: targetEmail.threadId,
+      responseType: 'Draft Reply',
+      originalDirections: extraDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
 
-    // Create a Gmail draft reply
-    if (thread) {
-      thread.createDraftReply(response.content);
-      ss.toast(`Draft reply created for "${targetEmail.subject}"`, '✅ Draft Ready', 3);
-      ui.alert(`✓ Draft reply created!\n\nSubject: Re: ${targetEmail.subject}\n\nCheck your Gmail drafts to review and send.`);
-    } else {
-      ui.alert(`Reply generated but couldn't create draft.\n\nCopy this reply:\n\n${response.content}`);
-    }
+    // Show preview dialog with recipients, revise option, and Create Draft button
+    showDraftPreviewDialog_(responseBody, targetEmail.threadId);
+
   } catch (e) {
     ui.alert(`Error: ${e.message}`);
   }
@@ -14864,6 +15034,63 @@ ${threadContent}
 }
 
 /**
+ * Compute who a reply-all draft would go to, without creating the draft.
+ * Returns { to, cc, bcc } as comma-separated strings.
+ */
+function computeDraftRecipients_(threadId) {
+  if (!threadId) return { to: '', cc: '', bcc: '' };
+
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return { to: '', cc: '', bcc: '' };
+
+  const messages = thread.getMessages();
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  const internalDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+  const isInternal = (email) => internalDomains.some(d => email.toLowerCase().includes('@' + d));
+  const extractEmail = (str) => { const m = str.match(/<([^>]+)>/); return m ? m[1].toLowerCase() : str.toLowerCase().trim(); };
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addrs = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === '"') { inQ = !inQ; cur += str[i]; }
+      else if (str[i] === ',' && !inQ) { if (cur.trim()) addrs.push(cur.trim()); cur = ''; }
+      else { cur += str[i]; }
+    }
+    if (cur.trim()) addrs.push(cur.trim());
+    return addrs;
+  };
+
+  const allParticipants = new Set();
+  for (const msg of messages) {
+    const all = [...splitAddresses(msg.getFrom() || ''), ...splitAddresses(msg.getTo() || ''), ...splitAddresses(msg.getCc() || '')];
+    for (const addr of all) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@profitise.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  const ext = []; const int = [];
+  for (const addr of allParticipants) {
+    if (isInternal(extractEmail(addr))) int.push(addr); else ext.push(addr);
+  }
+
+  let to = '', cc = '', bcc = '';
+  if (ext.length > 0) { to = ext.join(', '); cc = int.join(', '); }
+  else { to = int.join(', '); }
+
+  const allStr = [...allParticipants].join(',').toLowerCase();
+  if (!allStr.includes('sales@profitise.com')) {
+    if (cc) bcc = 'sales@profitise.com';
+    else bcc = 'sales@profitise.com';
+  }
+
+  return { to: to, cc: cc, bcc: bcc };
+}
+
+/**
  * Create Gmail draft and return the URL
  * Uses createDraftReplyAll for proper threading, then updates content via Gmail API
  */
@@ -14899,28 +15126,6 @@ function createDraftAndGetUrl_(thread, responseBody) {
     const emailLower = email.toLowerCase();
     return internalDomains.some(domain => emailLower.includes('@' + domain));
   };
-  if (options.system) {
-    payload.system = options.system;
-  }
-  
-  const fetchOptions = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  try {
-    const response = UrlFetchApp.fetch(url, fetchOptions);
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-    
-    if (responseCode !== 200) {
-      return { error: `API returned ${responseCode}: ${responseText}` };
 
   // Helper to extract email from "Name <email>" format
   const extractEmail = (str) => {
@@ -15100,6 +15305,8 @@ function createDraftAndGetUrl_(thread, responseBody) {
   // Step 4: Build the updated message preserving threading headers
   // Use thread's first message subject to avoid [External] tags added by recipients
   let subject = thread.getFirstMessageSubject();
+  // Strip emojis and normalize smart quotes to ASCII to prevent MIME encoding issues
+  subject = cleanSubjectLine_(subject);
   if (!subject.toLowerCase().startsWith('re:')) {
     subject = 'Re: ' + subject;
   }
@@ -15595,6 +15802,17 @@ function showDraftPreviewDialog_(responseBody, threadId) {
   // Build Gmail thread URL
   const threadUrl = threadId ? `https://mail.google.com/mail/u/0/#inbox/${threadId}` : '';
 
+  // Compute recipients so user can see who the email will go to
+  let toDisplay = '', ccDisplay = '', bccDisplay = '';
+  try {
+    const recipients = computeDraftRecipients_(threadId);
+    toDisplay = recipients.to || '';
+    ccDisplay = recipients.cc || '';
+    bccDisplay = recipients.bcc || '';
+  } catch (e) {
+    Logger.log('Could not compute recipients: ' + e.message);
+  }
+
   // Safely escape the response for embedding in HTML
   const escapedResponse = responseBody
     .replace(/&/g, '&amp;')
@@ -15652,10 +15870,18 @@ function showDraftPreviewDialog_(responseBody, threadId) {
     }
     .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
     .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+    .recipients { background: #fff3e0; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; line-height: 1.6; border: 1px solid #ffe0b2; }
+    .recipients strong { color: #e65100; }
+    .rcpt-label { display: inline-block; min-width: 32px; font-weight: bold; color: #5f6368; }
   </style>
 </head>
 <body>
   <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
+  ${toDisplay ? `<div class="recipients">
+    <div><span class="rcpt-label">To:</span> ${toDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+    ${ccDisplay ? `<div><span class="rcpt-label">Cc:</span> ${ccDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+    ${bccDisplay ? `<div><span class="rcpt-label">Bcc:</span> ${bccDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+  </div>` : ''}
   <div class="buttons">
     <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft</button>
     <button id="sendBtn" class="btn btn-primary" style="background: #34a853;" onclick="doSendNow()">Send Now</button>
@@ -15681,8 +15907,11 @@ function showDraftPreviewDialog_(responseBody, threadId) {
 
       google.script.run
         .withSuccessHandler(function(url) {
+          // Show clickable link in case popup is blocked
+          document.getElementById('loadingMsg').innerHTML = '<a href="' + url + '" target="_blank" style="color:#1a73e8;font-weight:bold;font-size:14px;">Open Draft in Gmail</a>';
+          document.getElementById('loadingMsg').style.display = 'block';
+          document.getElementById('loadingMsg').style.fontStyle = 'normal';
           window.open(url, '_blank');
-          google.script.host.close();
         })
         .withFailureHandler(function(err) {
           alert('Error: ' + (err.message || err));
@@ -16988,6 +17217,7 @@ function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
 
       // Get subject from thread
       let subject = thread.getFirstMessageSubject();
+      subject = cleanSubjectLine_(subject);
       if (!subject.toLowerCase().startsWith('re:')) {
         subject = 'Re: ' + subject;
       }
@@ -17504,6 +17734,9 @@ function discoverContactsFromGmail() {
       .status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
       .status-success { background: #d4edda; color: #155724; }
       .status-error { background: #f8d7da; color: #721c24; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
 
     <h2>📇 Contact Discovery for ${escapeHtml_(vendor)}</h2>
@@ -17516,9 +17749,11 @@ function discoverContactsFromGmail() {
     </div>
 
     <div id="statusMsg"></div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
   `;
 
   // New contacts section with checkboxes
+  html += `<div id="discovery-content">`;
   html += `<h3>🆕 Potential New Contacts (${potentialNewContacts.length})</h3>`;
 
   if (potentialNewContacts.length === 0) {
@@ -17606,6 +17841,7 @@ function discoverContactsFromGmail() {
     `;
   }
   html += `</table>`;
+  html += `</div>`; // close #discovery-content
 
   // Add Done button for hard refresh
   html += `
@@ -17620,6 +17856,21 @@ function discoverContactsFromGmail() {
   html += `
     <script>
       const dialogData = ${JSON.stringify(dialogData)};
+
+      function copyContent() {
+        var el = document.getElementById('discovery-content');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
 
       function toggleSelectAll() {
         const selectAll = document.getElementById('selectAll').checked;
@@ -18590,6 +18841,9 @@ SUMMARY:
       .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; }
       .status-msg.success { background: #e8f5e9; color: #2e7d32; display: block; }
       .status-msg.error { background: #ffebee; color: #c62828; display: block; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
 
     <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
@@ -18597,10 +18851,13 @@ SUMMARY:
     <div class="summary-box">
       <strong>Analyzed:</strong> ${Math.min(emails.length, 25)} emails from label (${emails.length} total), ${openTasks.length} open tasks
     </div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
 
+    <div id="task-analysis-content">
     <div id="status-message" class="status-msg"></div>
 
     ${updatesHtml}
+    </div>
 
     <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
       <button id="done-btn" style="background: #1a73e8; color: white; border: none; padding: 10px 30px; border-radius: 5px; font-size: 14px; cursor: pointer;">
@@ -18609,6 +18866,21 @@ SUMMARY:
     </div>
 
     <script>
+      function copyContent() {
+        var el = document.getElementById('task-analysis-content');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
+
       function applyUpdate(itemId, statusColumnId, newStatus, btn) {
         btn.disabled = true;
         btn.textContent = '⏳ Updating...';
@@ -19472,6 +19744,7 @@ function battleStationGenerateInsights() {
   const goalsContext = getGoalsContext_();
   const aiInstructions = getAiInstructions_();
 
+  // TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy Worford at Profitise, a lead generation company in Home Services and Solar verticals.
 ${aiInstructions}
 Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, opportunities, and plays that Andy might not see just from reading emails.
@@ -19480,7 +19753,6 @@ Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, o
 Name: ${vendor}
 Type: ${source}
 Status: ${status}
-TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
 Live Verticals: ${contactData.liveVerticals || '(none)'}
 Other Verticals: ${contactData.otherVerticals || '(none)'}
 Live Modalities: ${contactData.liveModalities || '(none)'}
@@ -19541,13 +19813,33 @@ Be bold, be creative, be specific. Reference actual email content and data point
         .meta { color: #888; font-size: 11px; margin-bottom: 12px; }
         .vendor-card { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
         .vendor-card strong { color: #2e7d32; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>💡 Insights: ${vendor}</h2>
       <div class="vendor-card">
-        <strong>${source}</strong> | ${status} | TTL: $${Number(ttlUsd).toLocaleString()} | ${unsnoozed.length} active emails, ${overdue.length} overdue
+        <strong>${source}</strong> | ${status} | ${unsnoozed.length} active emails, ${overdue.length} overdue
       </div>
       <p class="meta">${new Date().toLocaleString()}</p>
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
@@ -19597,7 +19889,8 @@ function battleStationGoalInsights() {
 
     if (!vendor) continue;
 
-    vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`);
+    // vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`); // TODO: Re-enable TTL when actively used
+    vendorSnapshots.push(`${vendor} | ${source} | ${status} | Notes: ${(notes || '').substring(0, 150)}`);
   }
 
   ss.toast(`Generating goal-aligned insights for ${vendorSnapshots.length} vendors...`, '🎯 Processing', 15);
@@ -19649,10 +19942,30 @@ Be specific, reference actual vendor names and goals, and give actionable recomm
         h3 { color: #e65100; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #ff9800; padding-bottom: 4px; }
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🎯 Goal-Aligned Insights</h2>
       <p class="meta">Analyzed ${vendorSnapshots.length} vendors against your goals | ${new Date().toLocaleString()}</p>
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="goal-insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('goal-insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
@@ -19760,11 +20073,17 @@ function battleStationVendorBriefing() {
 
   // ─── 7. GOOGLE DRIVE DOCS ───
   let gDriveFiles = [];
-  try { gDriveFiles = getGDriveFilesForVendor_(vendor); } catch (e) { Logger.log(`[Briefing] GDrive error: ${e.message}`); }
+  try {
+    const gDriveResult = getGDriveFilesForVendor_(vendor);
+    gDriveFiles = Array.isArray(gDriveResult) ? gDriveResult : (gDriveResult && gDriveResult.files ? gDriveResult.files : []);
+  } catch (e) { Logger.log(`[Briefing] GDrive error: ${e.message}`); }
 
   // ─── 8. BOX DOCUMENTS ───
   let boxDocs = [];
-  try { boxDocs = searchBoxForVendor(vendor); } catch (e) { Logger.log(`[Briefing] Box error: ${e.message}`); }
+  try {
+    const boxResult = searchBoxForVendor(vendor);
+    boxDocs = Array.isArray(boxResult) ? boxResult : [];
+  } catch (e) { Logger.log(`[Briefing] Box error: ${e.message}`); }
 
   // ─── 9. GOALS & AI INSTRUCTIONS ───
   const goalsContext = getGoalsContext_();
@@ -19810,7 +20129,8 @@ function battleStationVendorBriefing() {
     `- ${c.name} (${c.contactType || 'Unknown'}, ${c.status || 'N/A'}) ${c.email || ''} ${c.phone || ''}`
   ).join('\n') || '(no contacts)';
 
-  const prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
+  // - TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
+  let prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
 
 This briefing should give Andy everything he needs to walk into a call, meeting, or email exchange and be fully prepared. Think of it as a pre-meeting intelligence packet.
 ${aiInstructions}
@@ -19823,7 +20143,6 @@ COMPLETE VENDOR DOSSIER: ${vendor}
 - Type: ${source}
 - Status: ${contactData.liveStatus || status || 'Unknown'}
 - Priority Zone: ${tranche}
-- TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
 - Live Verticals: ${contactData.liveVerticals || '(none)'}
 - Other Verticals: ${contactData.otherVerticals || '(none)'}
 - Live Modalities: ${contactData.liveModalities || '(none)'}
@@ -19904,6 +20223,22 @@ Group by urgency: overdue first, then waiting-on-vendor, then waiting-on-us.]
 
 Be direct, concise, and strategic. Andy is busy — make every word count.`;
 
+  // Add previous action plan and notes for this vendor (truncated to avoid timeout)
+  const prevPlan = getPreviousActionPlan_(vendor);
+  if (prevPlan && prevPlan.actionPlan) {
+    prompt += `\n\n═══ PREVIOUS ACTION PLAN ═══\n${prevPlan.actionPlan.substring(0, 1500)}`;
+    if (prevPlan.userNotes) {
+      prompt += `\n\nANDY'S NOTES ON PREVIOUS PLAN:\n${prevPlan.userNotes.substring(0, 800)}`;
+    }
+    prompt += `\n\nCheck if any previous action items are still unresolved and carry them forward.`;
+  }
+
+  // Add general notes that apply across all vendors
+  const generalNotes = getGeneralNotes_();
+  if (generalNotes) {
+    prompt += `\n\n═══ GENERAL CONTEXT ═══\n${generalNotes.substring(0, 800)}`;
+  }
+
   try {
     const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
 
@@ -19911,6 +20246,20 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
       ui.alert(`Claude API Error: ${response.error}`);
       return;
     }
+
+    // Save the raw briefing to the Action Plans sheet
+    saveBriefingToSheet_(vendor, response.content);
+
+    // Store context for revision
+    const briefingContext = {
+      vendor: vendor,
+      source: source,
+      status: contactData.liveStatus || status,
+      rawContent: response.content,
+      listRow: listRow,
+      tranche: tranche
+    };
+    PropertiesService.getUserProperties().setProperty('vendorBriefingContext', JSON.stringify(briefingContext));
 
     // Format the response for HTML display
     let content = response.content
@@ -19945,16 +20294,32 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
         .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
         .copy-btn:hover { background: #1557b0; }
         .copied { background: #4caf50 !important; }
+        .revise-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e0e0e0; }
+        .revise-input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box; min-height: 60px; }
+        .revise-label { font-size: 12px; color: #5f6368; margin-bottom: 4px; }
+        .btn-revise { background: #f57c00; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 6px; }
+        .btn-revise:hover { background: #e65100; }
+        .btn-revise:disabled { background: #ccc; cursor: not-allowed; }
+        .loading { color: #5f6368; font-style: italic; margin-top: 6px; display: none; }
       </style>
       <h2>📋 Vendor Briefing: ${escapeHtml_(vendor)}</h2>
       <div class="vendor-card">
-        <strong>${escapeHtml_(source)}</strong> | ${escapeHtml_(contactData.liveStatus || status)} | TTL: $${Number(ttlUsd).toLocaleString()}
+        <strong>${escapeHtml_(source)}</strong> | ${escapeHtml_(contactData.liveStatus || status)}
         <div class="badges">${badges.map(b => '<span class="badge">' + b + '</span>').join('')}</div>
       </div>
       <p class="meta">Generated ${new Date().toLocaleString()} | Data sources: monday.com, Gmail, Airtable, Calendar, GDrive, Box</p>
       <button class="copy-btn" onclick="copyBriefing()">📋 Copy to Clipboard</button>
       <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
       <div id="briefing-content">${content}</div>
+      <div class="revise-section">
+        <div class="revise-label">Add notes or corrections to revise the action plan:</div>
+        <div style="background:#e8f5e9;padding:6px 10px;border-radius:4px;font-size:11px;margin-bottom:6px;color:#2e7d32;border:1px solid #c8e6c9;">
+          <strong>Tip:</strong> Start a line with <code>GENERAL:</code> to save a note that applies to <em>all</em> vendors (e.g., <code>GENERAL: Inbound calls program is on hold</code>). Regular notes only apply to this vendor.
+        </div>
+        <textarea id="reviseInput" class="revise-input" placeholder="e.g., Returns are already processed. NDA was already signed.&#10;GENERAL: Inbound calls program is on hold across all vendors."></textarea>
+        <button id="reviseBtn" class="btn-revise" onclick="doRevise()">Revise Action Plan</button>
+        <div id="reviseLoading" class="loading">Revising with Claude...</div>
+      </div>
       <script>
         function copyBriefing() {
           var el = document.getElementById('briefing-content');
@@ -19970,15 +20335,35 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
           btn.classList.add('copied');
           setTimeout(function() { btn.textContent = '📋 Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
         }
+        function doRevise() {
+          var feedback = document.getElementById('reviseInput').value.trim();
+          if (!feedback) { alert('Please enter your notes or corrections.'); return; }
+          document.getElementById('reviseBtn').disabled = true;
+          document.getElementById('reviseLoading').style.display = 'block';
+          google.script.run
+            .withSuccessHandler(function(newContent) {
+              document.getElementById('briefing-content').innerHTML = newContent;
+              document.getElementById('reviseInput').value = '';
+              document.getElementById('reviseBtn').disabled = false;
+              document.getElementById('reviseLoading').style.display = 'none';
+            })
+            .withFailureHandler(function(err) {
+              alert('Error: ' + (err.message || err));
+              document.getElementById('reviseBtn').disabled = false;
+              document.getElementById('reviseLoading').style.display = 'none';
+            })
+            .reviseBriefingActionPlan(feedback);
+        }
       </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(850).setHeight(750);
-    ui.showModalDialog(html, `📋 Vendor Briefing: ${vendor}`);
-    ss.toast('Briefing ready!', '✅ Done', 3);
+    // Re-acquire UI reference in case it went stale during long API calls
+    SpreadsheetApp.getUi().showModalDialog(html, `📋 Vendor Briefing: ${vendor}`);
+    SpreadsheetApp.getActive().toast('Briefing ready!', '✅ Done', 3);
 
   } catch (e) {
-    ui.alert(`Error generating briefing: ${e.message}`);
+    SpreadsheetApp.getUi().alert(`Error generating briefing: ${e.message}`);
   }
 }
 
@@ -21649,21 +22034,19 @@ function inboxReviewMarkTodosDone(indicesJson) {
  *   9. Move to next vendor, repeat from step 4
  ************************************************************/
 
-const VW_STEPS = [
-  { id: 'sync',       label: '🔄 Sync monday.com Data',         fn: 'vw_syncMonday_' },
-  { id: 'buildList',  label: '📋 Build List',                    fn: 'vw_buildList_' },
-  { id: 'briefing',   label: '🧠 Smart Briefing',               fn: 'vw_smartBriefing_' },
-  { id: 'loadVendor', label: '🎯 Load Next Vendor',             fn: 'vw_loadVendor_' },
-  { id: 'vendorBrief',label: '📋 Vendor Briefing (Full Intel)',  fn: 'vw_vendorBriefing_' },
-  { id: 'bulkFix',    label: '⚡ Auto-Fix (Bulk Actions)',       fn: 'vw_bulkActions_' },
-  { id: 'createTasks',label: '📝 Create Tasks for Manual Items', fn: 'vw_createTasks_' },
-  { id: 'settleEmail',label: '✉️ Settle Emails',                 fn: 'vw_settleEmails_' },
-  { id: 'nextVendor', label: '⏭️ Next Vendor (Loop)',            fn: 'vw_nextVendor_' },
+var VW_STEPS = [
+  { id: 'setup',      label: 'Sync + Build List + Briefing',  fn: 'vw_setup_' },
+  { id: 'loadVendor', label: 'Load Next Vendor',              fn: 'vw_loadVendor_' },
+  { id: 'vendorBrief',label: 'Vendor Briefing (Full Intel)',   fn: 'vw_vendorBriefing_' },
+  { id: 'settleEmail',label: 'Settle Emails',                  fn: 'vw_settleEmails_' },
+  { id: 'bulkFix',    label: 'Bulk Actions + Tasks',           fn: 'vw_bulkAndTasks_' },
+  { id: 'updateNotes',label: 'Update Notes & Blockers',        fn: 'vw_updateNotes_' },
+  { id: 'fillFields', label: 'Fill Empty Monday.com Fields',   fn: 'vw_fillEmptyFields_' },
+  { id: 'nextVendor', label: 'Next Vendor (Loop)',             fn: 'vw_nextVendor_' }
 ];
 
-/** Get/set workflow state from Script Properties */
 function vwGetState_() {
-  const raw = PropertiesService.getScriptProperties().getProperty('VENDOR_WORKFLOW_STATE');
+  var raw = PropertiesService.getScriptProperties().getProperty('VENDOR_WORKFLOW_STATE');
   if (!raw) return null;
   try { return JSON.parse(raw); } catch(e) { return null; }
 }
@@ -21678,14 +22061,13 @@ function vwClearState_() {
   PropertiesService.getScriptProperties().deleteProperty('VENDOR_WORKFLOW_STATE');
 }
 
-/** Start the full vendor workflow loop */
 function vendorWorkflowStart() {
-  const ui = SpreadsheetApp.getUi();
-  const existing = vwGetState_();
+  var ui = SpreadsheetApp.getUi();
+  var existing = vwGetState_();
   if (existing) {
-    const resp = ui.alert(
-      '🚀 Workflow Already Running',
-      `You're on step "${VW_STEPS[existing.stepIdx].label}" for vendor "${existing.currentVendor || '(none yet)'}".\\n\\nRestart from scratch?`,
+    var resp = ui.alert(
+      'Workflow Already Running',
+      'You are on step "' + VW_STEPS[existing.stepIdx].label + '" for vendor "' + (existing.currentVendor || '(none yet)') + '".\n\nRestart from scratch?',
       ui.ButtonSet.YES_NO
     );
     if (resp !== ui.Button.YES) return;
@@ -21697,148 +22079,136 @@ function vendorWorkflowStart() {
     vendorQueue: [],
     vendorsCompleted: [],
     tasksPending: [],
-    startedAt: new Date().toISOString(),
+    startedAt: new Date().toISOString()
   });
 
-  SpreadsheetApp.getActive().toast('Starting Vendor Workflow...', '🚀 Workflow', 3);
+  SpreadsheetApp.getActive().toast('Starting Vendor Workflow...', 'Workflow', 3);
   vendorWorkflowNextStep();
 }
 
-/** Execute the current step, then prompt for next */
 function vendorWorkflowNextStep() {
-  const state = vwGetState_();
+  var state = vwGetState_();
   if (!state) {
-    SpreadsheetApp.getActive().toast('No active workflow. Use "Vendor Workflow (Full Loop)" to start.', '⚠️', 5);
+    SpreadsheetApp.getActive().toast('No active workflow. Use "Vendor Workflow (Full Loop)" to start.', 'Warning', 5);
     return;
   }
 
-  const step = VW_STEPS[state.stepIdx];
+  var step = VW_STEPS[state.stepIdx];
   if (!step) {
-    SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', '🎉 Done', 5);
+    SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', 'Done', 5);
     vwClearState_();
     return;
   }
 
-  SpreadsheetApp.getActive().toast(`Running: ${step.label}...`, '🚀 Workflow', 3);
+  SpreadsheetApp.getActive().toast('Running: ' + step.label + '...', 'Workflow', 3);
 
   try {
-    // Call the step function by name
-    const fn = this[step.fn] || eval(step.fn);  // GAS doesn't have globalThis
-    const result = fn(state);
+    var stepFunctions = {
+      'vw_setup_': vw_setup_,
+      'vw_loadVendor_': vw_loadVendor_,
+      'vw_vendorBriefing_': vw_vendorBriefing_,
+      'vw_settleEmails_': vw_settleEmails_,
+      'vw_bulkAndTasks_': vw_bulkAndTasks_,
+      'vw_updateNotes_': vw_updateNotes_,
+      'vw_fillEmptyFields_': vw_fillEmptyFields_,
+      'vw_nextVendor_': vw_nextVendor_
+    };
 
-    // Step function returns updated state (or null to stop)
+    var fn = stepFunctions[step.fn];
+    var result = fn(state);
+
     if (result === null) {
-      SpreadsheetApp.getActive().toast('Workflow paused. Use "Next Step" to continue.', '⏸️', 5);
+      SpreadsheetApp.getActive().toast('Workflow paused.', 'Paused', 5);
       return;
     }
 
     vwSetState_(result);
 
-    // Show progress and prompt for next
-    const nextStep = VW_STEPS[result.stepIdx];
+    var nextStep = VW_STEPS[result.stepIdx];
     if (nextStep) {
-      const ui = SpreadsheetApp.getUi();
-      const resp = ui.alert(
-        `✅ ${step.label} Complete`,
-        `Next: ${nextStep.label}${result.currentVendor ? '\\nVendor: ' + result.currentVendor : ''}\\n\\nContinue?`,
-        ui.ButtonSet.YES_NO
-      );
-      if (resp === ui.Button.YES) {
-        vendorWorkflowNextStep();
-      } else {
-        SpreadsheetApp.getActive().toast('Paused. Use "Workflow: Next Step" to resume.', '⏸️', 5);
-      }
+      // Auto-advance to next step — no confirmation dialog
+      vendorWorkflowNextStep();
     } else {
-      SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', '🎉 Done', 5);
+      SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', 'Done', 5);
       vwClearState_();
     }
   } catch (e) {
-    Logger.log('Workflow error: ' + e.message + '\\n' + e.stack);
-    SpreadsheetApp.getActive().toast(`Error in ${step.label}: ${e.message}. Use "Next Step" to retry.`, '❌ Error', 10);
+    Logger.log('Workflow error: ' + e.message + '\n' + e.stack);
+    SpreadsheetApp.getActive().toast('Error in ' + step.label + ': ' + e.message + '. Use "Next Step" to retry.', 'Error', 10);
   }
 }
 
-/** Cancel the workflow */
 function vendorWorkflowCancel() {
-  const state = vwGetState_();
+  var state = vwGetState_();
   if (!state) {
-    SpreadsheetApp.getActive().toast('No active workflow.', '⚠️', 3);
+    SpreadsheetApp.getActive().toast('No active workflow.', 'Warning', 3);
     return;
   }
-  const ui = SpreadsheetApp.getUi();
-  const resp = ui.alert(
-    '❌ Cancel Workflow?',
-    `You've completed ${state.vendorsCompleted.length} vendor(s). Cancel?`,
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.alert(
+    'Cancel Workflow?',
+    'You have completed ' + state.vendorsCompleted.length + ' vendor(s). Cancel?',
     ui.ButtonSet.YES_NO
   );
   if (resp === ui.Button.YES) {
     vwClearState_();
-    SpreadsheetApp.getActive().toast('Workflow cancelled.', '❌', 3);
+    SpreadsheetApp.getActive().toast('Workflow cancelled.', 'Cancelled', 3);
   }
 }
 
-/************************************************************
- * WORKFLOW STEP FUNCTIONS
- * Each receives state, returns updated state (or null to pause)
- ************************************************************/
+/** Step 0: Sync + Build List + Smart Briefing — all automatic, no user input */
+function vw_setup_(state) {
+  var ss = SpreadsheetApp.getActive();
 
-/** Step 1: Sync monday.com data */
-function vw_syncMonday_(state) {
-  syncMondayComBoards();  // existing function
-  state.stepIdx = 1;
-  return state;
-}
+  ss.toast('Syncing monday.com boards...', 'Workflow', 5);
+  syncMondayComBoards();
 
-/** Step 2: Build the vendor list from Gmail */
-function vw_buildList_(state) {
-  buildListWithGmailAndNotes();  // existing function
-  state.stepIdx = 2;
-  return state;
-}
+  ss.toast('Building vendor list from Gmail...', 'Workflow', 5);
+  buildListWithGmailAndNotes();
 
-/** Step 3: Run Smart Briefing to get priority-ordered vendor list */
-function vw_smartBriefing_(state) {
-  // Run existing smart briefing - it produces the priority analysis
+  ss.toast('Running Smart Briefing...', 'Workflow', 5);
   battleStationSmartBriefing();
 
-  // Build the vendor queue from the List sheet (oldest emails first = inbox mode)
-  const ss = SpreadsheetApp.getActive();
-  const listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  // Build vendor queue directly from the List sheet in its existing order.
+  // buildListWithGmailAndNotes already sorts vendors into priority zones:
+  // Inbox > Chat > Monthly Returns > Hot > Normal
+  // So the List sheet order IS the priority order.
+  var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
   if (!listSheet) throw new Error('List sheet not found');
 
-  const data = listSheet.getDataRange().getValues();
-  const queue = [];
-  for (let i = 1; i < data.length; i++) {
-    const vendor = data[i][BS_CFG.L_VENDOR];
-    const status = String(data[i][BS_CFG.L_STATUS] || '').toLowerCase();
+  var data = listSheet.getDataRange().getValues();
+  var queue = [];
+  for (var i = 1; i < data.length; i++) {
+    var vendor = data[i][BS_CFG.L_VENDOR];
+    var status = String(data[i][BS_CFG.L_STATUS] || '').toLowerCase();
     if (!vendor || status === 'complete' || status === 'snoozed') continue;
     queue.push(vendor);
   }
 
   state.vendorQueue = queue;
-  state.stepIdx = 3;
+  state.stepIdx = 1;
+  ss.toast('Setup complete. ' + queue.length + ' vendors queued. First: ' + (queue[0] || '(none)'), 'Workflow', 5);
   return state;
 }
 
-/** Step 4: Load the next vendor into A(I)DEN */
+/** Step 1: Load next vendor — no dialog, just load oldest email vendor */
 function vw_loadVendor_(state) {
   if (state.vendorQueue.length === 0) {
     SpreadsheetApp.getActive().toast(
-      `Workflow complete! Processed ${state.vendorsCompleted.length} vendor(s).`, '🎉', 10
+      'Workflow complete! Processed ' + state.vendorsCompleted.length + ' vendor(s).', 'Done', 10
     );
-    return null; // Signal completion
+    return null;
   }
 
-  const vendorName = state.vendorQueue.shift();
+  var vendorName = state.vendorQueue.shift();
   state.currentVendor = vendorName;
 
-  // Find vendor in List sheet and load into A(I)DEN
-  const ss = SpreadsheetApp.getActive();
-  const listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  const data = listSheet.getDataRange().getValues();
+  var ss = SpreadsheetApp.getActive();
+  var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  var data = listSheet.getDataRange().getValues();
 
-  let vendorIdx = -1;
-  for (let i = 1; i < data.length; i++) {
+  var vendorIdx = -1;
+  for (var i = 1; i < data.length; i++) {
     if (String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase() === vendorName.toLowerCase()) {
       vendorIdx = i;
       break;
@@ -21846,739 +22216,391 @@ function vw_loadVendor_(state) {
   }
 
   if (vendorIdx === -1) {
-    SpreadsheetApp.getActive().toast(`Vendor "${vendorName}" not found in List. Skipping...`, '⚠️', 3);
-    state.stepIdx = 3; // Go back to loadVendor step to try next
+    SpreadsheetApp.getActive().toast('Vendor "' + vendorName + '" not found. Skipping...', 'Warning', 3);
+    state.stepIdx = 1; // Loop back to loadVendor
     return state;
   }
 
   loadVendorData(vendorIdx, { loadMode: 'fast' });
-  state.stepIdx = 4;
+  state.stepIdx = 2;
   return state;
 }
 
-/** Step 5: Run Vendor Briefing for full intel */
+/** Step 2: Vendor Briefing — pause so user can read the analysis */
 function vw_vendorBriefing_(state) {
-  battleStationVendorBriefing();  // existing function - shows full intel sidebar
-  state.stepIdx = 5;
-  return state;
+  battleStationVendorBriefing();
+  state.stepIdx = 3;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Vendor Briefing loaded for ' + (state.currentVendor || 'vendor') + '. Review, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
 }
 
-/** Step 6: Run Bulk Actions to auto-fix what we can */
-function vw_bulkActions_(state) {
-  // Run existing bulk actions - Claude analyzes and suggests automatable fixes
-  battleStationBulkActions();
-  state.stepIdx = 6;
-  return state;
-}
+/** Step 3: Settle Emails — pause if drafting */
+function vw_settleEmails_(state) {
+  var ui = SpreadsheetApp.getUi();
+  var vendor = state.currentVendor || '(unknown)';
 
-/** Step 7: Create monday.com tasks for items that need manual follow-up */
-function vw_createTasks_(state) {
-  const ui = SpreadsheetApp.getUi();
-  const vendor = state.currentVendor || '(unknown)';
-
-  // Ask user what tasks to create based on what they learned from briefing + bulk actions
-  const resp = ui.prompt(
-    `📝 Tasks for ${vendor}`,
-    'Enter tasks to create on monday.com (one per line), or leave blank to skip:\n\n' +
-    'Example:\n  Follow up on invoice #1234\n  Schedule onboarding call\n  Request updated contract',
-    ui.ButtonSet.OK_CANCEL
+  var resp = ui.alert(
+    'Settle Emails for ' + vendor,
+    'Draft email replies now?\n\nYES = Open Draft Reply\nNO = Skip',
+    ui.ButtonSet.YES_NO
   );
 
-  if (resp.getSelectedButton() !== ui.Button.OK) {
-    state.stepIdx = 7;
-    return state;
+  state.stepIdx = 4;
+
+  if (resp === ui.Button.YES) {
+    battleStationDraftReply();
+    vwSetState_(state);
+    SpreadsheetApp.getActive().toast('Draft Reply loaded. Compose, then "Workflow: Next Step".', 'Paused', 10);
+    return null;
   }
 
-  const taskText = resp.getResponseText().trim();
-  if (!taskText) {
-    SpreadsheetApp.getActive().toast('No tasks to create. Moving on.', '⏭️', 3);
-    state.stepIdx = 7;
-    return state;
-  }
+  return state;
+}
 
-  const tasks = taskText.split('\n').map(t => t.trim()).filter(t => t);
-  const apiToken = BS_CFG.MONDAY_API_TOKEN;
-  const boardId = BS_CFG.TASKS_BOARD_ID;
-  let created = 0;
+/** Step 4: Bulk Actions + Tasks — runs bulk actions, pauses for review */
+function vw_bulkAndTasks_(state) {
+  battleStationBulkActions();
+  state.stepIdx = 5;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Bulk Actions loaded. Review and act, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
 
-  for (const taskName of tasks) {
-    const escapedName = `${vendor}: ${taskName}`.replace(/"/g, '\\"');
-    const mutation = `
-      mutation {
-        create_item (
-          board_id: ${boardId},
-          item_name: "${escapedName}"
-        ) { id }
+/** Step 5: Update Notes & Blockers — no dialog, just run it and pause for review */
+function vw_updateNotes_(state) {
+  battleStationSummarizeToNotes();
+  state.stepIdx = 6;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Notes & Blockers preview loaded. Review/save, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/** Step 6: Fill empty monday.com fields — check for missing data and auto-open monday.com */
+function vw_fillEmptyFields_(state) {
+  var ss = SpreadsheetApp.getActive();
+  var bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  var vendor = state.currentVendor || '(unknown)';
+
+  // Scan the A(I)DEN sheet for cells with "Add in monday.com" warnings
+  var values = bsSh.getDataRange().getValues();
+  var formulas = bsSh.getDataRange().getFormulas();
+  var emptyFields = [];
+
+  for (var i = 0; i < formulas.length; i++) {
+    for (var j = 0; j < formulas[i].length; j++) {
+      var formula = String(formulas[i][j] || '');
+      var value = String(values[i][j] || '');
+      // Check both formulas and cell values for monday.com warnings
+      if (formula.indexOf('Add in monday') !== -1 || formula.indexOf('Add notes in monday') !== -1 ||
+          value.indexOf('Add in monday') !== -1 || value.indexOf('NO PHONEXA LINK') !== -1) {
+        // Figure out the field name by looking at labels in the same row
+        var label = '';
+        // Check all columns in this row for a label (text ending with ":" or bold text)
+        for (var k = 0; k < values[i].length; k++) {
+          var cellVal = String(values[i][k] || '').trim();
+          if (cellVal && k < j && (cellVal.indexOf(':') !== -1 || cellVal.indexOf('PHONEXA') !== -1)) {
+            label = cellVal.replace(/:/g, '').replace(/⚠️/g, '').replace(/NO /g, '').trim();
+          }
+        }
+        if (!label) {
+          label = 'Row ' + (i + 1);
+        }
+        // Avoid duplicate labels
+        var isDupe = false;
+        for (var d = 0; d < emptyFields.length; d++) {
+          if (emptyFields[d].label === label) { isDupe = true; break; }
+        }
+        if (!isDupe) {
+          emptyFields.push({ row: i + 1, col: j + 1, label: label });
+        }
       }
-    `;
-    try {
-      const result = mondayApiRequest_(mutation, apiToken);
-      if (result.data?.create_item?.id) created++;
-    } catch (e) {
-      Logger.log('Error creating task: ' + e.message);
     }
   }
 
+  if (emptyFields.length === 0) {
+    SpreadsheetApp.getActive().toast('No empty monday.com fields for ' + vendor + '.', 'All Good', 5);
+    state.stepIdx = 7;
+    return state;
+  }
+
+  // Show toast with what's missing and move on — no dialog
+  var fieldList = emptyFields.map(function(f) { return f.label; }).join(', ');
   SpreadsheetApp.getActive().toast(
-    `Created ${created}/${tasks.length} task(s) on monday.com.`, '✅ Tasks', 5
+    vendor + ': Missing fields — ' + fieldList + '. Update in monday.com when you can.',
+    'Empty Fields (' + emptyFields.length + ')', 10
   );
-  state.tasksPending.push(...tasks.map(t => ({ vendor, task: t })));
+
   state.stepIdx = 7;
   return state;
 }
 
-/** Step 8: Settle emails - draft/send replies based on new info */
-function vw_settleEmails_(state) {
-  const ui = SpreadsheetApp.getUi();
-  const vendor = state.currentVendor || '(unknown)';
-
-  const resp = ui.alert(
-    `✉️ Settle Emails for ${vendor}`,
-    'Would you like to draft email replies now?\n\n' +
-    '• YES = Open Draft Reply (Claude will help compose)\n' +
-    '• NO = Skip email settling for this vendor',
-    ui.ButtonSet.YES_NO
-  );
-
-  if (resp === ui.Button.YES) {
-    // Use existing Draft Reply function
-    battleStationDraftReply();
-  }
-
-  state.stepIdx = 8;
-  return state;
-}
-
-/** Step 9: Mark vendor complete and loop back to load next vendor */
+/** Step 7: Next vendor — loop back to loadVendor */
 function vw_nextVendor_(state) {
-  const vendor = state.currentVendor;
+  var vendor = state.currentVendor;
   if (vendor) {
     state.vendorsCompleted.push(vendor);
   }
 
-  const remaining = state.vendorQueue.length;
+  var remaining = state.vendorQueue.length;
   SpreadsheetApp.getActive().toast(
-    `✅ ${vendor} complete! ${remaining} vendor(s) remaining in queue.`,
-    '🔄 Next Vendor', 5
+    vendor + ' done! ' + remaining + ' vendor(s) remaining.',
+    'Next Vendor', 5
   );
 
   if (remaining === 0) {
     SpreadsheetApp.getUi().alert(
-      '🎉 Workflow Complete!',
-      `All vendors processed!\n\nCompleted: ${state.vendorsCompleted.length}\nTasks created: ${state.tasksPending.length}`,
+      'Workflow Complete!',
+      'All vendors processed!\n\nCompleted: ' + state.vendorsCompleted.length + '\nTasks created: ' + state.tasksPending.length,
       SpreadsheetApp.getUi().ButtonSet.OK
     );
-    return null; // Signal completion
+    return null;
   }
 
-  // Loop back to step 4 (loadVendor) to process next vendor
-  state.stepIdx = 3; // Index 3 = loadVendor step
+  state.stepIdx = 1; // Back to loadVendor
   state.currentVendor = null;
   return state;
 }
 
 /************************************************************
- * INBOX REVIEW (Q&A + RECORD)
- * Step-by-step vendor review with Claude analysis,
- * Q&A dialog, notes/blocker suggestions, and Review Log
+ * VENDOR BRIEFING - Action Plan persistence and revision
  ************************************************************/
 
 /**
- * Get or create the Vendor Review Log sheet
+ * Get or create the hidden Action Plans sheet
  */
-function getOrCreateReviewLogSheet_() {
-  const ss = SpreadsheetApp.getActive();
-  let sh = ss.getSheetByName('Vendor Review Log');
-  if (sh) return sh;
-
-  sh = ss.insertSheet('Vendor Review Log');
-  const headers = [
-    'Date', 'Vendor', 'Status', 'Blocker', 'Notes Updated',
-    'Todos Generated', 'AI Narrative', 'User Corrections', 'Reviewed By'
-  ];
-  sh.getRange(1, 1, 1, headers.length).setValues([headers])
-    .setFontWeight('bold').setBackground('#e8f0fe');
-  sh.setFrozenRows(1);
-  sh.setColumnWidth(1, 140);
-  sh.setColumnWidth(2, 180);
-  sh.setColumnWidth(3, 100);
-  sh.setColumnWidth(4, 250);
-  sh.setColumnWidth(5, 300);
-  sh.setColumnWidth(6, 300);
-  sh.setColumnWidth(7, 400);
-  sh.setColumnWidth(8, 300);
-  sh.setColumnWidth(9, 120);
-  return sh;
+function getOrCreateActionPlansSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName('Action Plans');
+  if (!sheet) {
+    sheet = ss.insertSheet('Action Plans');
+    sheet.getRange(1, 1).setValue('Vendor');
+    sheet.getRange(1, 2).setValue('Timestamp');
+    sheet.getRange(1, 3).setValue('Action Plan');
+    sheet.getRange(1, 4).setValue('Full Briefing');
+    sheet.getRange(1, 5).setValue('User Notes');
+    sheet.getRange(1, 1, 1, 5).setFontWeight('bold');
+    sheet.hideSheet();
+  }
+  return sheet;
 }
 
 /**
- * Main Inbox Review entry point — gathers vendor data, runs Claude analysis,
- * shows a multi-step review dialog with Q&A, blocker/notes suggestions
+ * Save a vendor briefing to the Action Plans sheet.
+ * Keeps history - each briefing is a new row.
  */
-function inboxReviewStart() {
-  const ss = SpreadsheetApp.getActive();
-  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-  const ui = SpreadsheetApp.getUi();
+function saveBriefingToSheet_(vendor, rawContent) {
+  var sheet = getOrCreateActionPlansSheet_();
 
-  const apiKey = getClaudeApiKey_();
-  if (!apiKey) {
-    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
-    return;
+  // Extract action plan section
+  var actionPlan = '';
+  var planMatch = rawContent.match(/## 🎯 ACTION PLAN[\s\S]*/);
+  if (planMatch) {
+    actionPlan = planMatch[0].replace(/## 🎯 ACTION PLAN\s*\n?/, '').trim();
   }
 
-  const currentIndex = getCurrentVendorIndex_();
-  if (!currentIndex) {
-    ui.alert('No vendor currently loaded. Navigate to a vendor first.');
-    return;
-  }
-
-  const listRow = currentIndex + 1;
-  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
-  const status = String(listSh.getRange(listRow, BS_CFG.L_STATUS + 1).getValue() || '');
-  const currentNotes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
-
-  ss.toast(`Gathering data for ${vendor}...`, '📋 Inbox Review', 5);
-
-  // Gather all vendor context
-  const contactData = getVendorContacts_(vendor, listRow);
-  const emails = getEmailsForVendor_(vendor, listRow);
-  const tasks = getTasksForVendor_(vendor, listRow);
-  const unsnoozed = emails.filter(e => !e.isSnoozed);
-  const overdue = emails.filter(e => isEmailOverdue_(e));
-
-  // Get email content for top 5 unsnoozed
-  let emailContext = '';
-  for (const email of unsnoozed.slice(0, 5)) {
-    try {
-      const thread = GmailApp.getThreadById(email.threadId);
-      if (thread) {
-        const msgs = thread.getMessages();
-        const latest = msgs[msgs.length - 1];
-        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nContent: ${latest.getPlainBody().substring(0, 600)}\n---`;
-      }
-    } catch (e) {
-      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
-    }
-  }
-
-  // Categorize tasks
-  const openTasks = tasks.filter(t => {
-    const group = (t.group || '').toLowerCase();
-    return !group.includes('done') && !group.includes('complete');
-  });
-  const completedTasks = tasks.filter(t => {
-    const group = (t.group || '').toLowerCase();
-    return group.includes('done') || group.includes('complete');
-  });
-
-  // Build task summary
-  const taskSummary = openTasks.map(t => `- [OPEN] ${t.name} (${t.group || 'no group'})`).join('\n')
-    + '\n' + completedTasks.slice(0, 5).map(t => `- [DONE] ${t.name}`).join('\n');
-
-  // Contact summary
-  const contactSummary = (contactData.contacts || []).map(c =>
-    `${c.name || '(unnamed)'} — ${c.email || ''} ${c.phone || ''} (${c.status || 'unknown'})`
-  ).join('\n') || '(no contacts)';
-
-  ss.toast('Analyzing with Claude...', '🤖 Processing', 10);
-
-  // Claude prompt for the review
-  const prompt = `You are helping Andy, a vendor relationship manager at Profitise (lead generation in Home Services and Solar), review a vendor.
-
-VENDOR: ${vendor}
-STATUS: ${status}
-CURRENT NOTES: ${currentNotes || '(none)'}
-
-CONTACTS:
-${contactSummary}
-
-LIVE VERTICALS: ${contactData.liveVerticals || '(none)'}
-LIVE MODALITIES: ${contactData.liveModalities || '(none)'}
-STATES: ${contactData.states || '(none)'}
-
-TASKS (${openTasks.length} open, ${completedTasks.length} completed):
-${taskSummary || '(no tasks)'}
-
-UNSNOOZED EMAILS (${unsnoozed.length} threads, ${overdue.length} overdue):
-${emailContext || '(no emails)'}
-
-Provide your analysis in this EXACT JSON format (no markdown, just raw JSON):
-{
-  "vendorSummary": "2-3 sentence summary of overall vendor state and trajectory",
-  "questions": [
-    {"q": "A true/false question about the vendor relationship", "suggestedAnswer": true, "reasoning": "Why you think this"},
-    {"q": "Another true/false question", "suggestedAnswer": false, "reasoning": "Why you think this"},
-    {"q": "Another question about tasks/blockers/emails", "suggestedAnswer": true, "reasoning": "Why"},
-    {"q": "Another question about next steps", "suggestedAnswer": true, "reasoning": "Why"},
-    {"q": "Another question about relationship health", "suggestedAnswer": false, "reasoning": "Why"}
-  ],
-  "suggestedBlocker": "A specific blocker/next-action for this vendor (e.g. 'Follow up on February invoice IWL40-51') or null if no blocker needed",
-  "suggestedNotes": "2-3 sentence updated notes summarizing current state. Do NOT repeat old notes, write fresh.",
-  "todos": [
-    "Specific actionable todo item 1",
-    "Specific actionable todo item 2",
-    "Specific actionable todo item 3"
-  ],
-  "narrative": "A 3-4 sentence narrative paragraph about the vendor relationship: trajectory, current status, what's working, what needs attention."
-}
-
-IMPORTANT:
-- Questions should be specific to THIS vendor's data, not generic
-- Blocker should be the single most important next action
-- Todos should be concrete and actionable
-- Notes should be fresh, not repeating existing notes`;
-
-  try {
-    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 2000 });
-
-    if (response.error) {
-      ui.alert(`Claude API Error: ${response.error}`);
-      return;
-    }
-
-    // Parse JSON from Claude's response
-    let analysis;
-    try {
-      // Strip any markdown code fences if present
-      let jsonStr = response.content.trim();
-      jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
-      analysis = JSON.parse(jsonStr);
-    } catch (parseErr) {
-      ui.alert(`Could not parse Claude's response as JSON.\n\nRaw response:\n${response.content.substring(0, 500)}`);
-      return;
-    }
-
-    // Store analysis in script properties for the dialog callbacks
-    const reviewData = {
-      vendor: vendor,
-      listRow: listRow,
-      status: status,
-      currentNotes: currentNotes,
-      analysis: analysis,
-      timestamp: new Date().toISOString()
-    };
-    PropertiesService.getScriptProperties().setProperty(
-      'INBOX_REVIEW_DATA', JSON.stringify(reviewData)
-    );
-
-    // Build the review dialog HTML
-    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
-    const questionsHtml = (analysis.questions || []).map((q, i) => `
-      <div class="question">
-        <div class="q-text">${esc(q.q)}</div>
-        <div class="q-reasoning"><em>AI thinks: ${esc(q.reasoning)}</em></div>
-        <div class="q-controls">
-          <label><input type="radio" name="q${i}" value="true" ${q.suggestedAnswer ? 'checked' : ''}> True</label>
-          <label><input type="radio" name="q${i}" value="false" ${!q.suggestedAnswer ? 'checked' : ''}> False</label>
-          <input type="text" name="q${i}_note" placeholder="Add a note (optional)" class="q-note">
-        </div>
-      </div>
-    `).join('');
-
-    const todosHtml = (analysis.todos || []).map((t, i) => `
-      <div class="todo-item">
-        <label><input type="checkbox" name="todo${i}" checked> ${esc(t)}</label>
-      </div>
-    `).join('');
-
-    const htmlContent = `<!DOCTYPE html>
-<html><head>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: 'Google Sans', Arial, sans-serif; padding: 0; margin: 0; font-size: 13px; color: #333; }
-  .container { padding: 16px; }
-  h2 { color: #1a73e8; margin: 0 0 4px; font-size: 18px; }
-  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; border-bottom: 2px solid #e8f0fe; padding-bottom: 4px; }
-  .vendor-badge { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #1a73e8; display: inline-block; margin-bottom: 8px; }
-  .summary { background: #f8f9fa; padding: 10px 14px; border-radius: 8px; border-left: 4px solid #1a73e8; margin: 8px 0 16px; line-height: 1.5; }
-  .question { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
-  .q-text { font-weight: 600; margin-bottom: 4px; }
-  .q-reasoning { color: #888; font-size: 11px; margin-bottom: 6px; }
-  .q-controls { display: flex; gap: 16px; align-items: center; }
-  .q-controls label { cursor: pointer; font-size: 12px; }
-  .q-note { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
-  .section-box { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
-  .editable { width: 100%; min-height: 60px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; }
-  .todo-item { padding: 4px 0; }
-  .todo-item label { cursor: pointer; }
-  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
-  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
-  .btn-primary { background: #1a73e8; color: white; }
-  .btn-primary:hover { background: #1557b0; }
-  .btn-secondary { background: #f1f3f4; color: #333; }
-  .btn-secondary:hover { background: #e0e0e0; }
-  .narrative { background: #e8f0fe; padding: 10px 14px; border-radius: 8px; line-height: 1.6; margin: 8px 0; }
-  .corrections { width: 100%; min-height: 40px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; margin-top: 4px; }
-</style>
-</head><body>
-<div class="container">
-  <h2>📋 Inbox Review</h2>
-  <span class="vendor-badge">${esc(vendor)} — ${esc(status)}</span>
-
-  <div class="summary">${esc(analysis.vendorSummary)}</div>
-
-  <h3>📝 Q&A — Confirm or Correct</h3>
-  ${questionsHtml}
-
-  <h3>🚧 Suggested Blocker</h3>
-  <div class="section-box">
-    <textarea class="editable" id="blocker">${esc(analysis.suggestedBlocker || '(none)')}</textarea>
-  </div>
-
-  <h3>📝 Suggested Notes Update</h3>
-  <div class="section-box">
-    <textarea class="editable" id="notes">${esc(analysis.suggestedNotes)}</textarea>
-  </div>
-
-  <h3>✅ Todos</h3>
-  <div class="section-box">
-    ${todosHtml}
-    <input type="text" id="extraTodo" placeholder="Add another todo..." style="width:100%; margin-top:8px; padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:12px;">
-  </div>
-
-  <h3>📖 AI Narrative</h3>
-  <div class="narrative">${esc(analysis.narrative)}</div>
-
-  <h3>✏️ Corrections / Additional Context</h3>
-  <textarea class="corrections" id="corrections" placeholder="Anything the AI got wrong? Add context for future reviews..."></textarea>
-
-  <div class="btn-row">
-    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
-    <button class="btn btn-primary" onclick="submitReview()">Save & Record ✓</button>
-  </div>
-</div>
-
-<script>
-function submitReview() {
-  var answers = {};
-  var qCount = ${(analysis.questions || []).length};
-  for (var i = 0; i < qCount; i++) {
-    var radios = document.getElementsByName('q' + i);
-    var val = true;
-    for (var r = 0; r < radios.length; r++) {
-      if (radios[r].checked) { val = radios[r].value === 'true'; break; }
-    }
-    var noteEl = document.getElementsByName('q' + i + '_note')[0];
-    answers['q' + i] = { answer: val, note: noteEl ? noteEl.value : '' };
-  }
-
-  var todos = [];
-  for (var j = 0; j < 20; j++) {
-    var cb = document.getElementsByName('todo' + j)[0];
-    if (!cb) break;
-    if (cb.checked) todos.push(cb.parentElement.textContent.trim());
-  }
-  var extra = document.getElementById('extraTodo').value.trim();
-  if (extra) todos.push(extra);
-
-  var result = {
-    answers: answers,
-    blocker: document.getElementById('blocker').value,
-    notes: document.getElementById('notes').value,
-    todos: todos,
-    corrections: document.getElementById('corrections').value
-  };
-
-  google.script.run
-    .withSuccessHandler(function() { google.script.host.close(); })
-    .withFailureHandler(function(e) { alert('Error saving: ' + e.message); })
-    .inboxReviewSave(JSON.stringify(result));
-}
-</script>
-</body></html>`;
-
-    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(700).setHeight(750);
-    ui.showModalDialog(html, `📋 Inbox Review — ${vendor}`);
-
-  } catch (e) {
-    ui.alert(`Error: ${e.message}`);
-  }
-}
-
-/**
- * Called from the dialog when user clicks "Save & Record"
- */
-function inboxReviewSave(resultJson) {
-  const result = JSON.parse(resultJson);
-  const stored = JSON.parse(PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_DATA') || '{}');
-
-  if (!stored.vendor) throw new Error('No review data found. Please start a new review.');
-
-  const ss = SpreadsheetApp.getActive();
-  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
-
-  // 1. Update notes on List sheet and monday.com
-  if (result.notes && result.notes !== '(none)') {
-    listSh.getRange(stored.listRow, BS_CFG.L_NOTES + 1).setValue(result.notes);
-    try {
-      updateMondayComNotesForVendor_(stored.vendor, result.notes, stored.listRow);
-    } catch (e) {
-      Logger.log(`Failed to update monday.com notes: ${e.message}`);
-    }
-  }
-
-  // 2. Log to Review Log sheet
-  const logSh = getOrCreateReviewLogSheet_();
-  const todosStr = (result.todos || []).join('\n• ');
-  const answersStr = Object.keys(result.answers || {}).map(k => {
-    const a = result.answers[k];
-    return `${k}: ${a.answer}${a.note ? ' — ' + a.note : ''}`;
-  }).join('; ');
-
-  logSh.appendRow([
-    new Date(),
-    stored.vendor,
-    stored.status,
-    result.blocker || '',
-    result.notes || '',
-    todosStr ? '• ' + todosStr : '',
-    stored.analysis ? stored.analysis.narrative || '' : '',
-    (result.corrections || '') + (answersStr ? '\nQ&A: ' + answersStr : ''),
-    Session.getActiveUser().getEmail() || 'Andy'
+  sheet.appendRow([
+    vendor,
+    new Date().toISOString(),
+    actionPlan,
+    rawContent,
+    ''
   ]);
-
-  // 3. Store pending todos in script properties for tracking
-  if (result.todos && result.todos.length > 0) {
-    const existingTodos = JSON.parse(
-      PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
-    );
-    const newTodos = result.todos.map(t => ({
-      vendor: stored.vendor,
-      todo: t,
-      created: new Date().toISOString(),
-      done: false
-    }));
-    existingTodos.push(...newTodos);
-    PropertiesService.getScriptProperties().setProperty(
-      'INBOX_REVIEW_TODOS', JSON.stringify(existingTodos)
-    );
-  }
-
-  // 4. Store user corrections for future reference
-  if (result.corrections) {
-    const hints = JSON.parse(
-      PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_HINTS') || '{}'
-    );
-    hints[stored.vendor] = (hints[stored.vendor] || '') + '\n' + result.corrections;
-    PropertiesService.getScriptProperties().setProperty(
-      'INBOX_REVIEW_HINTS', JSON.stringify(hints)
-    );
-  }
-
-  // Clean up
-  PropertiesService.getScriptProperties().deleteProperty('INBOX_REVIEW_DATA');
-
-  ss.toast(`Review saved for ${stored.vendor}`, '✅ Recorded', 3);
 }
 
 /**
- * Weekly Recap — aggregates this week's review entries into a summary dialog
+ * Get the previous action plan for a vendor (most recent entry)
  */
-function inboxReviewWeeklyRecap() {
-  const ss = SpreadsheetApp.getActive();
-  const ui = SpreadsheetApp.getUi();
-  const logSh = ss.getSheetByName('Vendor Review Log');
+function getPreviousActionPlan_(vendor) {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return null;
 
-  if (!logSh || logSh.getLastRow() <= 1) {
-    ui.alert('No review entries found.\n\nUse 📋 Inbox Review (Q&A + Record) to review vendors first.');
-    return;
+  var data = sheet.getDataRange().getValues();
+  // Search from bottom up for most recent match
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return {
+        timestamp: data[i][1],
+        actionPlan: data[i][2],
+        fullBriefing: data[i][3],
+        userNotes: data[i][4],
+        row: i + 1
+      };
+    }
   }
-
-  // Get entries from this week
-  const now = new Date();
-  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const data = logSh.getRange(2, 1, logSh.getLastRow() - 1, 9).getValues();
-
-  const thisWeek = data.filter(row => {
-    const d = new Date(row[0]);
-    return d >= weekAgo;
-  });
-
-  if (thisWeek.length === 0) {
-    ui.alert('No reviews this week.\n\nUse 📋 Inbox Review (Q&A + Record) to start reviewing vendors.');
-    return;
-  }
-
-  // Get pending todos
-  const allTodos = JSON.parse(
-    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
-  );
-  const pendingTodos = allTodos.filter(t => !t.done);
-
-  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  // Build recap HTML
-  let vendorRows = thisWeek.map(row => {
-    const date = new Date(row[0]);
-    const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
-    return `<tr>
-      <td>${dateStr}</td>
-      <td><strong>${esc(row[1])}</strong></td>
-      <td>${esc(row[2])}</td>
-      <td>${esc(row[3])}</td>
-      <td style="font-size:11px">${esc(String(row[4]).substring(0, 100))}</td>
-    </tr>`;
-  }).join('');
-
-  let todosList = pendingTodos.map(t => {
-    const created = new Date(t.created);
-    const age = Math.floor((now - created) / (1000 * 60 * 60 * 24));
-    const ageLabel = age === 0 ? 'today' : age === 1 ? 'yesterday' : `${age}d ago`;
-    return `<li><strong>${esc(t.vendor)}</strong>: ${esc(t.todo)} <span style="color:#888;font-size:11px">(${ageLabel})</span></li>`;
-  }).join('');
-
-  const htmlContent = `<!DOCTYPE html>
-<html><head>
-<style>
-  body { font-family: 'Google Sans', Arial, sans-serif; padding: 16px; font-size: 13px; }
-  h2 { color: #1a73e8; margin: 0 0 12px; }
-  .stat { display: inline-block; background: #e8f0fe; padding: 6px 14px; border-radius: 12px; margin: 2px 4px; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
-  th { background: #f5f5f5; text-align: left; padding: 6px 10px; font-size: 12px; border-bottom: 2px solid #e0e0e0; }
-  td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
-  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; }
-  ul { padding-left: 20px; }
-  li { margin: 4px 0; line-height: 1.5; }
-  .empty { color: #888; font-style: italic; }
-</style>
-</head><body>
-  <h2>📊 Weekly Recap</h2>
-  <span class="stat">📋 ${thisWeek.length} vendors reviewed</span>
-  <span class="stat">✅ ${pendingTodos.length} pending todos</span>
-  <span class="stat">📅 ${weekAgo.getMonth() + 1}/${weekAgo.getDate()} — ${now.getMonth() + 1}/${now.getDate()}</span>
-
-  <h3>Reviews This Week</h3>
-  <table>
-    <tr><th>Date</th><th>Vendor</th><th>Status</th><th>Blocker</th><th>Notes</th></tr>
-    ${vendorRows}
-  </table>
-
-  <h3>Pending Todos (${pendingTodos.length})</h3>
-  ${pendingTodos.length > 0
-    ? '<ul>' + todosList + '</ul>'
-    : '<p class="empty">All caught up! No pending todos.</p>'}
-</body></html>`;
-
-  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(550);
-  ui.showModalDialog(html, '📊 Weekly Recap');
+  return null;
 }
 
 /**
- * Update Review Todos — shows pending todos and lets user mark done or skip
+ * Get general notes (vendor = "_GENERAL") — most recent entry
  */
-function inboxReviewUpdateTodos() {
-  const ui = SpreadsheetApp.getUi();
-  const allTodos = JSON.parse(
-    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
-  );
-  const pending = allTodos.filter(t => !t.done);
+function getGeneralNotes_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return '';
 
-  if (pending.length === 0) {
-    ui.alert('No pending todos!\n\nUse 📋 Inbox Review (Q&A + Record) to generate todos from vendor reviews.');
-    return;
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === '_GENERAL') {
+      return String(data[i][4] || '');
+    }
   }
-
-  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-
-  const todoRows = pending.map((t, i) => {
-    const created = new Date(t.created);
-    const age = Math.floor((new Date() - created) / (1000 * 60 * 60 * 24));
-    const ageLabel = age === 0 ? 'today' : age === 1 ? 'yesterday' : `${age}d ago`;
-    return `<tr>
-      <td><input type="checkbox" name="done" value="${i}"></td>
-      <td><strong>${esc(t.vendor)}</strong></td>
-      <td>${esc(t.todo)}</td>
-      <td style="color:#888;font-size:11px">${ageLabel}</td>
-    </tr>`;
-  }).join('');
-
-  const htmlContent = `<!DOCTYPE html>
-<html><head>
-<style>
-  body { font-family: 'Google Sans', Arial, sans-serif; padding: 16px; font-size: 13px; }
-  h2 { color: #1a73e8; margin: 0 0 12px; }
-  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
-  th { background: #f5f5f5; text-align: left; padding: 6px 10px; font-size: 12px; border-bottom: 2px solid #e0e0e0; }
-  td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
-  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
-  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
-  .btn-primary { background: #1a73e8; color: white; }
-  .btn-danger { background: #ea4335; color: white; }
-  .btn-secondary { background: #f1f3f4; color: #333; }
-  .count { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
-</style>
-</head><body>
-  <h2>✅ Review Todos</h2>
-  <span class="count">${pending.length} pending</span>
-
-  <table>
-    <tr><th>Done</th><th>Vendor</th><th>Todo</th><th>Age</th></tr>
-    ${todoRows}
-  </table>
-
-  <div class="btn-row">
-    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
-    <button class="btn btn-danger" onclick="clearAll()">Clear All Done</button>
-    <button class="btn btn-primary" onclick="save()">Mark Checked as Done</button>
-  </div>
-
-<script>
-function save() {
-  var checked = [];
-  var boxes = document.getElementsByName('done');
-  for (var i = 0; i < boxes.length; i++) {
-    if (boxes[i].checked) checked.push(parseInt(boxes[i].value));
-  }
-  if (checked.length === 0) { alert('No items checked.'); return; }
-  google.script.run
-    .withSuccessHandler(function() { google.script.host.close(); })
-    .withFailureHandler(function(e) { alert('Error: ' + e.message); })
-    .inboxReviewMarkTodosDone(JSON.stringify(checked));
-}
-function clearAll() {
-  if (!confirm('Mark ALL ${pending.length} todos as done?')) return;
-  var all = [];
-  for (var i = 0; i < ${pending.length}; i++) all.push(i);
-  google.script.run
-    .withSuccessHandler(function() { google.script.host.close(); })
-    .withFailureHandler(function(e) { alert('Error: ' + e.message); })
-    .inboxReviewMarkTodosDone(JSON.stringify(all));
-}
-</script>
-</body></html>`;
-
-  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(650).setHeight(500);
-  ui.showModalDialog(html, '✅ Update Review Todos');
+  return '';
 }
 
 /**
- * Called from the todos dialog to mark selected items as done
+ * Save or update general notes
  */
-function inboxReviewMarkTodosDone(indicesJson) {
-  const indices = new Set(JSON.parse(indicesJson));
-  const allTodos = JSON.parse(
-    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
-  );
+function saveGeneralNotes_(notes) {
+  var sheet = getOrCreateActionPlansSheet_();
+  var data = sheet.getDataRange().getValues();
 
-  // Map pending indices back to allTodos indices
-  let pendingIdx = 0;
-  for (let i = 0; i < allTodos.length; i++) {
-    if (!allTodos[i].done) {
-      if (indices.has(pendingIdx)) {
-        allTodos[i].done = true;
-        allTodos[i].completedAt = new Date().toISOString();
-      }
-      pendingIdx++;
+  // Find existing _GENERAL row
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === '_GENERAL') {
+      sheet.getRange(i + 1, 5).setValue(notes);
+      sheet.getRange(i + 1, 2).setValue(new Date().toISOString());
+      return;
     }
   }
 
-  PropertiesService.getScriptProperties().setProperty(
-    'INBOX_REVIEW_TODOS', JSON.stringify(allTodos)
-  );
+  // No existing row — create one
+  sheet.appendRow(['_GENERAL', new Date().toISOString(), '', '', notes]);
+}
 
-  const remaining = allTodos.filter(t => !t.done).length;
-  SpreadsheetApp.getActive().toast(
-    `Marked ${indices.size} todo(s) as done. ${remaining} remaining.`, '✅ Updated', 3
-  );
+/**
+ * Collect all recent user notes across vendors for general context.
+ * Returns the last note from each vendor (up to 20 vendors).
+ */
+function getRecentVendorNotes_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return '';
+
+  var data = sheet.getDataRange().getValues();
+  var seen = {};
+  var notes = [];
+
+  // Walk backwards to get most recent note per vendor
+  for (var i = data.length - 1; i >= 1; i--) {
+    var vendor = String(data[i][0]);
+    var userNote = String(data[i][4] || '').trim();
+    if (vendor === '_GENERAL' || !userNote || seen[vendor]) continue;
+    seen[vendor] = true;
+    notes.push(vendor + ': ' + userNote);
+    if (notes.length >= 20) break;
+  }
+
+  return notes.join('\n');
+}
+
+/**
+ * Revise the briefing action plan based on user feedback.
+ * Compares against the previous action plan to track what's changed/closed.
+ * Called from the briefing dialog.
+ */
+function reviseBriefingActionPlan(feedback) {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('vendorBriefingContext');
+  if (!contextRaw) throw new Error('No briefing context found. Please regenerate the briefing.');
+
+  var context = JSON.parse(contextRaw);
+  var apiKey = getClaudeApiKey_();
+  if (!apiKey) throw new Error('No Claude API key configured.');
+
+  // Get previous action plan for comparison
+  var prev = getPreviousActionPlan_(context.vendor);
+  var prevPlanContext = '';
+  if (prev && prev.actionPlan) {
+    prevPlanContext = '\n\nPREVIOUS ACTION PLAN (from ' + prev.timestamp + '):\n' + prev.actionPlan;
+    if (prev.userNotes) {
+      prevPlanContext += '\n\nUSER NOTES ON PREVIOUS PLAN:\n' + prev.userNotes;
+    }
+  }
+
+  // Get general notes that apply across all vendors
+  var generalNotes = getGeneralNotes_();
+  var generalContext = '';
+  if (generalNotes) {
+    generalContext = '\n\nGENERAL NOTES (apply across all vendors):\n' + generalNotes;
+  }
+
+  var prompt = 'You previously generated this vendor briefing for ' + context.vendor + ':\n\n' +
+    context.rawContent +
+    prevPlanContext +
+    generalContext +
+    '\n\nAndy has these corrections and notes about the current action plan:\n"' + feedback + '"' +
+    '\n\nPlease revise the ENTIRE briefing incorporating Andy\'s corrections. Key rules:' +
+    '\n- Remove or mark as DONE any items Andy says are already handled' +
+    '\n- Update items based on Andy\'s new information' +
+    '\n- Factor in the general notes — these are standing facts/context Andy has shared across all vendors' +
+    '\n- If there was a previous action plan, check for items that were on it but missing from the current one - re-add if still relevant' +
+    '\n- Keep the same section format (## headers)' +
+    '\n- Be factual - use Andy\'s corrections as ground truth' +
+    '\n- Output ONLY the revised briefing content, same format as before';
+
+  var response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+  if (response.error) {
+    throw new Error('Claude API Error: ' + response.error);
+  }
+
+  var revised = response.content.trim();
+
+  // Update stored context with revised content
+  context.rawContent = revised;
+  PropertiesService.getUserProperties().setProperty('vendorBriefingContext', JSON.stringify(context));
+
+  // Save revised version and user notes to Action Plans sheet
+  saveBriefingToSheet_(context.vendor, revised);
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (sheet && sheet.getLastRow() > 1) {
+    sheet.getRange(sheet.getLastRow(), 5).setValue(feedback);
+  }
+
+  // Extract general notes from feedback (lines starting with "GENERAL:" or "ALL:")
+  // and save them separately
+  var lines = feedback.split('\n');
+  var generalLines = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (/^(GENERAL|ALL|GLOBAL):/i.test(line)) {
+      generalLines.push(line.replace(/^(GENERAL|ALL|GLOBAL):\s*/i, ''));
+    }
+  }
+  if (generalLines.length > 0) {
+    var existing = getGeneralNotes_();
+    var updated = existing ? existing + '\n' + generalLines.join('\n') : generalLines.join('\n');
+    saveGeneralNotes_(updated);
+  }
+
+  // Format for HTML display
+  var content = revised
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+  return content;
+}
+
+/**
+ * Clean a subject line for use in MIME headers.
+ * Strips emojis and normalizes smart quotes/dashes to ASCII.
+ */
+function cleanSubjectLine_(subject) {
+  if (!subject) return '';
+  return subject
+    // Smart quotes to ASCII
+    .replace(/[\u2018\u2019\u201A]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    // Smart dashes to ASCII
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u2026/g, '...')
+    // Non-breaking spaces
+    .replace(/\u00A0/g, ' ')
+    // Strip emojis and other non-ASCII symbols (keep basic Latin + extended Latin)
+    .replace(/[^\x00-\x7F\u00C0-\u024F]/g, '')
+    // Clean up multiple spaces left by removed characters
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
