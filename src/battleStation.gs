@@ -22046,6 +22046,7 @@ var VW_STEPS = [
   { id: 'bulkFix',    label: 'Bulk Actions + Tasks',           fn: 'vw_bulkAndTasks_' },
   { id: 'updateNotes',label: 'Update Notes & Blockers',        fn: 'vw_updateNotes_' },
   { id: 'fillFields', label: 'Fill Empty Monday.com Fields',   fn: 'vw_fillEmptyFields_' },
+  { id: 'preload',    label: 'Preload Next Vendor',            fn: 'vw_preloadNext_' },
   { id: 'nextVendor', label: 'Next Vendor (Loop)',             fn: 'vw_nextVendor_' }
 ];
 
@@ -22116,6 +22117,7 @@ function vendorWorkflowNextStep() {
       'vw_bulkAndTasks_': vw_bulkAndTasks_,
       'vw_updateNotes_': vw_updateNotes_,
       'vw_fillEmptyFields_': vw_fillEmptyFields_,
+      'vw_preloadNext_': vw_preloadNext_,
       'vw_nextVendor_': vw_nextVendor_
     };
 
@@ -22524,18 +22526,74 @@ function vw_fillEmptyFields_(state) {
     return state;
   }
 
-  // Show toast with what's missing and move on — no dialog
-  var fieldList = emptyFields.map(function(f) { return f.label; }).join(', ');
-  SpreadsheetApp.getActive().toast(
-    vendor + ': Missing fields — ' + fieldList + '. Update in monday.com when you can.',
-    'Empty Fields (' + emptyFields.length + ')', 10
-  );
+  // Show a dialog so it's unmissable
+  var fieldList = emptyFields.map(function(f) { return '- ' + f.label; }).join('\n');
+  var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  var currentIndex = getCurrentVendorIndex_();
+  var listRow = currentIndex + 1;
+  var source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+  var boardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  var mondayUrl = 'https://profitise-company.monday.com/boards/' + boardId + '?term=' + encodeURIComponent(vendor);
+
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:10px;">' +
+    '<h3 style="color:#e65100;margin-top:0;">Empty Fields for ' + vendor.replace(/</g,'&lt;') + '</h3>' +
+    '<p>The following fields need data in monday.com:</p>' +
+    '<ul style="font-size:14px;line-height:1.8;">' + emptyFields.map(function(f) { return '<li><strong>' + f.label.replace(/</g,'&lt;') + '</strong></li>'; }).join('') + '</ul>' +
+    '<p><a href="' + mondayUrl + '" target="_blank" style="color:#1a73e8;font-size:14px;">Open in monday.com</a></p>' +
+    '</div>'
+  ).setWidth(450).setHeight(250);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Empty Fields (' + emptyFields.length + ')');
 
   state.stepIdx = 8;
   return state;
 }
 
-/** Step 7: Next vendor — loop back to loadVendor */
+/** Step 8: Preload next vendor's data (pre-cache API calls) */
+function vw_preloadNext_(state) {
+  if (state.vendorQueue.length === 0) {
+    state.stepIdx = 9;
+    return state;
+  }
+
+  var nextVendor = state.vendorQueue[0]; // Peek, don't shift
+  var ss = SpreadsheetApp.getActive();
+
+  ss.toast('Preloading data for ' + nextVendor + '...', 'Preload', 5);
+
+  try {
+    var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    var data = listSheet.getDataRange().getValues();
+    var vendorIdx = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase() === nextVendor.toLowerCase()) {
+        vendorIdx = i;
+        break;
+      }
+    }
+
+    if (vendorIdx !== -1) {
+      var listRow = vendorIdx + 1;
+      var vendor = String(data[vendorIdx][BS_CFG.L_VENDOR] || '').trim();
+
+      // Pre-cache expensive API calls so they're instant on next load
+      try { getVendorContacts_(vendor, listRow); } catch(e) { Logger.log('Preload contacts: ' + e.message); }
+      try { getEmailsForVendor_(vendor, listRow); } catch(e) { Logger.log('Preload emails: ' + e.message); }
+      try { getTasksForVendor_(vendor, listRow); } catch(e) { Logger.log('Preload tasks: ' + e.message); }
+      try { getVendorChatInfo_(vendor); } catch(e) { Logger.log('Preload chat: ' + e.message); }
+
+      Logger.log('Preloaded caches for: ' + vendor);
+      ss.toast('Preloaded ' + nextVendor, 'Done', 3);
+    }
+  } catch (e) {
+    Logger.log('Preload error: ' + e.message);
+  }
+
+  state.stepIdx = 9;
+  return state;
+}
+
+/** Step 9: Next vendor — loop back to loadVendor */
 function vw_nextVendor_(state) {
   var vendor = state.currentVendor;
   if (vendor) {
