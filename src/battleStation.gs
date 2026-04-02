@@ -1561,8 +1561,8 @@ function loadVendorData(vendorIndex, options) {
   // Row 2: Source | Total USD
   bsSh.getRange(currentRow, 1).setValue('Source:').setFontWeight('bold');
   bsSh.getRange(currentRow, 2).setValue(source);
-  bsSh.getRange(currentRow, 3).setValue('Total USD:').setFontWeight('bold');
-  bsSh.getRange(currentRow, 4).setValue(`$${Number(ttlUsd).toLocaleString()}`).setHorizontalAlignment('left');
+  // bsSh.getRange(currentRow, 3).setValue('Total USD:').setFontWeight('bold'); // TODO: Re-enable TTL when actively used
+  // bsSh.getRange(currentRow, 4).setValue(`$${Number(ttlUsd).toLocaleString()}`).setHorizontalAlignment('left'); // TODO: Re-enable TTL when actively used
   currentRow++;
   
   // Row 3: Live Verticals | Live Modalities
@@ -6135,8 +6135,8 @@ ${content}`;
   let vendorProfile = `## Vendor Profile
 Name: ${vendor}
 Type: ${source}
-Status: ${status}
-TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}`;
+Status: ${status}`;
+// TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
 
   if (contactData.liveVerticals) vendorProfile += `\nLive Verticals: ${contactData.liveVerticals}`;
   if (contactData.otherVerticals) vendorProfile += `\nOther Verticals: ${contactData.otherVerticals}`;
@@ -6191,15 +6191,33 @@ Answer the question above based on all available context — vendor profile, ema
       .btn-secondary:hover { background: #5a6268; }
       .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
       #loading { display: none; color: #666; margin-top: 10px; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
     <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
     <div class="question">Q: ${escapeHtml_(question)}</div>
     <div class="answer" id="answerBox">${escapeHtml_(result.content)}</div>
     <div class="meta" id="metaBox">Searched emails 1-${Math.min(emails.length, 50)} of ${emails.length} retrieved</div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
     <button class="btn btn-secondary" id="searchMoreBtn" onclick="searchMore()">🔍 Search Older Emails (101-200)</button>
     <div id="loading">⏳ Searching older emails...</div>
 
     <script>
+      function copyContent() {
+        var el = document.getElementById('answerBox');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
       function searchMore() {
         document.getElementById('searchMoreBtn').disabled = true;
         document.getElementById('loading').style.display = 'block';
@@ -8750,10 +8768,14 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
         .btn-write:hover { background: #1b5e20; }
         .btn-write:disabled { background: #a5d6a7; cursor: not-allowed; }
         .loading-msg { color: #666; font-style: italic; margin-top: 10px; display: none; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🤖 Claude Analysis: ${vendor}</h2>
       <p><em>Analyzed ${emailData.length} unsnoozed email threads</em></p>
-      <div class="content">${formattedContent}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div class="content" id="analysis-content">${formattedContent}</div>
 
       <div class="write-response-section">
         <h3>✍️ Write Response</h3>
@@ -8772,6 +8794,20 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
       </div>
 
       <script>
+        function copyContent() {
+          var el = document.getElementById('analysis-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
         function doWriteResponse() {
           var emailIndex = document.getElementById('emailSelect').value;
           var directions = document.getElementById('directions').value.trim();
@@ -12952,11 +12988,31 @@ IMPORTANT: At the very end of your response, include a section exactly like this
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
         .reorder-note { background: #e8f0fe; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🧠 Smart Briefing</h2>
       <p class="meta">Analyzed ${vendorSummaries.length} vendors | ${new Date().toLocaleString()}</p>
       ${priorityNames.length > 0 ? '<div class="reorder-note">✅ List has been reordered — hit <strong>Next Vendor</strong> to work through them in priority order.</div>' : ''}
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="briefing-content-smart">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('briefing-content-smart');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(650);
@@ -17678,6 +17734,9 @@ function discoverContactsFromGmail() {
       .status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
       .status-success { background: #d4edda; color: #155724; }
       .status-error { background: #f8d7da; color: #721c24; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
 
     <h2>📇 Contact Discovery for ${escapeHtml_(vendor)}</h2>
@@ -17690,9 +17749,11 @@ function discoverContactsFromGmail() {
     </div>
 
     <div id="statusMsg"></div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
   `;
 
   // New contacts section with checkboxes
+  html += `<div id="discovery-content">`;
   html += `<h3>🆕 Potential New Contacts (${potentialNewContacts.length})</h3>`;
 
   if (potentialNewContacts.length === 0) {
@@ -17780,6 +17841,7 @@ function discoverContactsFromGmail() {
     `;
   }
   html += `</table>`;
+  html += `</div>`; // close #discovery-content
 
   // Add Done button for hard refresh
   html += `
@@ -17794,6 +17856,21 @@ function discoverContactsFromGmail() {
   html += `
     <script>
       const dialogData = ${JSON.stringify(dialogData)};
+
+      function copyContent() {
+        var el = document.getElementById('discovery-content');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
 
       function toggleSelectAll() {
         const selectAll = document.getElementById('selectAll').checked;
@@ -18764,6 +18841,9 @@ SUMMARY:
       .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; }
       .status-msg.success { background: #e8f5e9; color: #2e7d32; display: block; }
       .status-msg.error { background: #ffebee; color: #c62828; display: block; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
 
     <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
@@ -18771,10 +18851,13 @@ SUMMARY:
     <div class="summary-box">
       <strong>Analyzed:</strong> ${Math.min(emails.length, 25)} emails from label (${emails.length} total), ${openTasks.length} open tasks
     </div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
 
+    <div id="task-analysis-content">
     <div id="status-message" class="status-msg"></div>
 
     ${updatesHtml}
+    </div>
 
     <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
       <button id="done-btn" style="background: #1a73e8; color: white; border: none; padding: 10px 30px; border-radius: 5px; font-size: 14px; cursor: pointer;">
@@ -18783,6 +18866,21 @@ SUMMARY:
     </div>
 
     <script>
+      function copyContent() {
+        var el = document.getElementById('task-analysis-content');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
+
       function applyUpdate(itemId, statusColumnId, newStatus, btn) {
         btn.disabled = true;
         btn.textContent = '⏳ Updating...';
@@ -19646,6 +19744,7 @@ function battleStationGenerateInsights() {
   const goalsContext = getGoalsContext_();
   const aiInstructions = getAiInstructions_();
 
+  // TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
   const prompt = `You are A(I)DEN, an AI strategic advisor for Andy Worford at Profitise, a lead generation company in Home Services and Solar verticals.
 ${aiInstructions}
 Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, opportunities, and plays that Andy might not see just from reading emails.
@@ -19654,7 +19753,6 @@ Analyze this vendor deeply and generate STRATEGIC INSIGHTS — creative ideas, o
 Name: ${vendor}
 Type: ${source}
 Status: ${status}
-TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
 Live Verticals: ${contactData.liveVerticals || '(none)'}
 Other Verticals: ${contactData.otherVerticals || '(none)'}
 Live Modalities: ${contactData.liveModalities || '(none)'}
@@ -19715,13 +19813,33 @@ Be bold, be creative, be specific. Reference actual email content and data point
         .meta { color: #888; font-size: 11px; margin-bottom: 12px; }
         .vendor-card { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
         .vendor-card strong { color: #2e7d32; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>💡 Insights: ${vendor}</h2>
       <div class="vendor-card">
-        <strong>${source}</strong> | ${status} | TTL: $${Number(ttlUsd).toLocaleString()} | ${unsnoozed.length} active emails, ${overdue.length} overdue
+        <strong>${source}</strong> | ${status} | ${unsnoozed.length} active emails, ${overdue.length} overdue
       </div>
       <p class="meta">${new Date().toLocaleString()}</p>
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
@@ -19771,7 +19889,8 @@ function battleStationGoalInsights() {
 
     if (!vendor) continue;
 
-    vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`);
+    // vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`); // TODO: Re-enable TTL when actively used
+    vendorSnapshots.push(`${vendor} | ${source} | ${status} | Notes: ${(notes || '').substring(0, 150)}`);
   }
 
   ss.toast(`Generating goal-aligned insights for ${vendorSnapshots.length} vendors...`, '🎯 Processing', 15);
@@ -19823,10 +19942,30 @@ Be specific, reference actual vendor names and goals, and give actionable recomm
         h3 { color: #e65100; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #ff9800; padding-bottom: 4px; }
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🎯 Goal-Aligned Insights</h2>
       <p class="meta">Analyzed ${vendorSnapshots.length} vendors against your goals | ${new Date().toLocaleString()}</p>
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="goal-insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('goal-insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
@@ -19990,6 +20129,7 @@ function battleStationVendorBriefing() {
     `- ${c.name} (${c.contactType || 'Unknown'}, ${c.status || 'N/A'}) ${c.email || ''} ${c.phone || ''}`
   ).join('\n') || '(no contacts)';
 
+  // - TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
   let prompt = `You are A(I)DEN, Profitise's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
 
 This briefing should give Andy everything he needs to walk into a call, meeting, or email exchange and be fully prepared. Think of it as a pre-meeting intelligence packet.
@@ -20003,7 +20143,6 @@ COMPLETE VENDOR DOSSIER: ${vendor}
 - Type: ${source}
 - Status: ${contactData.liveStatus || status || 'Unknown'}
 - Priority Zone: ${tranche}
-- TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()}
 - Live Verticals: ${contactData.liveVerticals || '(none)'}
 - Other Verticals: ${contactData.otherVerticals || '(none)'}
 - Live Modalities: ${contactData.liveModalities || '(none)'}
@@ -20165,7 +20304,7 @@ Be direct, concise, and strategic. Andy is busy — make every word count.`;
       </style>
       <h2>📋 Vendor Briefing: ${escapeHtml_(vendor)}</h2>
       <div class="vendor-card">
-        <strong>${escapeHtml_(source)}</strong> | ${escapeHtml_(contactData.liveStatus || status)} | TTL: $${Number(ttlUsd).toLocaleString()}
+        <strong>${escapeHtml_(source)}</strong> | ${escapeHtml_(contactData.liveStatus || status)}
         <div class="badges">${badges.map(b => '<span class="badge">' + b + '</span>').join('')}</div>
       </div>
       <p class="meta">Generated ${new Date().toLocaleString()} | Data sources: monday.com, Gmail, Airtable, Calendar, GDrive, Box</p>
@@ -22030,7 +22169,10 @@ function vw_setup_(state) {
   ss.toast('Running Smart Briefing...', 'Workflow', 5);
   battleStationSmartBriefing();
 
-  // Build vendor queue from List sheet
+  // Build vendor queue directly from the List sheet in its existing order.
+  // buildListWithGmailAndNotes already sorts vendors into priority zones:
+  // Inbox > Chat > Monthly Returns > Hot > Normal
+  // So the List sheet order IS the priority order.
   var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
   if (!listSheet) throw new Error('List sheet not found');
 
@@ -22045,7 +22187,7 @@ function vw_setup_(state) {
 
   state.vendorQueue = queue;
   state.stepIdx = 1;
-  ss.toast('Setup complete. ' + queue.length + ' vendors queued. Loading first vendor...', 'Workflow', 3);
+  ss.toast('Setup complete. ' + queue.length + ' vendors queued. First: ' + (queue[0] || '(none)'), 'Workflow', 5);
   return state;
 }
 

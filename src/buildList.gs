@@ -177,7 +177,7 @@ function buildListWithGmailAndNotes() {
   // 4. MONTHLY RETURNS - vendors with open Monthly Returns tasks
   // 5. NORMAL - everything else
   console.log('Detecting priority vendors...');
-  const { inboxSet, hotSet } = getHotVendorsFromGmail_(all);
+  const { inboxSet, hotSet, inboxOldestDate } = getHotVendorsFromGmail_(all);
   console.log('Inbox vendors found:', inboxSet.size);
   console.log('Hot vendors found:', hotSet.size);
 
@@ -238,8 +238,14 @@ function buildListWithGmailAndNotes() {
     }
   }
 
-  // Final list: Inbox at top, then chat, monthly returns, hot, then normal zone
-  // Each zone keeps same sort order as `all` (already sorted)
+  // Sort inbox zone by oldest email date (oldest first)
+  inboxZone.sort((a, b) => {
+    const dateA = inboxOldestDate[a.name.toLowerCase()] || new Date();
+    const dateB = inboxOldestDate[b.name.toLowerCase()] || new Date();
+    return dateA - dateB;
+  });
+
+  // Final list: Inbox at top (oldest first), then chat, monthly returns, hot, then normal zone
   const finalList = [...inboxZone, ...chatZone, ...monthlyReturnsZone, ...hotZone, ...normalZone];
 
   console.log('Total vendors for output:', finalList.length);
@@ -396,6 +402,7 @@ function getVendorsWithOpenMonthlyReturns_() {
 function getHotVendorsFromGmail_(allVendors) {
   const inboxSet = new Set();  // Highest priority - vendors with emails in inbox
   const hotSet = new Set();    // Other hot vendors (00.received, recent sent)
+  const inboxOldestDate = {};  // vendor name (lowercase) -> oldest inbox email date
 
   try {
     // Build vendor name lookup for fast matching
@@ -485,7 +492,12 @@ function getHotVendorsFromGmail_(allVendors) {
           // If this thread is in inbox, add to inbox set (highest priority)
           if (inboxThreadIds.has(threadId)) {
             inboxSet.add(match.vendor);
-            console.log(`INBOX: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType})`);
+            // Track oldest inbox email date per vendor
+            var threadDate = thread.getLastMessageDate();
+            if (!inboxOldestDate[match.vendor] || threadDate < inboxOldestDate[match.vendor]) {
+              inboxOldestDate[match.vendor] = threadDate;
+            }
+            console.log(`INBOX: ${vendorMap.get(match.vendor) || match.vendor} (${match.matchType}, date: ${threadDate})`);
           } else {
             // Only add to hotSet if not already in inboxSet
             if (!inboxSet.has(match.vendor)) {
@@ -512,7 +524,7 @@ function getHotVendorsFromGmail_(allVendors) {
     console.log(`Error searching Gmail: ${e.message}`);
   }
 
-  return { inboxSet, hotSet };
+  return { inboxSet, hotSet, inboxOldestDate };
 }
 
 
