@@ -22169,7 +22169,10 @@ function vw_setup_(state) {
   ss.toast('Running Smart Briefing...', 'Workflow', 5);
   battleStationSmartBriefing();
 
-  // Build vendor queue from List sheet
+  // Build vendor queue directly from the List sheet in its existing order.
+  // buildListWithGmailAndNotes already sorts vendors into priority zones:
+  // Inbox > Chat > Monthly Returns > Hot > Normal
+  // So the List sheet order IS the priority order.
   var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
   if (!listSheet) throw new Error('List sheet not found');
 
@@ -22184,7 +22187,7 @@ function vw_setup_(state) {
 
   state.vendorQueue = queue;
   state.stepIdx = 1;
-  ss.toast('Setup complete. ' + queue.length + ' vendors queued. Loading first vendor...', 'Workflow', 3);
+  ss.toast('Setup complete. ' + queue.length + ' vendors queued. First: ' + (queue[0] || '(none)'), 'Workflow', 5);
   return state;
 }
 
