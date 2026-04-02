@@ -4404,10 +4404,13 @@ function getTasksForVendor_(vendor, listRow) {
       return a.tempIndSort - b.tempIndSort;
     }
 
-    // 4. Created Date (DESC - newest first)
+    // 4. Created Date (ASC - oldest first)
     const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
     const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
-    return dateB - dateA;
+    if (dateA.getTime() !== dateB.getTime()) return dateA - dateB;
+
+    // 5. Task Name (ASC - alphabetical)
+    return String(a.subject || '').localeCompare(String(b.subject || ''));
   });
 
   return tasks.slice(0, 30);
