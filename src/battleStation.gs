@@ -6191,15 +6191,33 @@ Answer the question above based on all available context — vendor profile, ema
       .btn-secondary:hover { background: #5a6268; }
       .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
       #loading { display: none; color: #666; margin-top: 10px; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
     </style>
     <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
     <div class="question">Q: ${escapeHtml_(question)}</div>
     <div class="answer" id="answerBox">${escapeHtml_(result.content)}</div>
     <div class="meta" id="metaBox">Searched emails 1-${Math.min(emails.length, 50)} of ${emails.length} retrieved</div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
     <button class="btn btn-secondary" id="searchMoreBtn" onclick="searchMore()">🔍 Search Older Emails (101-200)</button>
     <div id="loading">⏳ Searching older emails...</div>
 
     <script>
+      function copyContent() {
+        var el = document.getElementById('answerBox');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
       function searchMore() {
         document.getElementById('searchMoreBtn').disabled = true;
         document.getElementById('loading').style.display = 'block';
@@ -8750,10 +8768,14 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
         .btn-write:hover { background: #1b5e20; }
         .btn-write:disabled { background: #a5d6a7; cursor: not-allowed; }
         .loading-msg { color: #666; font-style: italic; margin-top: 10px; display: none; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🤖 Claude Analysis: ${vendor}</h2>
       <p><em>Analyzed ${emailData.length} unsnoozed email threads</em></p>
-      <div class="content">${formattedContent}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div class="content" id="analysis-content">${formattedContent}</div>
 
       <div class="write-response-section">
         <h3>✍️ Write Response</h3>
@@ -8772,6 +8794,20 @@ Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
       </div>
 
       <script>
+        function copyContent() {
+          var el = document.getElementById('analysis-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
         function doWriteResponse() {
           var emailIndex = document.getElementById('emailSelect').value;
           var directions = document.getElementById('directions').value.trim();
@@ -12952,11 +12988,31 @@ IMPORTANT: At the very end of your response, include a section exactly like this
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
         .reorder-note { background: #e8f0fe; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🧠 Smart Briefing</h2>
       <p class="meta">Analyzed ${vendorSummaries.length} vendors | ${new Date().toLocaleString()}</p>
       ${priorityNames.length > 0 ? '<div class="reorder-note">✅ List has been reordered — hit <strong>Next Vendor</strong> to work through them in priority order.</div>' : ''}
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="briefing-content-smart">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('briefing-content-smart');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(650);
@@ -19715,13 +19771,33 @@ Be bold, be creative, be specific. Reference actual email content and data point
         .meta { color: #888; font-size: 11px; margin-bottom: 12px; }
         .vendor-card { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
         .vendor-card strong { color: #2e7d32; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>💡 Insights: ${vendor}</h2>
       <div class="vendor-card">
-        <strong>${source}</strong> | ${status} | TTL: $${Number(ttlUsd).toLocaleString()} | ${unsnoozed.length} active emails, ${overdue.length} overdue
+        <strong>${source}</strong> | ${status} | ${unsnoozed.length} active emails, ${overdue.length} overdue
       </div>
       <p class="meta">${new Date().toLocaleString()}</p>
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
@@ -19823,10 +19899,30 @@ Be specific, reference actual vendor names and goals, and give actionable recomm
         h3 { color: #e65100; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #ff9800; padding-bottom: 4px; }
         strong { color: #333; }
         .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
       </style>
       <h2>🎯 Goal-Aligned Insights</h2>
       <p class="meta">Analyzed ${vendorSnapshots.length} vendors against your goals | ${new Date().toLocaleString()}</p>
-      <div>${content}</div>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="goal-insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('goal-insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
     `;
 
     const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
