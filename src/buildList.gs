@@ -49,10 +49,14 @@ const SKIP_REASONS = [];
 
 /**
  * Build List with Gmail links and monday.com notes
- * Generates columns: Vendor | TTL, USD | Source | Status | Notes | Gmail Link | no snoozing | processed?
+ * Generates columns: Vendor | TTL, USD | Source | Status | Notes | Gmail Link | no snoozing | processed? | Tranche
  *
- * HOT ZONE: Vendors with recent emails (label:00.received last 7 days OR in inbox) at top
- * NORMAL ZONE: All other vendors sorted by TTL, type, alpha
+ * SORT ORDER:
+ *   Base sort: Group DESC → Buyer>Affiliate → Rank DESC → Opportunity Size DESC → Buyer Type ASC → Creation log ASC → Name ASC
+ *   Then: vendors with emails in last 7 days move to top (same sort within)
+ *   Then: vendors in (inbox OR 00.received) AND -is:snoozed move to top (same sort)
+ *   Then: vendors in label:inbox move to top (same sort)
+ *   Then: if Profitise Internal has 00.received emails, it goes to very top
  */
 function buildListWithGmailAndNotes() {
   const ss = SpreadsheetApp.getActive();
@@ -63,200 +67,139 @@ function buildListWithGmailAndNotes() {
   console.log('Refreshing batch caches for vendor review...');
   refreshBatchCaches_();
 
-  // Get all vendors using existing buildVendorList logic
+  const blacklist = readBlacklist_(ss);
+
+  // Read vendors from monday.com sheets only (metric sheets commented out)
+  const shMonB = ss.getSheetByName(SHEET_MON_BUYERS);
+  const shMonA = ss.getSheetByName(SHEET_MON_AFFILIATES);
+
+  /* // TODO: Re-enable metric sheets when actively used
   const shBuyL1 = mustGetSheet_(ss, SHEET_BUYERS_L1M);
   const shBuyL6 = mustGetSheet_(ss, SHEET_BUYERS_L6M);
   const shAffL1 = mustGetSheet_(ss, SHEET_AFFILIATES_L1M);
   const shAffL6 = mustGetSheet_(ss, SHEET_AFFILIATES_L6M);
-  const shMonB  = ss.getSheetByName(SHEET_MON_BUYERS);
-  const shMonA  = ss.getSheetByName(SHEET_MON_AFFILIATES);
-
-  const blacklist = readBlacklist_(ss);
-
-  // Read all vendors
   const buyersL1M = readMetricSheet_(shBuyL1, 'Buyer', 'Buyers L1M', blacklist);
-  const buyersL1MSet = new Set(buyersL1M.map(r => r.name.toLowerCase()));
-
-  const buyersL6MAll = readMetricSheet_(shBuyL6, 'Buyer', 'Buyers L6M', blacklist);
-  const buyersL6M = buyersL6MAll.filter(r => !buyersL1MSet.has(r.name.toLowerCase()));
-
-  const buyersExisting = new Set([...buyersL1MSet, ...buyersL6M.map(r => r.name.toLowerCase())]);
-  const buyersMon = shMonB ? readMondaySheet_(shMonB, 'Buyer', 'buyers monday.com', blacklist, buyersExisting) : [];
-
+  const buyersL6M = readMetricSheet_(shBuyL6, 'Buyer', 'Buyers L6M', blacklist);
   const affL1M = readMetricSheet_(shAffL1, 'Affiliate', 'Affiliates L1M', blacklist);
-  const affL1MSet = new Set(affL1M.map(r => r.name.toLowerCase()));
+  const affL6M = readMetricSheet_(shAffL6, 'Affiliate', 'Affiliates L6M', blacklist);
+  */
 
-  const affL6MAll = readMetricSheet_(shAffL6, 'Affiliate', 'Affiliates L6M', blacklist);
-  const affL6M = affL6MAll.filter(r => !affL1MSet.has(r.name.toLowerCase()));
+  const existingSet = new Set();
+  const buyersMon = shMonB ? readMondaySheet_(shMonB, 'Buyer', 'buyers monday.com', blacklist, existingSet) : [];
+  const affMon = shMonA ? readMondaySheet_(shMonA, 'Affiliate', 'affiliates monday.com', blacklist, existingSet) : [];
 
-  const affExisting = new Set([...affL1MSet, ...affL6M.map(r => r.name.toLowerCase())]);
-  const affMon = shMonA ? readMondaySheet_(shMonA, 'Affiliate', 'affiliates monday.com', blacklist, affExisting) : [];
+  console.log('Data loaded:', { buyersMon: buyersMon.length, affMon: affMon.length });
 
-  console.log('Data loaded:', {
-    buyersL1M: buyersL1M.length,
-    buyersL6M: buyersL6M.length,
-    buyersMon: buyersMon.length,
-    affL1M: affL1M.length,
-    affL6M: affL6M.length,
-    affMon: affMon.length
-  });
+  // Combine all vendors
+  const all = [...buyersMon, ...affMon];
 
-  // Split by TTL
-  const gt0 = [];
-  const z_buyL6 = [], z_affL6 = [], z_buyL1 = [], z_affL1 = [], z_mon = [];
+  console.log('Total vendors:', all.length);
 
-  const pushByTtl = (arr, zeroTarget) => {
-    for (const r of arr) {
-      if ((r.ttl || 0) > 0) gt0.push(r);
-      else zeroTarget.push(r);
-    }
-  };
+  // Read extra sort columns from monday.com sheets
+  const sortData = readMondaySortColumns_(shMonB, shMonA);
 
-  pushByTtl(buyersL6M, z_buyL6);
-  pushByTtl(affL6M, z_affL6);
-  pushByTtl(buyersL1M, z_buyL1);
-  pushByTtl(affL1M, z_affL1);
-
-  for (const r of buyersMon) ((r.ttl || 0) > 0 ? gt0 : z_mon).push(r);
-  for (const r of affMon) ((r.ttl || 0) > 0 ? gt0 : z_mon).push(r);
-
-  // Sort >0 TTL by TTL desc, then type (buyers first), then alpha
-  gt0.sort((a, b) => {
-    const ttlDiff = (b.ttl || 0) - (a.ttl || 0);
-    if (ttlDiff !== 0) return ttlDiff;
-    const rankA = (a.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
-    const rankB = (b.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
-    if (rankA !== rankB) return rankA - rankB;
-    return String(a.name).localeCompare(String(b.name));
-  });
-
-  // Sort zero-TTL groups alphabetically
-  const alpha = (a, b) => String(a.name).localeCompare(String(b.name));
-  z_buyL6.sort(alpha);
-  z_affL6.sort(alpha);
-  z_buyL1.sort(alpha);
-  z_affL1.sort(alpha);
-
-  // Sort monday.com zero-TTL by status rank, then type, then alpha
-  z_mon.sort((a, b) => {
-    const sA = getStatusRank_(a.status);
-    const sB = getStatusRank_(b.status);
-    if (sA !== sB) return sA - sB;
-    const rankA = (a.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
-    const rankB = (b.type || '').toLowerCase().startsWith('buyer') ? 0 : 1;
-    if (rankA !== rankB) return rankA - rankB;
-    return String(a.name).localeCompare(String(b.name));
-  });
-
-  // Assemble all vendors
-  const all = [...gt0, ...z_buyL6, ...z_affL6, ...z_buyL1, ...z_affL1, ...z_mon];
-
-  console.log('Total before status/notes lookup:', all.length);
-
-  // Build status and notes maps from monday.com sheets
-  const statusMaps = buildStatusMaps_(shMonB, shMonA);
-  const notesMaps = buildNotesMaps_(shMonB, shMonA);
-
-  console.log('Maps built:', {
-    buyersStatus: statusMaps.buyers.size,
-    affiliatesStatus: statusMaps.affiliates.size,
-    buyersNotes: notesMaps.buyers.size,
-    affiliatesNotes: notesMaps.affiliates.size
-  });
-
-  // Lookup status and notes for each vendor
+  // Attach sort fields to each vendor
   for (const r of all) {
-    r.status = lookupStatus_(r.name, r.type, statusMaps);
-    r.notes = lookupNotes_(r.name, r.type, notesMaps);
+    const key = r.name.toLowerCase();
+    const extra = sortData.get(key) || {};
+    r.groupRank = getStatusRank_(r.status);
+    r.rank = extra.rank || 0;
+    r.opportunitySize = extra.opportunitySize || 0;
+    r.buyerType = extra.buyerType || '';
+    r.creationDate = extra.creationDate || new Date('2099-01-01');
+    r.isBuyer = (r.type || '').toLowerCase().startsWith('buyer') ? 0 : 1; // 0=buyer, 1=affiliate
   }
 
-  // PRIORITY ZONES: Detect vendors with emails or chat activity
-  // 1. INBOX (highest) - vendors with emails currently in inbox
-  // 2. CHAT - vendors detected via OCR from Teams/Telegram/WhatsApp
-  // 3. HOT - vendors with 00.received or recent sent emails
-  // 4. MONTHLY RETURNS - vendors with open Monthly Returns tasks
-  // 5. NORMAL - everything else
-  console.log('Detecting priority vendors...');
-  const { inboxSet, hotSet, inboxOldestDate } = getHotVendorsFromGmail_(all);
-  console.log('Inbox vendors found:', inboxSet.size);
-  console.log('Hot vendors found:', hotSet.size);
+  // BASE SORT: Group ASC (Live first) → Buyer>Affiliate → Rank DESC → Opportunity Size DESC → Buyer Type ASC → Creation log ASC → Name ASC
+  all.sort((a, b) => {
+    // Group rank ASC (lower = higher priority: Live=0, Onboarding=1, etc.)
+    if (a.groupRank !== b.groupRank) return a.groupRank - b.groupRank;
+    // Buyer before Affiliate
+    if (a.isBuyer !== b.isBuyer) return a.isBuyer - b.isBuyer;
+    // Rank DESC (higher rank first)
+    if (b.rank !== a.rank) return b.rank - a.rank;
+    // Opportunity Size DESC (higher first)
+    if (b.opportunitySize !== a.opportunitySize) return b.opportunitySize - a.opportunitySize;
+    // Buyer Type ASC
+    if (a.buyerType !== b.buyerType) return a.buyerType.localeCompare(b.buyerType);
+    // Creation log ASC (oldest first)
+    if (a.creationDate.getTime() !== b.creationDate.getTime()) return a.creationDate - b.creationDate;
+    // Name ASC
+    return a.name.localeCompare(b.name);
+  });
 
-  // Get OCR-detected vendors (from chat platforms)
-  let chatSet = new Set();
-  try {
-    const ocrVendors = getOcrDetectedVendors();
-    chatSet = new Set(ocrVendors.keys());
-    console.log('Chat (OCR) vendors found:', chatSet.size);
-  } catch (e) {
-    console.log('Error getting OCR vendors:', e.message);
+  // Set default tranche
+  for (const r of all) {
+    r.tranche = 'Normal';
   }
 
-  // Get vendors with open Monthly Returns tasks
-  const monthlyReturnsSet = getVendorsWithOpenMonthlyReturns_();
-  console.log('Monthly Returns vendors found:', monthlyReturnsSet.size);
+  // LAYER 1: Move vendors with emails in last 7 days to top
+  console.log('Detecting recent email activity...');
+  const recentSet = getRecentEmailVendors_(all);
+  console.log('Recent email vendors (7 days):', recentSet.size);
 
-  const inboxZone = [];
-  const chatZone = [];
-  const hotZone = [];
-  const monthlyReturnsZone = [];
-  const normalZone = [];
-
-  // Convert monthlyReturnsSet to array for partial matching
-  const monthlyReturnsNames = Array.from(monthlyReturnsSet);
-
-  // Helper to check if vendor matches a Monthly Returns vendor (partial match with min length)
-  const matchesMonthlyReturns = (vendorLower) => {
-    if (monthlyReturnsSet.has(vendorLower)) return true;
-    // Partial match: require at least 6 chars to prevent false positives
-    const MIN_MATCH_LEN = 6;
-    return monthlyReturnsNames.some(mrName => {
-      if (mrName.length < MIN_MATCH_LEN && vendorLower.length < MIN_MATCH_LEN) return false;
-      return vendorLower.includes(mrName) || mrName.includes(vendorLower);
-    });
-  };
-
+  const recentVendors = [];
+  const nonRecentVendors = [];
   for (const r of all) {
-    const nameLower = r.name.toLowerCase();
-    if (inboxSet.has(nameLower)) {
-      r.tranche = '📥 Actionable';
-      inboxZone.push(r);
-    } else if (chatSet.has(nameLower)) {
-      r.tranche = '💬 Chat';
-      chatZone.push(r);
-    } else if (matchesMonthlyReturns(nameLower)) {
-      // Partial match for Monthly Returns - vendor list name or task vendor name may vary slightly
-      // Monthly Returns takes priority over Hot
-      r.tranche = '📊 Monthly Returns';
-      monthlyReturnsZone.push(r);
-      console.log(`Monthly Returns match: "${r.name}" matched`);
-    } else if (hotSet.has(nameLower)) {
-      r.tranche = '🔥 Hot';
-      hotZone.push(r);
+    if (recentSet.has(r.name.toLowerCase())) {
+      r.tranche = '🔥 Recent';
+      recentVendors.push(r);
     } else {
-      r.tranche = 'Normal';
-      normalZone.push(r);
+      nonRecentVendors.push(r);
     }
   }
 
-  // Sort inbox zone by oldest email date (oldest first)
-  console.log('=== INBOX ZONE SORTING ===');
-  console.log('inboxOldestDate keys:', Object.keys(inboxOldestDate).join(', '));
-  console.log('inboxZone vendors:', inboxZone.map(v => v.name).join(', '));
-  for (const v of inboxZone) {
-    const key = v.name.toLowerCase();
-    const date = inboxOldestDate[key];
-    console.log(`  ${v.name} -> key="${key}", date=${date || 'NO MATCH'}`);
-  }
-  inboxZone.sort((a, b) => {
-    const dateA = inboxOldestDate[a.name.toLowerCase()] || new Date();
-    const dateB = inboxOldestDate[b.name.toLowerCase()] || new Date();
-    return dateA - dateB;
-  });
-  console.log('Sorted order:', inboxZone.map(v => v.name).join(', '));
-  console.log('=== END SORTING ===');
+  // LAYER 2: Move vendors in (inbox OR 00.received) AND -is:snoozed to top
+  console.log('Detecting actionable emails...');
+  const { actionableSet, inboxOnlySet, profitiseInternal } = getActionableVendors_(all);
+  console.log('Actionable vendors:', actionableSet.size);
+  console.log('Inbox-only vendors:', inboxOnlySet.size);
+  console.log('Profitise Internal actionable:', profitiseInternal);
 
-  // Final list: Inbox at top (oldest first), then chat, monthly returns, hot, then normal zone
-  const finalList = [...inboxZone, ...chatZone, ...monthlyReturnsZone, ...hotZone, ...normalZone];
+  const actionableVendors = [];
+  const restAfterActionable = [];
+  for (const r of [...recentVendors, ...nonRecentVendors]) {
+    if (actionableSet.has(r.name.toLowerCase())) {
+      r.tranche = '📥 Actionable';
+      actionableVendors.push(r);
+    } else {
+      restAfterActionable.push(r);
+    }
+  }
+
+  // LAYER 3: Move vendors in label:inbox to top of actionable
+  const inboxVendors = [];
+  const actionableNotInbox = [];
+  for (const r of actionableVendors) {
+    if (inboxOnlySet.has(r.name.toLowerCase())) {
+      r.tranche = '📥 Inbox';
+      inboxVendors.push(r);
+    } else {
+      actionableNotInbox.push(r);
+    }
+  }
+
+  // LAYER 4: If Profitise Internal has 00.received emails, put at very top
+  let profitiseInternalVendor = null;
+  if (profitiseInternal) {
+    // Check if it's already in one of the lists, or create a placeholder
+    const allLists = [inboxVendors, actionableNotInbox, restAfterActionable];
+    for (const list of allLists) {
+      for (let i = 0; i < list.length; i++) {
+        if (list[i].name.toLowerCase().includes('profitise internal')) {
+          profitiseInternalVendor = list.splice(i, 1)[0];
+          profitiseInternalVendor.tranche = '🔴 Internal';
+          break;
+        }
+      }
+      if (profitiseInternalVendor) break;
+    }
+  }
+
+  // Assemble final list
+  const finalList = [];
+  if (profitiseInternalVendor) finalList.push(profitiseInternalVendor);
+  finalList.push(...inboxVendors, ...actionableNotInbox, ...restAfterActionable);
 
   console.log('Total vendors for output:', finalList.length);
 
@@ -325,22 +268,183 @@ function buildListWithGmailAndNotes() {
 
   console.log('=== BUILD LIST WITH GMAIL & NOTES END ===');
 
-  const counts = {
-    '📥 Inbox': inboxZone.length,
-    '💬 Chat': chatZone.length,
-    '📊 Monthly Returns': monthlyReturnsZone.length,
-    '🔥 Hot': hotZone.length,
-    'Normal': normalZone.length,
-    'Total': finalList.length
-  };
+  const trancheCounts = {};
+  for (const r of finalList) {
+    trancheCounts[r.tranche] = (trancheCounts[r.tranche] || 0) + 1;
+  }
+  trancheCounts['Total'] = finalList.length;
 
-  console.log('Final counts:', counts);
+  console.log('Final counts:', trancheCounts);
 
   ss.toast(
-    Object.entries(counts).map(([k,v]) => `${k}: ${v}`).join(' • '),
+    Object.entries(trancheCounts).map(([k,v]) => `${k}: ${v}`).join(' • '),
     '✅ List Built',
     8
   );
+}
+
+
+/** ========== SORT COLUMN READER ========== **/
+
+/**
+ * Read extra sort columns (Rank, Opportunity Size, Buyer Type, Creation log)
+ * from the monday.com sheets. Returns a Map of lowercase vendor name -> { rank, opportunitySize, buyerType, creationDate }
+ */
+function readMondaySortColumns_(shMonB, shMonA) {
+  const map = new Map();
+
+  const readSheet = (sh) => {
+    if (!sh) return;
+    const allValues = sh.getDataRange().getValues();
+    if (allValues.length < 2) return;
+
+    const headers = allValues[0].map(h => String(h || '').trim().toLowerCase());
+
+    // Find column indices
+    const rankIdx = headers.findIndex(h => h === 'rank');
+    const oppSizeIdx = headers.findIndex(h => h === 'opportunity size');
+    const buyerTypeIdx = headers.findIndex(h => h === 'buyer type');
+    const creationIdx = headers.findIndex(h => h === 'creation log' || h === 'creation_log');
+
+    console.log(`[Sort Columns] Sheet: ${sh.getName()}, Rank: ${rankIdx}, OppSize: ${oppSizeIdx}, BuyerType: ${buyerTypeIdx}, Creation: ${creationIdx}`);
+
+    for (let i = 1; i < allValues.length; i++) {
+      const row = allValues[i];
+      const name = normalizeName_(row[0]);
+      if (!name) continue;
+      const key = name.toLowerCase();
+
+      const existing = map.get(key) || {};
+      map.set(key, {
+        rank: (rankIdx >= 0 ? toNumber_(row[rankIdx]) : 0) || existing.rank || 0,
+        opportunitySize: (oppSizeIdx >= 0 ? toNumber_(row[oppSizeIdx]) : 0) || existing.opportunitySize || 0,
+        buyerType: (buyerTypeIdx >= 0 ? String(row[buyerTypeIdx] || '').trim() : '') || existing.buyerType || '',
+        creationDate: parseCreationDate_(creationIdx >= 0 ? row[creationIdx] : null) || existing.creationDate || new Date('2099-01-01')
+      });
+    }
+  };
+
+  readSheet(shMonB);
+  readSheet(shMonA);
+
+  console.log(`[Sort Columns] Loaded sort data for ${map.size} vendors`);
+  return map;
+}
+
+/** Parse a creation log date from monday.com (can be Date object, ISO string, or timestamp) */
+function parseCreationDate_(val) {
+  if (!val) return null;
+  if (val instanceof Date && !isNaN(val.getTime())) return val;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+
+/** ========== EMAIL ACTIVITY DETECTION ========== **/
+
+/**
+ * Get vendors with email activity in the last 7 days.
+ * Searches sent + received threads from last 7 days.
+ */
+function getRecentEmailVendors_(allVendors) {
+  const recentSet = new Set();
+
+  try {
+    const vendorMap = buildVendorLabelMap_(allVendors);
+    const threads = GmailApp.search('newer_than:7d (label:00.received OR label:sent)', 0, 300);
+    console.log(`Recent email search: ${threads.length} threads`);
+
+    for (const thread of threads) {
+      const vendor = matchVendorFromThread_(thread, vendorMap, allVendors);
+      if (vendor) recentSet.add(vendor);
+    }
+  } catch (e) {
+    console.log('Error searching recent emails:', e.message);
+  }
+
+  return recentSet;
+}
+
+/**
+ * Get vendors with actionable emails.
+ * Returns { actionableSet, inboxOnlySet, profitiseInternal }
+ */
+function getActionableVendors_(allVendors) {
+  const actionableSet = new Set();
+  const inboxOnlySet = new Set();
+  let profitiseInternal = false;
+
+  try {
+    const vendorMap = buildVendorLabelMap_(allVendors);
+
+    // Search: (inbox OR 00.received) AND -is:snoozed
+    const actionableThreads = GmailApp.search('(label:inbox OR label:00.received) AND -is:snoozed', 0, 500);
+    console.log(`Actionable email search: ${actionableThreads.length} threads`);
+
+    // Search: inbox only (subset for top-tier priority)
+    const inboxThreadIds = new Set();
+    const inboxThreads = GmailApp.search('label:inbox', 0, 300);
+    for (const t of inboxThreads) inboxThreadIds.add(t.getId());
+
+    // Check for Profitise Internal
+    const internalThreads = GmailApp.search('label:00.received AND label:zzzVendors/Profitise Internal', 0, 5);
+    if (internalThreads.length > 0) profitiseInternal = true;
+
+    for (const thread of actionableThreads) {
+      const vendor = matchVendorFromThread_(thread, vendorMap, allVendors);
+      if (vendor) {
+        actionableSet.add(vendor);
+        if (inboxThreadIds.has(thread.getId())) {
+          inboxOnlySet.add(vendor);
+        }
+      }
+    }
+  } catch (e) {
+    console.log('Error searching actionable emails:', e.message);
+  }
+
+  return { actionableSet, inboxOnlySet, profitiseInternal };
+}
+
+/** Build a map of lowercase vendor name -> true for fast lookup */
+function buildVendorLabelMap_(allVendors) {
+  const map = new Map();
+  for (const v of allVendors) {
+    map.set(v.name.toLowerCase(), v.name);
+  }
+  return map;
+}
+
+/** Match a vendor from a Gmail thread using zzzVendors labels or name matching */
+function matchVendorFromThread_(thread, vendorMap, allVendors) {
+  const labels = thread.getLabels();
+  for (const label of labels) {
+    const labelName = label.getName();
+    if (labelName.startsWith('zzzVendors/')) {
+      const vendorFromLabel = labelName.substring('zzzVendors/'.length).toLowerCase();
+      // Direct match
+      if (vendorMap.has(vendorFromLabel)) return vendorFromLabel;
+      // Partial match
+      for (const [key] of vendorMap) {
+        if (vendorFromLabel.includes(key) || key.includes(vendorFromLabel)) return key;
+      }
+    }
+  }
+
+  // Fallback: name match in subject/from
+  try {
+    const subject = thread.getFirstMessageSubject().toLowerCase();
+    const messages = thread.getMessages();
+    let emailText = subject;
+    if (messages.length > 0) {
+      emailText += ' ' + messages[0].getFrom().toLowerCase();
+    }
+    for (const [key] of vendorMap) {
+      if (key.length >= 4 && emailText.includes(key)) return key;
+    }
+  } catch (e) { /* skip */ }
+
+  return null;
 }
 
 
