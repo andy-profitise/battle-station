@@ -133,9 +133,9 @@ function buildListWithGmailAndNotes() {
     r.tranche = 'Normal';
   }
 
-  // LAYER 1: Move vendors with emails in last 7 days to top
+  // LAYER 1: Move vendors with emails in last 7 days to top, sorted by oldest thread date ASC
   console.log('Detecting recent email activity...');
-  const recentSet = getRecentEmailVendors_(all);
+  const { recentSet, recentDates } = getRecentEmailVendors_(all);
   console.log('Recent email vendors (7 days):', recentSet.size);
 
   const recentVendors = [];
@@ -143,15 +143,18 @@ function buildListWithGmailAndNotes() {
   for (const r of all) {
     if (recentSet.has(r.name.toLowerCase())) {
       r.tranche = '🔥 Recent';
+      r.threadDate = recentDates[r.name.toLowerCase()] || new Date();
       recentVendors.push(r);
     } else {
       nonRecentVendors.push(r);
     }
   }
+  // Sort recent vendors by oldest thread date first
+  recentVendors.sort((a, b) => a.threadDate - b.threadDate);
 
-  // LAYER 2: Move vendors in (inbox OR 00.received) AND -is:snoozed to top
+  // LAYER 2: Move vendors in (inbox OR 00.received) AND -is:snoozed to top, sorted by oldest thread date ASC
   console.log('Detecting actionable emails...');
-  const { actionableSet, inboxOnlySet, profitiseInternal } = getActionableVendors_(all);
+  const { actionableSet, actionableDates, inboxOnlySet, inboxDates, profitiseInternal } = getActionableVendors_(all);
   console.log('Actionable vendors:', actionableSet.size);
   console.log('Inbox-only vendors:', inboxOnlySet.size);
   console.log('Profitise Internal actionable:', profitiseInternal);
@@ -161,23 +164,29 @@ function buildListWithGmailAndNotes() {
   for (const r of [...recentVendors, ...nonRecentVendors]) {
     if (actionableSet.has(r.name.toLowerCase())) {
       r.tranche = '📥 Actionable';
+      r.threadDate = actionableDates[r.name.toLowerCase()] || r.threadDate || new Date();
       actionableVendors.push(r);
     } else {
       restAfterActionable.push(r);
     }
   }
+  // Sort actionable by oldest thread date first
+  actionableVendors.sort((a, b) => a.threadDate - b.threadDate);
 
-  // LAYER 3: Move vendors in label:inbox to top of actionable
+  // LAYER 3: Move vendors in label:inbox to top of actionable, sorted by oldest thread date ASC
   const inboxVendors = [];
   const actionableNotInbox = [];
   for (const r of actionableVendors) {
     if (inboxOnlySet.has(r.name.toLowerCase())) {
       r.tranche = '📥 Inbox';
+      r.threadDate = inboxDates[r.name.toLowerCase()] || r.threadDate || new Date();
       inboxVendors.push(r);
     } else {
       actionableNotInbox.push(r);
     }
   }
+  // Sort inbox by oldest thread date first
+  inboxVendors.sort((a, b) => a.threadDate - b.threadDate);
 
   // LAYER 4: If Profitise Internal has 00.received emails, put at very top
   let profitiseInternalVendor = null;
@@ -348,6 +357,7 @@ function parseCreationDate_(val) {
  */
 function getRecentEmailVendors_(allVendors) {
   const recentSet = new Set();
+  const recentDates = {};  // vendor (lowercase) -> oldest thread date
 
   try {
     const vendorMap = buildVendorLabelMap_(allVendors);
@@ -356,22 +366,30 @@ function getRecentEmailVendors_(allVendors) {
 
     for (const thread of threads) {
       const vendor = matchVendorFromThread_(thread, vendorMap, allVendors);
-      if (vendor) recentSet.add(vendor);
+      if (vendor) {
+        recentSet.add(vendor);
+        const threadDate = thread.getLastMessageDate();
+        if (!recentDates[vendor] || threadDate < recentDates[vendor]) {
+          recentDates[vendor] = threadDate;
+        }
+      }
     }
   } catch (e) {
     console.log('Error searching recent emails:', e.message);
   }
 
-  return recentSet;
+  return { recentSet, recentDates };
 }
 
 /**
  * Get vendors with actionable emails.
- * Returns { actionableSet, inboxOnlySet, profitiseInternal }
+ * Returns { actionableSet, actionableDates, inboxOnlySet, inboxDates, profitiseInternal }
  */
 function getActionableVendors_(allVendors) {
   const actionableSet = new Set();
+  const actionableDates = {};  // vendor (lowercase) -> oldest thread date
   const inboxOnlySet = new Set();
+  const inboxDates = {};  // vendor (lowercase) -> oldest inbox thread date
   let profitiseInternal = false;
 
   try {
@@ -382,9 +400,9 @@ function getActionableVendors_(allVendors) {
     console.log(`Actionable email search: ${actionableThreads.length} threads`);
 
     // Search: inbox only (subset for top-tier priority)
-    const inboxThreadIds = new Set();
+    const inboxThreadMap = new Map();  // threadId -> thread
     const inboxThreads = GmailApp.search('label:inbox', 0, 300);
-    for (const t of inboxThreads) inboxThreadIds.add(t.getId());
+    for (const t of inboxThreads) inboxThreadMap.set(t.getId(), t);
 
     // Check for Profitise Internal
     const internalThreads = GmailApp.search('label:00.received AND label:zzzVendors/Profitise Internal', 0, 5);
@@ -394,16 +412,32 @@ function getActionableVendors_(allVendors) {
       const vendor = matchVendorFromThread_(thread, vendorMap, allVendors);
       if (vendor) {
         actionableSet.add(vendor);
-        if (inboxThreadIds.has(thread.getId())) {
-          inboxOnlySet.add(vendor);
+        const threadDate = thread.getLastMessageDate();
+        if (!actionableDates[vendor] || threadDate < actionableDates[vendor]) {
+          actionableDates[vendor] = threadDate;
         }
+        if (inboxThreadMap.has(thread.getId())) {
+          inboxOnlySet.add(vendor);
+          if (!inboxDates[vendor] || threadDate < inboxDates[vendor]) {
+            inboxDates[vendor] = threadDate;
+          }
+        }
+      }
+    }
+
+    // Also check inbox-only threads that might not be in actionable search
+    for (const [tid, thread] of inboxThreadMap) {
+      const vendor = matchVendorFromThread_(thread, vendorMap, allVendors);
+      if (vendor && !inboxDates[vendor]) {
+        inboxOnlySet.add(vendor);
+        inboxDates[vendor] = thread.getLastMessageDate();
       }
     }
   } catch (e) {
     console.log('Error searching actionable emails:', e.message);
   }
 
-  return { actionableSet, inboxOnlySet, profitiseInternal };
+  return { actionableSet, actionableDates, inboxOnlySet, inboxDates, profitiseInternal };
 }
 
 /** Build a map of lowercase vendor name -> true for fast lookup */
