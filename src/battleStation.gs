@@ -4404,10 +4404,13 @@ function getTasksForVendor_(vendor, listRow) {
       return a.tempIndSort - b.tempIndSort;
     }
 
-    // 4. Created Date (DESC - newest first)
+    // 4. Created Date (ASC - oldest first)
     const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
     const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
-    return dateB - dateA;
+    if (dateA.getTime() !== dateB.getTime()) return dateA - dateB;
+
+    // 5. Task Name (ASC - alphabetical)
+    return String(a.subject || '').localeCompare(String(b.subject || ''));
   });
 
   return tasks.slice(0, 30);
@@ -20410,7 +20413,14 @@ function battleStationBulkActions() {
     return;
   }
 
+  // Check for pre-extracted chat action items
+  var chatActions = '';
+  try {
+    chatActions = PropertiesService.getScriptProperties().getProperty('CHAT_ACTIONS_' + vendor) || '';
+  } catch (e) { /* ignore */ }
+
   // Show input dialog
+  var escapedChatActions = chatActions.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '\\n');
   const inputHtml = `
     <style>
       body { font-family: Arial, sans-serif; padding: 15px; }
@@ -20418,10 +20428,13 @@ function battleStationBulkActions() {
       textarea { width: 100%; height: 200px; font-size: 13px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; resize: vertical; }
       .hint { color: #888; font-size: 12px; margin-top: 8px; line-height: 1.5; }
       .hint strong { color: #555; }
+      .chat-actions { background: #fff3e0; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 12px; border: 1px solid #ffe0b2; }
+      .chat-actions strong { color: #e65100; }
       button { background: #1a73e8; color: white; border: none; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; margin-top: 12px; }
       button:hover { background: #1557b0; }
     </style>
     <h3>⚡ Bulk Actions for ${escapeHtml_(vendor)}</h3>
+    ${chatActions ? '<div class="chat-actions"><strong>From chat:</strong> Action items from recent chat have been pre-loaded below. Edit or add to them.</div>' : ''}
     <p style="font-size: 13px; color: #333;">Describe everything you want to do — I'll figure out the individual actions:</p>
     <textarea id="input" placeholder="e.g. Change status to Live, update the phonexa link to https://example.com/report, add a note that they confirmed pricing, mark the Setup Tracking task as Done, update blockers to say waiting on IO signature"></textarea>
     <div class="hint">
@@ -20430,6 +20443,11 @@ function battleStationBulkActions() {
     </div>
     <button onclick="submit()">🤖 Parse Actions</button>
     <script>
+      // Pre-populate with chat action items if available
+      var chatActions = "${escapedChatActions}";
+      if (chatActions) {
+        document.getElementById('input').value = chatActions.replace(/\\\\n/g, '\\n');
+      }
       function submit() {
         var text = document.getElementById('input').value.trim();
         if (!text) { alert('Please describe what you want to do.'); return; }
@@ -22357,7 +22375,11 @@ function getChatUploadHtml_(vendor, platform, chatLink) {
   '  google.script.run' +
   '    .withSuccessHandler(function(res) {' +
   '      if (res.success) {' +
-  '        document.getElementById("result").innerHTML = "<strong>Extracted text:</strong><br>" + res.extractedText.replace(/\\n/g, "<br>");' +
+  '        var resultHtml = "<strong>Extracted text:</strong><br>" + res.extractedText.replace(/\\n/g, "<br>");' +
+  '        if (res.actionItems && res.actionItems !== "(no action items)") {' +
+  '          resultHtml += "<br><br><strong style=\'color:#e65100;\'>Action Items (will pre-load in Bulk Actions):</strong><br>" + res.actionItems.replace(/\\n/g, "<br>");' +
+  '        }' +
+  '        document.getElementById("result").innerHTML = resultHtml;' +
   '        document.getElementById("result").style.display = "block";' +
   '        document.getElementById("status").innerHTML = "OCR complete. Text saved for vendor briefing.<br><button class=\'copy-btn\' onclick=\'copyText()\'>Copy to Clipboard</button>";' +
   '      } else {' +
@@ -22423,9 +22445,41 @@ function processChatScreenshot(imageData, platform) {
     : '--- ' + platform + ' Screenshot (' + new Date().toLocaleString() + ') ---\n' + extractedText;
   PropertiesService.getScriptProperties().setProperty('CHAT_CONTEXT_' + vendor, combined);
 
-  Logger.log('Chat OCR saved for ' + vendor + ': ' + extractedText.length + ' chars');
+  // Extract action items from the chat for Bulk Actions
+  var actionItems = '';
+  try {
+    var actionResult = callClaudeAPI_(
+      'You are analyzing a ' + platform + ' chat conversation about vendor "' + vendor + '" at Profitise (lead generation).\n\n' +
+      'Chat text:\n' + extractedText + '\n\n' +
+      'Extract any actionable items from this conversation. For each, write a one-line description of what needs to be done.\n' +
+      'Format as a simple list, one item per line. Examples:\n' +
+      '- Create task: Follow up on integration issue\n' +
+      '- Update blocker: Waiting on API credentials from vendor\n' +
+      '- Update notes: Vendor confirmed pricing at $X per lead\n' +
+      '- Change status to Paused\n\n' +
+      'If there are no clear action items, just output: (no action items)\n' +
+      'Output ONLY the list, nothing else.',
+      apiKey,
+      { maxTokens: 1000 }
+    );
+    if (!actionResult.error) {
+      actionItems = actionResult.content.trim();
+      if (actionItems && actionItems !== '(no action items)') {
+        // Save action items for Bulk Actions to pick up
+        var existingActions = PropertiesService.getScriptProperties().getProperty('CHAT_ACTIONS_' + vendor) || '';
+        var combinedActions = existingActions
+          ? existingActions + '\n' + actionItems
+          : actionItems;
+        PropertiesService.getScriptProperties().setProperty('CHAT_ACTIONS_' + vendor, combinedActions);
+      }
+    }
+  } catch (e) {
+    Logger.log('Error extracting chat action items: ' + e.message);
+  }
 
-  return { success: true, extractedText: extractedText };
+  Logger.log('Chat OCR saved for ' + vendor + ': ' + extractedText.length + ' chars, actions: ' + actionItems.length + ' chars');
+
+  return { success: true, extractedText: extractedText, actionItems: actionItems };
 }
 
 /** Step 3: Vendor Briefing — pause so user can read the analysis */
