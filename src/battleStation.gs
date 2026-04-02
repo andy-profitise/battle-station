@@ -20160,6 +20160,9 @@ ${contactData.notes || notes || '(no notes)'}
 🚧 BLOCKERS
 ${blockerContext}
 
+💬 CHAT CONVERSATIONS
+${getChatContext_(vendor)}
+
 📧 OUTSTANDING EMAILS (${unsnoozed.length} active, ${overdue.length} overdue)
 ${emailContext || '(no emails)'}
 
@@ -22037,6 +22040,7 @@ function inboxReviewMarkTodosDone(indicesJson) {
 var VW_STEPS = [
   { id: 'setup',      label: 'Sync + Build List',              fn: 'vw_setup_' },
   { id: 'loadVendor', label: 'Load Next Vendor',              fn: 'vw_loadVendor_' },
+  { id: 'chatUpload', label: 'Chat Screenshot Upload',         fn: 'vw_chatUpload_' },
   { id: 'vendorBrief',label: 'Vendor Briefing (Full Intel)',   fn: 'vw_vendorBriefing_' },
   { id: 'settleEmail',label: 'Settle Emails',                  fn: 'vw_settleEmails_' },
   { id: 'bulkFix',    label: 'Bulk Actions + Tasks',           fn: 'vw_bulkAndTasks_' },
@@ -22106,6 +22110,7 @@ function vendorWorkflowNextStep() {
     var stepFunctions = {
       'vw_setup_': vw_setup_,
       'vw_loadVendor_': vw_loadVendor_,
+      'vw_chatUpload_': vw_chatUpload_,
       'vw_vendorBriefing_': vw_vendorBriefing_,
       'vw_settleEmails_': vw_settleEmails_,
       'vw_bulkAndTasks_': vw_bulkAndTasks_,
@@ -22225,10 +22230,206 @@ function vw_loadVendor_(state) {
   return state;
 }
 
-/** Step 2: Vendor Briefing — pause so user can read the analysis */
+/** Step 2: Chat Screenshot Upload — if vendor uses Teams/Telegram, prompt for screenshots */
+function vw_chatUpload_(state) {
+  var vendor = state.currentVendor || '';
+  if (!vendor) {
+    state.stepIdx = 3;
+    return state;
+  }
+
+  // Check if this vendor has a Teams or Telegram chat link
+  var chatInfo = null;
+  try {
+    chatInfo = getVendorChatInfo_(vendor);
+  } catch (e) {
+    Logger.log('Error checking chat info: ' + e.message);
+  }
+
+  if (!chatInfo || !chatInfo.label) {
+    // No chat link — skip this step
+    state.stepIdx = 3;
+    return state;
+  }
+
+  var label = String(chatInfo.label).toLowerCase();
+  var isTeams = label.indexOf('teams') !== -1 || label.indexOf('microsoft') !== -1;
+  var isTelegram = label.indexOf('telegram') !== -1;
+
+  if (!isTeams && !isTelegram) {
+    // Chat link exists but it's not Teams or Telegram (e.g., email) — skip
+    state.stepIdx = 3;
+    return state;
+  }
+
+  var platform = isTeams ? 'Microsoft Teams' : 'Telegram';
+
+  // Store vendor context for the OCR callback
+  PropertiesService.getUserProperties().setProperty('chatUploadVendor', vendor);
+  PropertiesService.getUserProperties().setProperty('chatUploadPlatform', platform);
+
+  // Show upload dialog with context about which platform to screenshot
+  var chatLink = chatInfo.clickableLink || '';
+  var html = HtmlService.createHtmlOutput(getChatUploadHtml_(vendor, platform, chatLink))
+    .setWidth(700)
+    .setHeight(550);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Chat Screenshot: ' + vendor + ' (' + platform + ')');
+
+  state.stepIdx = 3;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Upload ' + platform + ' screenshots for ' + vendor + ', then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/**
+ * Build the HTML for the chat screenshot upload dialog.
+ * Reuses the existing OCR infrastructure but with vendor-specific context.
+ */
+function getChatUploadHtml_(vendor, platform, chatLink) {
+  var escapedVendor = vendor.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return '<!DOCTYPE html>' +
+  '<html><head><style>' +
+  'body { font-family: Arial, sans-serif; padding: 15px; }' +
+  '.header { font-size: 16px; color: #1565c0; margin-bottom: 10px; }' +
+  '.platform { background: #e3f2fd; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #1a73e8; }' +
+  '.drop-zone { border: 2px dashed #ccc; border-radius: 8px; padding: 30px; text-align: center; margin: 10px 0; cursor: pointer; transition: border-color 0.3s; }' +
+  '.drop-zone:hover, .drop-zone.dragover { border-color: #1a73e8; background: #f0f7ff; }' +
+  '.btn { background: #1a73e8; color: white; border: none; padding: 10px 20px; border-radius: 4px; font-size: 14px; cursor: pointer; margin-top: 10px; }' +
+  '.btn:hover { background: #1557b0; }' +
+  '.btn:disabled { background: #ccc; cursor: not-allowed; }' +
+  '.btn-skip { background: #f1f3f4; color: #5f6368; margin-left: 10px; }' +
+  '.status { margin-top: 10px; font-size: 13px; color: #5f6368; }' +
+  '.result { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-top: 10px; font-size: 12px; max-height: 150px; overflow-y: auto; }' +
+  '.copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }' +
+  '.copy-btn:hover { background: #1557b0; }' +
+  '.copied { background: #4caf50 !important; }' +
+  '</style></head><body>' +
+  '<div class="header">Upload ' + platform + ' Screenshot</div>' +
+  '<div class="platform">' +
+  '<strong>' + escapedVendor + '</strong> communicates via <strong>' + platform + '</strong>' +
+  (chatLink ? '<br><a href="' + chatLink + '" target="_blank" style="font-size:12px;">Open ' + platform + ' chat</a>' : '') +
+  '</div>' +
+  '<p style="font-size:13px;color:#333;">Screenshot the latest conversation and upload it here. The text will be OCR\'d and used to inform the vendor briefing, notes, and blockers.</p>' +
+  '<div id="dropZone" class="drop-zone" onclick="document.getElementById(\'fileInput\').click()">' +
+  'Drop screenshot here or click to upload<br><span style="font-size:11px;color:#999;">Supports PNG, JPG, or paste from clipboard (Ctrl+V)</span>' +
+  '</div>' +
+  '<input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFile(this.files[0])">' +
+  '<div id="status" class="status" style="display:none;"></div>' +
+  '<div id="result" class="result" style="display:none;"></div>' +
+  '<div style="margin-top:10px;">' +
+  '<button class="btn" id="processBtn" onclick="processImage()" disabled>Process Screenshot</button>' +
+  '<button class="btn btn-skip" onclick="google.script.host.close()">Skip</button>' +
+  '</div>' +
+  '<script>' +
+  'var imageData = null;' +
+  'var dropZone = document.getElementById("dropZone");' +
+  '' +
+  'dropZone.addEventListener("dragover", function(e) { e.preventDefault(); dropZone.classList.add("dragover"); });' +
+  'dropZone.addEventListener("dragleave", function() { dropZone.classList.remove("dragover"); });' +
+  'dropZone.addEventListener("drop", function(e) { e.preventDefault(); dropZone.classList.remove("dragover"); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });' +
+  '' +
+  'document.addEventListener("paste", function(e) {' +
+  '  var items = e.clipboardData.items;' +
+  '  for (var i = 0; i < items.length; i++) {' +
+  '    if (items[i].type.indexOf("image") !== -1) { handleFile(items[i].getAsFile()); break; }' +
+  '  }' +
+  '});' +
+  '' +
+  'function handleFile(file) {' +
+  '  if (!file || file.type.indexOf("image") === -1) { alert("Please upload an image file."); return; }' +
+  '  var reader = new FileReader();' +
+  '  reader.onload = function(e) {' +
+  '    imageData = e.target.result;' +
+  '    dropZone.innerHTML = "Image loaded: " + file.name + "<br><img src=\'" + imageData + "\' style=\'max-width:300px;max-height:150px;margin-top:8px;\'>";' +
+  '    document.getElementById("processBtn").disabled = false;' +
+  '  };' +
+  '  reader.readAsDataURL(file);' +
+  '}' +
+  '' +
+  'function processImage() {' +
+  '  if (!imageData) return;' +
+  '  document.getElementById("processBtn").disabled = true;' +
+  '  document.getElementById("status").textContent = "Processing with Claude Vision OCR...";' +
+  '  document.getElementById("status").style.display = "block";' +
+  '' +
+  '  google.script.run' +
+  '    .withSuccessHandler(function(res) {' +
+  '      if (res.success) {' +
+  '        document.getElementById("result").innerHTML = "<strong>Extracted text:</strong><br>" + res.extractedText.replace(/\\n/g, "<br>");' +
+  '        document.getElementById("result").style.display = "block";' +
+  '        document.getElementById("status").innerHTML = "OCR complete. Text saved for vendor briefing.<br><button class=\'copy-btn\' onclick=\'copyText()\'>Copy to Clipboard</button>";' +
+  '      } else {' +
+  '        document.getElementById("status").textContent = "Error: " + res.error;' +
+  '        document.getElementById("processBtn").disabled = false;' +
+  '      }' +
+  '    })' +
+  '    .withFailureHandler(function(err) {' +
+  '      document.getElementById("status").textContent = "Error: " + (err.message || err);' +
+  '      document.getElementById("processBtn").disabled = false;' +
+  '    })' +
+  '    .processChatScreenshot(imageData, "' + platform + '");' +
+  '}' +
+  '' +
+  'function copyText() {' +
+  '  var el = document.getElementById("result");' +
+  '  var text = el.innerText || el.textContent;' +
+  '  var ta = document.createElement("textarea");' +
+  '  ta.value = text;' +
+  '  document.body.appendChild(ta);' +
+  '  ta.select();' +
+  '  document.execCommand("copy");' +
+  '  document.body.removeChild(ta);' +
+  '  var btns = document.querySelectorAll(".copy-btn");' +
+  '  if (btns.length) { btns[0].textContent = "Copied!"; btns[0].classList.add("copied"); setTimeout(function() { btns[0].textContent = "Copy to Clipboard"; btns[0].classList.remove("copied"); }, 2000); }' +
+  '}' +
+  '</script></body></html>';
+}
+
+/**
+ * Process a chat screenshot: OCR it and save the extracted text
+ * for the current vendor so the briefing can use it.
+ */
+function processChatScreenshot(imageData, platform) {
+  var vendor = PropertiesService.getUserProperties().getProperty('chatUploadVendor') || '';
+
+  // Use Claude Vision to extract text
+  var mediaType = 'image/png';
+  var mediaMatch = imageData.match(/^data:(image\/[a-z]+);base64,/);
+  if (mediaMatch) mediaType = mediaMatch[1];
+  var base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
+
+  var apiKey = getClaudeApiKey_();
+  var result = callClaudeAPI_(
+    'Extract all text from this ' + platform + ' chat screenshot exactly as it appears. Preserve the conversation structure (who said what). Return only the extracted text.',
+    apiKey,
+    {
+      image: { base64: base64Data, mediaType: mediaType },
+      maxTokens: 4000
+    }
+  );
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  var extractedText = result.content || '';
+
+  // Save the extracted text to Script Properties so the Vendor Briefing can pick it up
+  var existingChat = PropertiesService.getScriptProperties().getProperty('CHAT_CONTEXT_' + vendor) || '';
+  var combined = existingChat
+    ? existingChat + '\n\n--- ' + platform + ' Screenshot (' + new Date().toLocaleString() + ') ---\n' + extractedText
+    : '--- ' + platform + ' Screenshot (' + new Date().toLocaleString() + ') ---\n' + extractedText;
+  PropertiesService.getScriptProperties().setProperty('CHAT_CONTEXT_' + vendor, combined);
+
+  Logger.log('Chat OCR saved for ' + vendor + ': ' + extractedText.length + ' chars');
+
+  return { success: true, extractedText: extractedText };
+}
+
+/** Step 3: Vendor Briefing — pause so user can read the analysis */
 function vw_vendorBriefing_(state) {
   battleStationVendorBriefing();
-  state.stepIdx = 3;
+  state.stepIdx = 4;
   vwSetState_(state);
   SpreadsheetApp.getActive().toast('Vendor Briefing loaded for ' + (state.currentVendor || 'vendor') + '. Review, then "Workflow: Next Step".', 'Paused', 10);
   return null;
@@ -22245,7 +22446,7 @@ function vw_settleEmails_(state) {
     ui.ButtonSet.YES_NO
   );
 
-  state.stepIdx = 4;
+  state.stepIdx = 5;
 
   if (resp === ui.Button.YES) {
     battleStationDraftReply();
@@ -22260,7 +22461,7 @@ function vw_settleEmails_(state) {
 /** Step 4: Bulk Actions + Tasks — runs bulk actions, pauses for review */
 function vw_bulkAndTasks_(state) {
   battleStationBulkActions();
-  state.stepIdx = 5;
+  state.stepIdx = 6;
   vwSetState_(state);
   SpreadsheetApp.getActive().toast('Bulk Actions loaded. Review and act, then "Workflow: Next Step".', 'Paused', 10);
   return null;
@@ -22269,7 +22470,7 @@ function vw_bulkAndTasks_(state) {
 /** Step 5: Update Notes & Blockers — no dialog, just run it and pause for review */
 function vw_updateNotes_(state) {
   battleStationSummarizeToNotes();
-  state.stepIdx = 6;
+  state.stepIdx = 7;
   vwSetState_(state);
   SpreadsheetApp.getActive().toast('Notes & Blockers preview loaded. Review/save, then "Workflow: Next Step".', 'Paused', 10);
   return null;
@@ -22319,7 +22520,7 @@ function vw_fillEmptyFields_(state) {
 
   if (emptyFields.length === 0) {
     SpreadsheetApp.getActive().toast('No empty monday.com fields for ' + vendor + '.', 'All Good', 5);
-    state.stepIdx = 7;
+    state.stepIdx = 8;
     return state;
   }
 
@@ -22330,7 +22531,7 @@ function vw_fillEmptyFields_(state) {
     'Empty Fields (' + emptyFields.length + ')', 10
   );
 
-  state.stepIdx = 7;
+  state.stepIdx = 8;
   return state;
 }
 
@@ -22602,4 +22803,15 @@ function cleanSubjectLine_(subject) {
     // Clean up multiple spaces left by removed characters
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+/**
+ * Get saved chat context for a vendor (from OCR screenshots).
+ * Returns the stored text or '(no chat data)'.
+ * Clears the stored context after reading so it doesn't persist across sessions.
+ */
+function getChatContext_(vendor) {
+  var key = 'CHAT_CONTEXT_' + vendor;
+  var text = PropertiesService.getScriptProperties().getProperty(key) || '';
+  return text || '(no chat data)';
 }
