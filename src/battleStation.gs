@@ -22035,7 +22035,7 @@ function inboxReviewMarkTodosDone(indicesJson) {
  ************************************************************/
 
 var VW_STEPS = [
-  { id: 'setup',      label: 'Sync + Build List + Briefing',  fn: 'vw_setup_' },
+  { id: 'setup',      label: 'Sync + Build List',              fn: 'vw_setup_' },
   { id: 'loadVendor', label: 'Load Next Vendor',              fn: 'vw_loadVendor_' },
   { id: 'vendorBrief',label: 'Vendor Briefing (Full Intel)',   fn: 'vw_vendorBriefing_' },
   { id: 'settleEmail',label: 'Settle Emails',                  fn: 'vw_settleEmails_' },
@@ -22163,11 +22163,10 @@ function vw_setup_(state) {
   ss.toast('Syncing monday.com boards...', 'Workflow', 5);
   syncMondayComBoards();
 
-  ss.toast('Building vendor list from Gmail...', 'Workflow', 5);
+  ss.toast('Building vendor list...', 'Workflow', 5);
   buildListWithGmailAndNotes();
 
-  ss.toast('Running Smart Briefing...', 'Workflow', 5);
-  battleStationSmartBriefing();
+  // Smart Briefing removed — Build List already sorts by priority + oldest email
 
   // Build vendor queue directly from the List sheet in its existing order.
   // buildListWithGmailAndNotes already sorts vendors into priority zones:
