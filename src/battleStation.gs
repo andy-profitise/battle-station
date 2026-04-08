@@ -224,6 +224,12 @@ const BS_CFG = {
   // Max characters for notes display (truncate with "..." if longer)
   MAX_NOTES_LENGTH: 400,
 
+  // Account Analysis configuration
+  ACCOUNT_ANALYSIS_SHEET: 'Account Analysis Log',
+  ACCOUNT_ANALYSIS_EMAIL_DAYS: 90,       // How many days of email history to pull
+  ACCOUNT_ANALYSIS_MAX_THREADS: 40,      // Max email threads to fetch for 90-day window
+  ACCOUNT_ANALYSIS_MAX_CONTENT: 800,     // Max chars of email content per thread for prompt
+
   // Canned Response Attachments (Google Drive file IDs)
   REFERRAL_CONTRACT_FILE_ID: '1ON0EZmKvDyvwUDYBFyVkmj8TzkCBl2UX',
   INITIAL_CALL_FOLLOWUP_FILE_ID: '1T4N0Mia9icYrKH1B4rawu9qRBiqTgfrL',
@@ -281,6 +287,9 @@ function onOpen() {
     .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
     .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
     .addItem('✅ Update Review Todos', 'inboxReviewUpdateTodos')
+    .addSeparator()
+    .addItem('🔬 Account Analysis (Deep Review)', 'accountAnalysisStart')
+    .addItem('🔬 Account Analysis (Next Unprocessed)', 'accountAnalysisNextUnprocessed')
     .addSeparator()
     .addItem('🚀 Vendor Workflow (Full Loop)', 'vendorWorkflowStart')
     .addItem('⏭️ Workflow: Next Step', 'vendorWorkflowNextStep')
@@ -22603,4 +22612,763 @@ function cleanSubjectLine_(subject) {
     // Clean up multiple spaces left by removed characters
     .replace(/\s{2,}/g, ' ')
     .trim();
+}
+
+
+/************************************************************
+ * ACCOUNT ANALYSIS - Strategic vendor review workflow
+ *
+ * A multi-step dialog that:
+ * 1. Gathers 90 days of emails + current notes/blockers/tasks
+ * 2. Claude synthesizes everything into a strategic analysis
+ * 3. User corrects and provides notes (saved for future)
+ * 4. Extracts takeaways and concrete tasks
+ * 5. Updates vendor snapshot (Notes + Blocker in monday.com)
+ * 6. Advances to next vendor in List
+ ************************************************************/
+
+/**
+ * Gather 90 days of email content for a vendor using their Gmail label.
+ * Returns full thread content (not just snippets) for deep analysis.
+ */
+function acctAnalysisGetEmails90d_(vendor, listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return { threads: [], error: 'List sheet not found' };
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return { threads: [], error: 'No Gmail link found' };
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) return { threads: [], error: 'Could not extract vendor label' };
+
+    const vendorLabel = vendorLabelMatch[1];
+    const days = BS_CFG.ACCOUNT_ANALYSIS_EMAIL_DAYS || 90;
+    const maxThreads = BS_CFG.ACCOUNT_ANALYSIS_MAX_THREADS || 40;
+    const maxContent = BS_CFG.ACCOUNT_ANALYSIS_MAX_CONTENT || 800;
+
+    // 90-day email history from vendor label
+    const historyQuery = 'label:' + vendorLabel + ' newer_than:' + days + 'd';
+    const historyThreads = GmailApp.search(historyQuery, 0, maxThreads);
+
+    // Open/important emails (currently in 00.received)
+    const activeQuery = 'label:00.received label:' + vendorLabel;
+    const activeThreads = GmailApp.search(activeQuery, 0, 30);
+    const activeIds = new Set(activeThreads.map(function(t) { return t.getId(); }));
+
+    var results = [];
+    var ourDomains = ['profitise.com', 'zeroparallel.com', 'phonexa.com'];
+
+    for (var i = 0; i < historyThreads.length; i++) {
+      var thread = historyThreads[i];
+      var messages = thread.getMessages();
+      var lastMsg = messages[messages.length - 1];
+      var labels = thread.getLabels().map(function(l) { return l.getName(); });
+
+      // Determine status
+      var status = 'archived';
+      if (activeIds.has(thread.getId())) {
+        status = 'active';
+        if (labels.some(function(l) { return l.indexOf('02.waiting/customer') !== -1; })) status = 'waiting-customer';
+        else if (labels.some(function(l) { return l.indexOf('02.waiting/me') !== -1; })) status = 'waiting-me';
+        else if (labels.some(function(l) { return l.indexOf('01.priority/1') !== -1; })) status = 'priority';
+      }
+
+      // Determine who sent last
+      var lastSenderEmail = '';
+      for (var j = messages.length - 1; j >= 0; j--) {
+        var sender = messages[j].getFrom();
+        var emailMatch = sender.match(/<([^>]+)>/) || [null, sender];
+        lastSenderEmail = (emailMatch[1] || sender).toLowerCase();
+        break;
+      }
+      var lastSenderIsUs = ourDomains.some(function(d) { return lastSenderEmail.indexOf(d) !== -1; });
+
+      // Get content from last 2 messages for context
+      var contentParts = [];
+      var msgStart = Math.max(0, messages.length - 2);
+      for (var k = msgStart; k < messages.length; k++) {
+        var body = messages[k].getPlainBody() || '';
+        contentParts.push(messages[k].getFrom() + ' (' + messages[k].getDate().toISOString().split('T')[0] + '):\n' + body.substring(0, maxContent));
+      }
+
+      results.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMsg.getDate().toISOString().split('T')[0],
+        messageCount: messages.length,
+        status: status,
+        isActive: activeIds.has(thread.getId()),
+        lastSenderIsUs: lastSenderIsUs,
+        lastFrom: lastMsg.getFrom(),
+        labels: labels.filter(function(l) { return l.indexOf('02.') === 0 || l.indexOf('01.') === 0 || l.indexOf('03.') === 0; }).join(', '),
+        content: contentParts.join('\n---\n')
+      });
+    }
+
+    // Sort: active first, then by date descending
+    results.sort(function(a, b) {
+      if (a.isActive && !b.isActive) return -1;
+      if (!a.isActive && b.isActive) return 1;
+      return new Date(b.date) - new Date(a.date);
+    });
+
+    return { threads: results, vendorLabel: vendorLabel };
+
+  } catch (e) {
+    Logger.log('[AcctAnalysis] Email error: ' + e.message);
+    return { threads: [], error: e.message };
+  }
+}
+
+/**
+ * Entry point: Account Analysis — full strategic vendor review workflow.
+ * Gathers all data, runs Claude analysis, shows multi-step dialog.
+ */
+function accountAnalysisStart() {
+  var ss = SpreadsheetApp.getActive();
+  var ui = SpreadsheetApp.getUi();
+  var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) { ui.alert('Vendor list not found.'); return; }
+
+  var apiKey = getClaudeApiKey_();
+  if (!apiKey) { ui.alert('No Claude API key configured.\n\nUse menu: A(I)DEN > Set Claude API Key'); return; }
+
+  var currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) { ui.alert('No vendor currently loaded. Navigate to a vendor first.'); return; }
+
+  var listRow = currentIndex + 1;
+  var vendorData = listSh.getRange(listRow, 1, 1, 9).getValues()[0];
+  var vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  var source = String(vendorData[BS_CFG.L_SOURCE] || '');
+  var status = String(vendorData[BS_CFG.L_STATUS] || '');
+  var tranche = String(vendorData[8] || '');
+
+  if (!vendor) { ui.alert('Could not determine vendor name.'); return; }
+
+  ss.toast('Gathering 90-day email history for ' + vendor + '...', 'Account Analysis', 15);
+
+  // ---- GATHER ALL DATA ----
+
+  // 1. Contacts + monday.com profile
+  var contactData = { contacts: [], notes: '', blockers: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', phonexaLink: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { Logger.log('[AcctAnalysis] Contact error: ' + e.message); }
+
+  // 2. 90-day email history (full content)
+  var emailResult = acctAnalysisGetEmails90d_(vendor, listRow);
+  var emails90d = emailResult.threads || [];
+
+  // 3. Tasks
+  var tasks = [];
+  try { tasks = getTasksForVendor_(vendor, listRow) || []; } catch (e) { Logger.log('[AcctAnalysis] Tasks error: ' + e.message); }
+  var openTasks = tasks.filter(function(t) { return !t.isDone; });
+  var blockerTasks = tasks.filter(function(t) { return t.isBlocker && !t.isDone; });
+  var completedTasks = tasks.filter(function(t) { return t.isDone; });
+
+  // 4. Contracts
+  var contracts = { contracts: [], hasContracts: false };
+  try { contracts = getVendorContracts_(vendor); } catch (e) { Logger.log('[AcctAnalysis] Contracts error: ' + e.message); }
+
+  // 5. Previous analysis notes and general notes
+  var prevPlan = getPreviousActionPlan_(vendor);
+  var generalNotes = getGeneralNotes_();
+  var goalsContext = getGoalsContext_();
+  var aiInstructions = getAiInstructions_();
+
+  ss.toast('Running strategic analysis with Claude...', 'Account Analysis', 15);
+
+  // ---- BUILD EMAIL CONTEXT ----
+  var activeEmailCtx = [];
+  var archivedEmailCtx = [];
+  for (var i = 0; i < emails90d.length; i++) {
+    var e = emails90d[i];
+    var ballText = e.lastSenderIsUs ? 'BALL IN THEIR COURT (we sent last)' : 'BALL IN OUR COURT (they sent last)';
+    var line = '[' + e.status.toUpperCase() + '] "' + e.subject + '" (' + e.date + ', ' + e.messageCount + ' msgs)\n  Last from: ' + e.lastFrom + ' | ' + ballText + '\n  Labels: ' + (e.labels || 'none') + '\n  Content:\n' + e.content;
+    if (e.isActive) {
+      activeEmailCtx.push(line);
+    } else {
+      archivedEmailCtx.push(line);
+    }
+  }
+
+  var tasksCtx = openTasks.map(function(t) {
+    return '- [' + t.status + '] ' + t.subject + ' (Project: ' + (t.project || 'N/A') + (t.notes ? ', Notes: ' + t.notes.substring(0, 100) : '') + ')';
+  }).join('\n') || '(no open tasks)';
+
+  var blockerCtx = blockerTasks.map(function(t) {
+    return '- ' + t.subject + ' (' + t.status + (t.notes ? ' - ' + t.notes.substring(0, 100) : '') + ')';
+  }).join('\n') || '(none)';
+
+  var completedCtx = completedTasks.slice(0, 8).map(function(t) {
+    return '- ' + t.subject + ' (' + t.status + ')';
+  }).join('\n') || '(none)';
+
+  var contractsCtx = contracts.contracts.map(function(c) {
+    return '- ' + (c.contractType || 'Contract') + ': ' + (c.status || '?') + ' (' + (c.vertical || 'N/A') + ') ' + (c.notes ? '- ' + c.notes.substring(0, 100) : '') + ' [' + (c.createdDate || '') + ']';
+  }).join('\n') || '(no contracts)';
+
+  var contactsCtx = contactData.contacts.slice(0, 10).map(function(c) {
+    return '- ' + c.name + ' (' + (c.contactType || '?') + ', ' + (c.status || 'N/A') + ') ' + (c.email || '') + ' ' + (c.phone || '');
+  }).join('\n') || '(no contacts)';
+
+  // ---- BUILD MEGA-PROMPT ----
+  var prompt = 'You are A(I)DEN, Profitise\'s AI vendor intelligence system. Andy Worford is doing an ACCOUNT ANALYSIS for vendor "' + vendor + '".\n\n' +
+    'Your job: Look at the FULL picture across 90 days of email history, current notes, blockers, tasks, and contracts. Synthesize everything into a strategic account assessment. Think like a senior account manager doing a quarterly review.\n' +
+    aiInstructions + '\n\n' +
+    '=======================================\n' +
+    'FULL VENDOR DOSSIER: ' + vendor + '\n' +
+    '=======================================\n\n' +
+    'PROFILE\n' +
+    '- Type: ' + source + '\n' +
+    '- Status: ' + (contactData.liveStatus || status || 'Unknown') + '\n' +
+    '- Priority Zone: ' + tranche + '\n' +
+    '- Live Verticals: ' + (contactData.liveVerticals || '(none)') + '\n' +
+    '- Other Verticals: ' + (contactData.otherVerticals || '(none)') + '\n' +
+    '- Live Modalities: ' + (contactData.liveModalities || '(none)') + '\n' +
+    '- States: ' + (contactData.states || '(none)') + '\n' +
+    '- Dead States: ' + (contactData.deadStates || '(none)') + '\n\n' +
+    'CONTACTS (' + contactData.contacts.length + ')\n' + contactsCtx + '\n\n' +
+    'CURRENT NOTES (monday.com)\n' + (contactData.notes || '(no notes)') + '\n\n' +
+    'CURRENT BLOCKERS\n' + blockerCtx + '\n\n' +
+    'OPEN TASKS (' + openTasks.length + ')\n' + tasksCtx + '\n\n' +
+    'RECENTLY COMPLETED\n' + completedCtx + '\n\n' +
+    'CONTRACTS\n' + contractsCtx + '\n\n' +
+    '=== OPEN/IMPORTANT EMAILS (currently in inbox) ===\n' +
+    (activeEmailCtx.length > 0 ? activeEmailCtx.join('\n\n') : '(none)') + '\n\n' +
+    '=== 90-DAY EMAIL HISTORY (archived/resolved) ===\n' +
+    (archivedEmailCtx.length > 0 ? archivedEmailCtx.slice(0, 15).join('\n\n') : '(none)') + '\n' +
+    goalsContext + '\n';
+
+  if (prevPlan && prevPlan.actionPlan) {
+    prompt += '\n=== PREVIOUS ANALYSIS ===\n' + prevPlan.actionPlan.substring(0, 1500);
+    if (prevPlan.userNotes) {
+      prompt += '\n\nANDY\'S NOTES ON PREVIOUS ANALYSIS:\n' + prevPlan.userNotes.substring(0, 800);
+    }
+  }
+  if (generalNotes) {
+    prompt += '\n\n=== GENERAL CONTEXT (all vendors) ===\n' + generalNotes.substring(0, 800);
+  }
+
+  prompt += '\n\n=======================================\n' +
+    'ANALYSIS INSTRUCTIONS\n' +
+    '=======================================\n\n' +
+    'Generate a strategic account analysis with these sections. Be specific — reference actual emails, dates, and data. This is a DEEP REVIEW, not a surface summary.\n\n' +
+    '## ACCOUNT HEALTH\n' +
+    '[Overall assessment: Is this account healthy, at risk, growing, stagnant, or declining? What trajectory do the 90 days of emails show? Rate: Strong / Healthy / Neutral / At Risk / Critical]\n\n' +
+    '## RELATIONSHIP TIMELINE (90 days)\n' +
+    '[Walk through the key events/threads chronologically. What happened, what was discussed, what was resolved, what stalled? This tells the story of the last 90 days.]\n\n' +
+    '## WHAT\'S WORKING\n' +
+    '[What aspects of this vendor relationship are going well? Where is there momentum?]\n\n' +
+    '## WHAT\'S LACKING\n' +
+    '[What should be better? Where are gaps in communication, execution, or follow-through — on either side?]\n\n' +
+    '## WHAT\'S MISSING ENTIRELY\n' +
+    '[What conversations haven\'t happened that should? What opportunities are being left on the table? What data or context is absent?]\n\n' +
+    '## OPEN ITEMS ASSESSMENT\n' +
+    '[For each open email and task: What is it? Who owns it? Is it stale? What\'s the right next action? Cross-reference emails with tasks — are there emails about tasks, or tasks without email follow-up?]\n\n' +
+    '## STRATEGIC DIRECTION\n' +
+    '[Based on everything above: What should Andy\'s strategy be with this vendor for the next 30-60 days? What\'s the #1 priority?]\n\n' +
+    '## RECOMMENDED ACTIONS\n' +
+    '[Numbered list of specific, concrete actions Andy should take. Each should be actionable: "Reply to X about Y" not "Follow up on emails". Include who needs to do what.]\n\n' +
+    '## PROPOSED NOTES\n' +
+    '[Write 2-3 sentences that should become the vendor\'s monday.com Notes field — a snapshot of current state.]\n\n' +
+    '## PROPOSED BLOCKER\n' +
+    '[If there\'s a clear blocker, state it in one line. If no blocker, write "None".]\n\n' +
+    'Be direct, factual, and strategic. Reference specific emails and dates. Andy needs the truth, not diplomacy.';
+
+  var response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+  if (response.error) {
+    ui.alert('Claude API Error: ' + response.error);
+    return;
+  }
+
+  // Store context for revision rounds
+  var ctx = {
+    vendor: vendor,
+    source: source,
+    status: contactData.liveStatus || status,
+    listRow: listRow,
+    tranche: tranche,
+    currentNotes: contactData.notes || '',
+    currentBlockers: contactData.blockers || blockerTasks.map(function(t) { return t.subject; }).join(', '),
+    rawContent: response.content,
+    emailCount90d: emails90d.length,
+    activeEmailCount: activeEmailCtx.length,
+    openTaskCount: openTasks.length,
+    blockerCount: blockerTasks.length,
+    contractCount: contracts.contracts.length
+  };
+  PropertiesService.getUserProperties().setProperty('acctAnalysisContext', JSON.stringify(ctx));
+
+  // Save initial analysis to Action Plans sheet
+  saveBriefingToSheet_(vendor, response.content);
+
+  // ---- BUILD THE DIALOG ----
+  acctAnalysisShowDialog_(ctx);
+}
+
+/**
+ * Build and show the Account Analysis multi-step dialog.
+ * Phases: Analysis > Corrections > Takeaways/Snapshot > Next Vendor
+ */
+function acctAnalysisShowDialog_(ctx) {
+  var content = ctx.rawContent
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+  // Build data badges
+  var badges = [];
+  badges.push(ctx.emailCount90d + ' emails (90d)');
+  badges.push(ctx.activeEmailCount + ' active');
+  badges.push(ctx.openTaskCount + ' tasks');
+  if (ctx.blockerCount > 0) badges.push('<span style="color:#c62828">' + ctx.blockerCount + ' blockers</span>');
+  if (ctx.contractCount > 0) badges.push(ctx.contractCount + ' contracts');
+
+  // Extract proposed notes and blocker from the analysis
+  var proposedNotes = '';
+  var proposedBlocker = '';
+  var notesMatch = ctx.rawContent.match(/## PROPOSED NOTES\s*\n([\s\S]*?)(?=\n##|$)/);
+  if (notesMatch) proposedNotes = notesMatch[1].trim().replace(/^["']|["']$/g, '');
+  var blockerMatch = ctx.rawContent.match(/## PROPOSED BLOCKER\s*\n([\s\S]*?)(?=\n##|$)/);
+  if (blockerMatch) proposedBlocker = blockerMatch[1].trim().replace(/^["']|["']$/g, '');
+
+  var htmlContent = '<style>' +
+    'body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }' +
+    'h2 { color: #1565c0; margin-top: 0; }' +
+    'h3 { color: #1565c0; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #1a73e8; padding-bottom: 4px; }' +
+    '.vendor-card { background: #e3f2fd; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #1a73e8; }' +
+    '.vendor-card strong { color: #1565c0; }' +
+    '.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }' +
+    '.badge { background: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; border: 1px solid #ddd; }' +
+    '.phase-indicator { background: #f3e8fd; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; color: #6a1b9a; border-left: 4px solid #9c27b0; }' +
+    '.phase-indicator .step { font-weight: bold; }' +
+    '.section-box { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 12px; }' +
+    '.section-box h4 { margin: 0 0 8px 0; color: #333; }' +
+    'textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: Arial; font-size: 12px; box-sizing: border-box; resize: vertical; }' +
+    '.btn { padding: 8px 18px; cursor: pointer; border: none; border-radius: 4px; font-size: 13px; margin-right: 8px; margin-top: 6px; }' +
+    '.btn-primary { background: #1a73e8; color: white; }' +
+    '.btn-primary:hover { background: #1557b0; }' +
+    '.btn-orange { background: #f57c00; color: white; }' +
+    '.btn-orange:hover { background: #e65100; }' +
+    '.btn-green { background: #2e7d32; color: white; }' +
+    '.btn-green:hover { background: #1b5e20; }' +
+    '.btn-secondary { background: #f1f3f4; color: #333; }' +
+    '.btn:disabled { background: #ccc; cursor: not-allowed; }' +
+    '.loading { color: #5f6368; font-style: italic; margin-top: 6px; display: none; }' +
+    '.success-msg { color: #2e7d32; font-weight: bold; margin-top: 8px; }' +
+    '.tip { background: #e8f5e9; padding: 6px 10px; border-radius: 4px; font-size: 11px; margin-bottom: 6px; color: #2e7d32; border: 1px solid #c8e6c9; }' +
+    '#phase2, #phase3 { display: none; }' +
+    '#analysis-content { max-height: 400px; overflow-y: auto; padding-right: 8px; }' +
+    '</style>' +
+
+    '<h2>Account Analysis: ' + acctEscHtml_(ctx.vendor) + '</h2>' +
+    '<div class="vendor-card">' +
+    '  <strong>' + acctEscHtml_(ctx.source) + '</strong> | ' + acctEscHtml_(ctx.status) +
+    '  <div class="badges">' + badges.map(function(b) { return '<span class="badge">' + b + '</span>'; }).join('') + '</div>' +
+    '</div>' +
+
+    // ---- PHASE 1: Analysis ----
+    '<div id="phase1">' +
+    '  <div class="phase-indicator"><span class="step">Step 1 of 3:</span> Review the analysis. Add corrections and notes below.</div>' +
+    '  <div id="analysis-content">' + content + '</div>' +
+    '  <div class="section-box" style="margin-top:12px">' +
+    '    <h4>Your Corrections &amp; Notes</h4>' +
+    '    <div class="tip"><strong>Tip:</strong> Tell me what\'s wrong, what\'s right, and anything I\'m missing. Start a line with <code>GENERAL:</code> to save a note that applies to ALL vendors.</div>' +
+    '    <textarea id="corrections" rows="5" placeholder="e.g., The NDA was already signed last week. Returns are processed through March.&#10;GENERAL: Inbound calls program is paused."></textarea>' +
+    '    <br>' +
+    '    <button class="btn btn-orange" id="reviseBtn" onclick="doRevise()">Apply Corrections &amp; Continue</button>' +
+    '    <button class="btn btn-secondary" onclick="skipToSnapshot()">Skip to Snapshot</button>' +
+    '    <div id="reviseLoading" class="loading">Revising analysis with Claude...</div>' +
+    '  </div>' +
+    '</div>' +
+
+    // ---- PHASE 2: Revised + Takeaways ----
+    '<div id="phase2">' +
+    '  <div class="phase-indicator"><span class="step">Step 2 of 3:</span> Review revised analysis and confirm takeaways.</div>' +
+    '  <div id="revised-content" style="max-height:300px;overflow-y:auto;padding-right:8px;"></div>' +
+    '  <div class="section-box" style="margin-top:12px">' +
+    '    <h4>Additional Notes (optional)</h4>' +
+    '    <textarea id="additionalNotes" rows="3" placeholder="Anything else to adjust before we finalize?"></textarea>' +
+    '    <br>' +
+    '    <button class="btn btn-orange" id="revise2Btn" onclick="doRevise2()">Revise Again</button>' +
+    '    <button class="btn btn-green" onclick="goToSnapshot()">Confirm &amp; Go to Snapshot</button>' +
+    '    <div id="revise2Loading" class="loading">Revising again...</div>' +
+    '  </div>' +
+    '</div>' +
+
+    // ---- PHASE 3: Snapshot ----
+    '<div id="phase3">' +
+    '  <div class="phase-indicator"><span class="step">Step 3 of 3:</span> Update vendor Notes and Blocker, then advance to next vendor.</div>' +
+    '  <div class="section-box">' +
+    '    <h4>Vendor Notes (saves to monday.com)</h4>' +
+    '    <div style="font-size:11px;color:#666;margin-bottom:4px;">Current: ' + acctEscHtml_((ctx.currentNotes || '(none)').substring(0, 150)) + '</div>' +
+    '    <textarea id="snapshotNotes" rows="4">' + acctEscHtml_(proposedNotes) + '</textarea>' +
+    '  </div>' +
+    '  <div class="section-box">' +
+    '    <h4>Current Blocker (saves to monday.com)</h4>' +
+    '    <div style="font-size:11px;color:#666;margin-bottom:4px;">Current: ' + acctEscHtml_((ctx.currentBlockers || '(none)').substring(0, 150)) + '</div>' +
+    '    <textarea id="snapshotBlocker" rows="2">' + acctEscHtml_(proposedBlocker === 'None' ? '' : proposedBlocker) + '</textarea>' +
+    '  </div>' +
+    '  <div style="margin-top:8px;">' +
+    '    <button class="btn btn-green" id="saveBtn" onclick="doSaveSnapshot()">Save Snapshot &amp; Next Vendor</button>' +
+    '    <button class="btn btn-primary" id="saveOnlyBtn" onclick="doSaveOnly()">Save Snapshot (Stay Here)</button>' +
+    '    <button class="btn btn-secondary" onclick="google.script.host.close()">Close Without Saving</button>' +
+    '    <div id="saveLoading" class="loading">Saving to monday.com...</div>' +
+    '    <div id="saveSuccess" class="success-msg" style="display:none;"></div>' +
+    '  </div>' +
+    '</div>' +
+
+    '<script>' +
+    'function doRevise() {' +
+    '  var feedback = document.getElementById("corrections").value.trim();' +
+    '  if (!feedback) { alert("Please enter your corrections or notes."); return; }' +
+    '  document.getElementById("reviseBtn").disabled = true;' +
+    '  document.getElementById("reviseLoading").style.display = "block";' +
+    '  google.script.run' +
+    '    .withSuccessHandler(function(result) {' +
+    '      document.getElementById("reviseLoading").style.display = "none";' +
+    '      if (result.error) { alert("Error: " + result.error); document.getElementById("reviseBtn").disabled = false; return; }' +
+    '      document.getElementById("revised-content").innerHTML = result.html;' +
+    '      if (result.proposedNotes) document.getElementById("snapshotNotes").value = result.proposedNotes;' +
+    '      if (result.proposedBlocker && result.proposedBlocker !== "None") document.getElementById("snapshotBlocker").value = result.proposedBlocker;' +
+    '      document.getElementById("phase1").style.display = "none";' +
+    '      document.getElementById("phase2").style.display = "block";' +
+    '    })' +
+    '    .withFailureHandler(function(err) {' +
+    '      document.getElementById("reviseLoading").style.display = "none";' +
+    '      alert("Error: " + (err.message || err));' +
+    '      document.getElementById("reviseBtn").disabled = false;' +
+    '    })' +
+    '    .accountAnalysisRevise(feedback);' +
+    '}' +
+
+    'function doRevise2() {' +
+    '  var feedback = document.getElementById("additionalNotes").value.trim();' +
+    '  if (!feedback) { alert("Please enter additional notes."); return; }' +
+    '  document.getElementById("revise2Btn").disabled = true;' +
+    '  document.getElementById("revise2Loading").style.display = "block";' +
+    '  google.script.run' +
+    '    .withSuccessHandler(function(result) {' +
+    '      document.getElementById("revise2Loading").style.display = "none";' +
+    '      document.getElementById("revise2Btn").disabled = false;' +
+    '      if (result.error) { alert("Error: " + result.error); return; }' +
+    '      document.getElementById("revised-content").innerHTML = result.html;' +
+    '      if (result.proposedNotes) document.getElementById("snapshotNotes").value = result.proposedNotes;' +
+    '      if (result.proposedBlocker && result.proposedBlocker !== "None") document.getElementById("snapshotBlocker").value = result.proposedBlocker;' +
+    '      document.getElementById("additionalNotes").value = "";' +
+    '    })' +
+    '    .withFailureHandler(function(err) {' +
+    '      document.getElementById("revise2Loading").style.display = "none";' +
+    '      alert("Error: " + (err.message || err));' +
+    '      document.getElementById("revise2Btn").disabled = false;' +
+    '    })' +
+    '    .accountAnalysisRevise(feedback);' +
+    '}' +
+
+    'function skipToSnapshot() {' +
+    '  document.getElementById("phase1").style.display = "none";' +
+    '  document.getElementById("phase3").style.display = "block";' +
+    '}' +
+
+    'function goToSnapshot() {' +
+    '  document.getElementById("phase2").style.display = "none";' +
+    '  document.getElementById("phase3").style.display = "block";' +
+    '}' +
+
+    'function doSaveSnapshot() { saveSnapshot_(true); }' +
+    'function doSaveOnly() { saveSnapshot_(false); }' +
+
+    'function saveSnapshot_(andNext) {' +
+    '  var notes = document.getElementById("snapshotNotes").value.trim();' +
+    '  var blocker = document.getElementById("snapshotBlocker").value.trim();' +
+    '  document.getElementById("saveBtn").disabled = true;' +
+    '  document.getElementById("saveOnlyBtn").disabled = true;' +
+    '  document.getElementById("saveLoading").style.display = "block";' +
+    '  google.script.run' +
+    '    .withSuccessHandler(function(result) {' +
+    '      document.getElementById("saveLoading").style.display = "none";' +
+    '      if (result.error) {' +
+    '        alert("Error: " + result.error);' +
+    '        document.getElementById("saveBtn").disabled = false;' +
+    '        document.getElementById("saveOnlyBtn").disabled = false;' +
+    '        return;' +
+    '      }' +
+    '      document.getElementById("saveSuccess").textContent = result.message;' +
+    '      document.getElementById("saveSuccess").style.display = "block";' +
+    '      if (andNext) {' +
+    '        setTimeout(function() { google.script.host.close(); }, 1500);' +
+    '      } else {' +
+    '        document.getElementById("saveBtn").disabled = false;' +
+    '        document.getElementById("saveOnlyBtn").disabled = false;' +
+    '      }' +
+    '    })' +
+    '    .withFailureHandler(function(err) {' +
+    '      document.getElementById("saveLoading").style.display = "none";' +
+    '      alert("Error: " + (err.message || err));' +
+    '      document.getElementById("saveBtn").disabled = false;' +
+    '      document.getElementById("saveOnlyBtn").disabled = false;' +
+    '    })' +
+    '    .accountAnalysisSaveSnapshot(notes, blocker, andNext);' +
+    '}' +
+    '</script>';
+
+  var html = HtmlService.createHtmlOutput(htmlContent).setWidth(900).setHeight(800);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Account Analysis: ' + ctx.vendor);
+  SpreadsheetApp.getActive().toast('Analysis ready!', 'Done', 3);
+}
+
+/** HTML-escape helper for Account Analysis dialog */
+function acctEscHtml_(text) {
+  if (!text) return '';
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Revise the account analysis based on user feedback.
+ * Called from the dialog when user submits corrections.
+ * Saves notes, handles GENERAL: prefixed lines, re-prompts Claude.
+ */
+function accountAnalysisRevise(feedback) {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('acctAnalysisContext');
+  if (!contextRaw) return { error: 'No analysis context found. Please restart.' };
+
+  var context = JSON.parse(contextRaw);
+  var apiKey = getClaudeApiKey_();
+  if (!apiKey) return { error: 'No Claude API key configured.' };
+
+  // Get previous action plan for comparison
+  var prev = getPreviousActionPlan_(context.vendor);
+  var prevPlanContext = '';
+  if (prev && prev.actionPlan) {
+    prevPlanContext = '\n\nPREVIOUS ANALYSIS (from ' + prev.timestamp + '):\n' + prev.actionPlan;
+    if (prev.userNotes) {
+      prevPlanContext += '\n\nUSER NOTES ON PREVIOUS ANALYSIS:\n' + prev.userNotes;
+    }
+  }
+
+  // Get general notes
+  var generalNotes = getGeneralNotes_();
+  var generalContext = '';
+  if (generalNotes) {
+    generalContext = '\n\nGENERAL NOTES (apply across all vendors):\n' + generalNotes;
+  }
+
+  var prompt = 'You previously generated this account analysis for ' + context.vendor + ':\n\n' +
+    context.rawContent +
+    prevPlanContext +
+    generalContext +
+    '\n\nAndy has these corrections and notes:\n"' + feedback + '"' +
+    '\n\nPlease revise the ENTIRE analysis incorporating Andy\'s corrections. Key rules:' +
+    '\n- Remove or mark as DONE any items Andy says are already handled' +
+    '\n- Update items based on Andy\'s new information' +
+    '\n- Factor in the general notes - these are standing facts across all vendors' +
+    '\n- If there was a previous analysis, check for items that were on it but missing now - re-add if still relevant' +
+    '\n- Keep the same section format (## headers)' +
+    '\n- Be factual - use Andy\'s corrections as ground truth' +
+    '\n- Re-generate the PROPOSED NOTES and PROPOSED BLOCKER sections based on the updated analysis' +
+    '\n- Output ONLY the revised analysis content, same format as before';
+
+  var response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+  if (response.error) {
+    return { error: 'Claude API Error: ' + response.error };
+  }
+
+  var revised = response.content.trim();
+
+  // Update stored context with revised content
+  context.rawContent = revised;
+  PropertiesService.getUserProperties().setProperty('acctAnalysisContext', JSON.stringify(context));
+
+  // Save revised version and user notes to Action Plans sheet
+  saveBriefingToSheet_(context.vendor, revised);
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (sheet && sheet.getLastRow() > 1) {
+    sheet.getRange(sheet.getLastRow(), 5).setValue(feedback);
+  }
+
+  // Extract and save general notes
+  var lines = feedback.split('\n');
+  var generalLines = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (/^(GENERAL|ALL|GLOBAL):/i.test(line)) {
+      generalLines.push(line.replace(/^(GENERAL|ALL|GLOBAL):\s*/i, ''));
+    }
+  }
+  if (generalLines.length > 0) {
+    var existing = getGeneralNotes_();
+    var updated = existing ? existing + '\n' + generalLines.join('\n') : generalLines.join('\n');
+    saveGeneralNotes_(updated);
+  }
+
+  // Extract proposed notes and blocker from revised analysis
+  var proposedNotes = '';
+  var proposedBlocker = '';
+  var notesMatch = revised.match(/## PROPOSED NOTES\s*\n([\s\S]*?)(?=\n##|$)/);
+  if (notesMatch) proposedNotes = notesMatch[1].trim().replace(/^["']|["']$/g, '');
+  var blockerMatch = revised.match(/## PROPOSED BLOCKER\s*\n([\s\S]*?)(?=\n##|$)/);
+  if (blockerMatch) proposedBlocker = blockerMatch[1].trim().replace(/^["']|["']$/g, '');
+
+  // Format for HTML display
+  var html = revised
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+  return {
+    html: html,
+    proposedNotes: proposedNotes,
+    proposedBlocker: proposedBlocker
+  };
+}
+
+/**
+ * Save the vendor snapshot (Notes + Blocker) to monday.com, record to log,
+ * and optionally advance to the next vendor.
+ * Called from the dialog Phase 3.
+ */
+function accountAnalysisSaveSnapshot(notes, blocker, andAdvanceNext) {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('acctAnalysisContext');
+  if (!contextRaw) return { error: 'No analysis context found. Please restart.' };
+
+  var context = JSON.parse(contextRaw);
+  var ss = SpreadsheetApp.getActive();
+  var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return { error: 'List sheet not found.' };
+
+  var vendor = context.vendor;
+  var listRow = context.listRow;
+  var messages = [];
+
+  // 1. Update Notes in monday.com
+  if (notes && notes.length > 0) {
+    try {
+      var notesResult = updateMondayComNotesForVendor_(vendor, notes, listRow);
+      if (notesResult.success) {
+        // Also update the List sheet notes column
+        listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(notes);
+        // Update cached original notes so auto-save won't trigger
+        cacheOriginalNotes_(notes);
+        messages.push('Notes updated');
+      } else {
+        messages.push('Notes failed: ' + (notesResult.error || 'unknown'));
+      }
+    } catch (e) {
+      messages.push('Notes error: ' + e.message);
+    }
+  }
+
+  // 2. Update Blocker in monday.com
+  if (blocker && blocker.length > 0 && blocker.toLowerCase() !== 'none') {
+    try {
+      var blockerResult = updateMondayBlockersForVendor_(vendor, blocker, listRow);
+      if (blockerResult.success) {
+        messages.push('Blocker updated');
+      } else {
+        messages.push('Blocker failed: ' + (blockerResult.error || 'unknown'));
+      }
+    } catch (e) {
+      messages.push('Blocker error: ' + e.message);
+    }
+  } else if (blocker === '' || (blocker && blocker.toLowerCase() === 'none')) {
+    // Clear blocker if explicitly empty
+    try {
+      updateMondayBlockersForVendor_(vendor, '', listRow);
+      messages.push('Blocker cleared');
+    } catch (e) { /* ignore clear failures */ }
+  }
+
+  // 3. Record to Account Analysis Log sheet
+  try {
+    acctAnalysisLogEntry_(vendor, context, notes, blocker);
+    messages.push('Logged');
+  } catch (e) {
+    Logger.log('[AcctAnalysis] Log error: ' + e.message);
+  }
+
+  // 4. Mark vendor as processed in List
+  listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
+
+  // 5. Advance to next vendor if requested
+  if (andAdvanceNext) {
+    try {
+      var totalVendors = listSh.getLastRow() - 1;
+      var currentIndex = context.listRow - 1; // listRow is 1-based index, vendor index is the row offset
+      var nextIndex = currentIndex + 1;
+      if (nextIndex > totalVendors) nextIndex = 1;
+      loadVendorData(nextIndex, { loadMode: 'fast' });
+      var nextVendor = String(listSh.getRange(nextIndex + 1, BS_CFG.L_VENDOR + 1).getValue() || '');
+      messages.push('Next: ' + nextVendor);
+    } catch (e) {
+      messages.push('Navigation error: ' + e.message);
+    }
+  }
+
+  return { message: messages.join(' | ') };
+}
+
+/**
+ * Record an Account Analysis session to the log sheet.
+ */
+function acctAnalysisLogEntry_(vendor, context, finalNotes, finalBlocker) {
+  var ss = SpreadsheetApp.getActive();
+  var logSheetName = BS_CFG.ACCOUNT_ANALYSIS_SHEET || 'Account Analysis Log';
+  var logSh = ss.getSheetByName(logSheetName);
+
+  if (!logSh) {
+    logSh = ss.insertSheet(logSheetName);
+    var headers = ['Timestamp', 'Vendor', 'Source', 'Status', 'Emails (90d)', 'Active Emails', 'Open Tasks', 'Blockers', 'Notes Set', 'Blocker Set', 'Full Analysis'];
+    logSh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    logSh.setFrozenRows(1);
+  }
+
+  logSh.appendRow([
+    new Date(),
+    vendor,
+    context.source,
+    context.status,
+    context.emailCount90d,
+    context.activeEmailCount,
+    context.openTaskCount,
+    context.blockerCount,
+    finalNotes || '',
+    finalBlocker || '',
+    (context.rawContent || '').substring(0, 40000)
+  ]);
+}
+
+/**
+ * Quick entry: start Account Analysis for the next unprocessed vendor.
+ * Skips vendors already marked as processed in the List.
+ */
+function accountAnalysisNextUnprocessed() {
+  var ss = SpreadsheetApp.getActive();
+  var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) { SpreadsheetApp.getUi().alert('List sheet not found.'); return; }
+
+  var data = listSh.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var vendor = data[i][BS_CFG.L_VENDOR];
+    var processed = data[i][BS_CFG.L_PROCESSED];
+    if (vendor && !processed) {
+      loadVendorData(i, { loadMode: 'fast' });
+      // Small delay to let the sheet update, then launch analysis
+      SpreadsheetApp.flush();
+      accountAnalysisStart();
+      return;
+    }
+  }
+
+  SpreadsheetApp.getUi().alert('All vendors have been processed!');
 }
