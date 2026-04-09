@@ -22915,13 +22915,8 @@ function accountAnalysisStart() {
  * Phases: Analysis > Corrections > Takeaways/Snapshot > Next Vendor
  */
 function acctAnalysisShowDialog_(ctx) {
-  var content = ctx.rawContent
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+  // Parse analysis into sections by ## headers
+  var sections = acctAnalysisParseSections_(ctx.rawContent);
 
   // Build data badges
   var badges = [];
@@ -22931,27 +22926,69 @@ function acctAnalysisShowDialog_(ctx) {
   if (ctx.blockerCount > 0) badges.push('<span style="color:#c62828">' + ctx.blockerCount + ' blockers</span>');
   if (ctx.contractCount > 0) badges.push(ctx.contractCount + ' contracts');
 
-  // Extract proposed notes and blocker from the analysis
+  // Extract proposed notes and blocker
   var proposedNotes = '';
   var proposedBlocker = '';
-  var notesMatch = ctx.rawContent.match(/## PROPOSED NOTES\s*\n([\s\S]*?)(?=\n##|$)/);
-  if (notesMatch) proposedNotes = notesMatch[1].trim().replace(/^["']|["']$/g, '');
-  var blockerMatch = ctx.rawContent.match(/## PROPOSED BLOCKER\s*\n([\s\S]*?)(?=\n##|$)/);
-  if (blockerMatch) proposedBlocker = blockerMatch[1].trim().replace(/^["']|["']$/g, '');
+  for (var s = 0; s < sections.length; s++) {
+    if (sections[s].key === 'PROPOSED NOTES') proposedNotes = sections[s].body.trim();
+    if (sections[s].key === 'PROPOSED BLOCKER') proposedBlocker = sections[s].body.trim();
+  }
+
+  // Build section cards HTML
+  var sectionCardsHtml = '';
+  for (var i = 0; i < sections.length; i++) {
+    var sec = sections[i];
+    // Skip PROPOSED NOTES/BLOCKER - those go in the snapshot phase
+    if (sec.key === 'PROPOSED NOTES' || sec.key === 'PROPOSED BLOCKER') continue;
+
+    var bodyHtml = acctEscHtml_(sec.body)
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+    sectionCardsHtml +=
+      '<div class="section-card" id="card-' + i + '">' +
+      '  <div class="card-header" onclick="toggleCard(' + i + ')">' +
+      '    <span class="card-toggle" id="toggle-' + i + '">&#9660;</span> ' +
+      '    <span class="card-title">' + acctEscHtml_(sec.title) + '</span>' +
+      '    <span class="card-status" id="status-' + i + '"></span>' +
+      '  </div>' +
+      '  <div class="card-body" id="body-' + i + '">' +
+      '    <div class="card-content" id="content-' + i + '">' + bodyHtml + '</div>' +
+      '    <div class="card-notes">' +
+      '      <textarea id="note-' + i + '" rows="2" class="card-note-input" placeholder="Corrections for this section... (leave blank if it looks good)" data-section="' + acctEscHtml_(sec.key) + '"></textarea>' +
+      '    </div>' +
+      '  </div>' +
+      '</div>';
+  }
 
   var htmlContent = '<style>' +
     'body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }' +
     'h2 { color: #1565c0; margin-top: 0; }' +
-    'h3 { color: #1565c0; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #1a73e8; padding-bottom: 4px; }' +
     '.vendor-card { background: #e3f2fd; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #1a73e8; }' +
     '.vendor-card strong { color: #1565c0; }' +
     '.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }' +
     '.badge { background: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; border: 1px solid #ddd; }' +
     '.phase-indicator { background: #f3e8fd; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; color: #6a1b9a; border-left: 4px solid #9c27b0; }' +
     '.phase-indicator .step { font-weight: bold; }' +
-    '.section-box { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 12px; }' +
-    '.section-box h4 { margin: 0 0 8px 0; color: #333; }' +
+    // Section card styles
+    '.section-card { border: 1px solid #e0e0e0; border-radius: 6px; margin-bottom: 8px; overflow: hidden; }' +
+    '.card-header { background: #f8f9fa; padding: 8px 12px; cursor: pointer; display: flex; align-items: center; user-select: none; border-bottom: 1px solid #e0e0e0; }' +
+    '.card-header:hover { background: #e8eaed; }' +
+    '.card-toggle { font-size: 10px; margin-right: 8px; transition: transform 0.2s; display: inline-block; }' +
+    '.card-toggle.collapsed { transform: rotate(-90deg); }' +
+    '.card-title { font-weight: bold; color: #1565c0; flex: 1; }' +
+    '.card-status { font-size: 11px; color: #2e7d32; }' +
+    '.card-body { padding: 10px 12px; }' +
+    '.card-body.hidden { display: none; }' +
+    '.card-content { font-size: 12px; line-height: 1.5; margin-bottom: 8px; max-height: 200px; overflow-y: auto; }' +
+    '.card-note-input { width: 100%; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-family: Arial; font-size: 12px; box-sizing: border-box; resize: vertical; }' +
+    '.card-note-input:focus { border-color: #f57c00; outline: none; box-shadow: 0 0 0 2px rgba(245,124,0,0.15); }' +
+    '.card-notes { margin-top: 6px; }' +
+    // Snapshot section styles
+    '.snapshot-box { border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; margin-bottom: 12px; }' +
+    '.snapshot-box h4 { margin: 0 0 8px 0; color: #333; }' +
     'textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: Arial; font-size: 12px; box-sizing: border-box; resize: vertical; }' +
+    // Buttons
     '.btn { padding: 8px 18px; cursor: pointer; border: none; border-radius: 4px; font-size: 13px; margin-right: 8px; margin-top: 6px; }' +
     '.btn-primary { background: #1a73e8; color: white; }' +
     '.btn-primary:hover { background: #1557b0; }' +
@@ -22963,9 +23000,9 @@ function acctAnalysisShowDialog_(ctx) {
     '.btn:disabled { background: #ccc; cursor: not-allowed; }' +
     '.loading { color: #5f6368; font-style: italic; margin-top: 6px; display: none; }' +
     '.success-msg { color: #2e7d32; font-weight: bold; margin-top: 8px; }' +
-    '.tip { background: #e8f5e9; padding: 6px 10px; border-radius: 4px; font-size: 11px; margin-bottom: 6px; color: #2e7d32; border: 1px solid #c8e6c9; }' +
-    '#phase2, #phase3 { display: none; }' +
-    '#analysis-content { max-height: 400px; overflow-y: auto; padding-right: 8px; }' +
+    '.tip { background: #e8f5e9; padding: 6px 10px; border-radius: 4px; font-size: 11px; margin-bottom: 8px; color: #2e7d32; border: 1px solid #c8e6c9; }' +
+    '.action-bar { position: sticky; bottom: 0; background: white; padding: 10px 0; border-top: 2px solid #e0e0e0; margin-top: 12px; }' +
+    '#phaseSnapshot { display: none; }' +
     '</style>' +
 
     '<h2>Account Analysis: ' + acctEscHtml_(ctx.vendor) + '</h2>' +
@@ -22974,44 +23011,30 @@ function acctAnalysisShowDialog_(ctx) {
     '  <div class="badges">' + badges.map(function(b) { return '<span class="badge">' + b + '</span>'; }).join('') + '</div>' +
     '</div>' +
 
-    // ---- PHASE 1: Analysis ----
-    '<div id="phase1">' +
-    '  <div class="phase-indicator"><span class="step">Step 1 of 3:</span> Review the analysis. Add corrections and notes below.</div>' +
-    '  <div id="analysis-content">' + content + '</div>' +
-    '  <div class="section-box" style="margin-top:12px">' +
-    '    <h4>Your Corrections &amp; Notes</h4>' +
-    '    <div class="tip"><strong>Tip:</strong> Tell me what\'s wrong, what\'s right, and anything I\'m missing. Start a line with <code>GENERAL:</code> to save a note that applies to ALL vendors.</div>' +
-    '    <textarea id="corrections" rows="5" placeholder="e.g., The NDA was already signed last week. Returns are processed through March.&#10;GENERAL: Inbound calls program is paused."></textarea>' +
-    '    <br>' +
-    '    <button class="btn btn-orange" id="reviseBtn" onclick="doRevise()">Apply Corrections &amp; Continue</button>' +
-    '    <button class="btn btn-secondary" onclick="skipToSnapshot()">Skip to Snapshot</button>' +
+    // ---- PHASE: REVIEW (section cards) ----
+    '<div id="phaseReview">' +
+    '  <div class="phase-indicator"><span class="step">Step 1 of 2:</span> Review each section. Add notes where I\'m wrong, then revise or go straight to snapshot.</div>' +
+    '  <div class="tip"><strong>Tip:</strong> Add corrections per-section below each card. Start a line with <code>GENERAL:</code> to save a note for ALL vendors. Leave blank if the section looks good.</div>' +
+    '  <div id="section-cards">' + sectionCardsHtml + '</div>' +
+    '  <div class="action-bar">' +
+    '    <button class="btn btn-orange" id="reviseBtn" onclick="doRevise()">Revise With My Notes</button>' +
+    '    <button class="btn btn-green" onclick="goToSnapshot()">Looks Good — Go to Snapshot</button>' +
+    '    <button class="btn btn-secondary" onclick="collapseAll()">Collapse All</button>' +
+    '    <button class="btn btn-secondary" onclick="expandAll()">Expand All</button>' +
     '    <div id="reviseLoading" class="loading">Revising analysis with Claude...</div>' +
     '  </div>' +
     '</div>' +
 
-    // ---- PHASE 2: Revised + Takeaways ----
-    '<div id="phase2">' +
-    '  <div class="phase-indicator"><span class="step">Step 2 of 3:</span> Review revised analysis and confirm takeaways.</div>' +
-    '  <div id="revised-content" style="max-height:300px;overflow-y:auto;padding-right:8px;"></div>' +
-    '  <div class="section-box" style="margin-top:12px">' +
-    '    <h4>Additional Notes (optional)</h4>' +
-    '    <textarea id="additionalNotes" rows="3" placeholder="Anything else to adjust before we finalize?"></textarea>' +
-    '    <br>' +
-    '    <button class="btn btn-orange" id="revise2Btn" onclick="doRevise2()">Revise Again</button>' +
-    '    <button class="btn btn-green" onclick="goToSnapshot()">Confirm &amp; Go to Snapshot</button>' +
-    '    <div id="revise2Loading" class="loading">Revising again...</div>' +
-    '  </div>' +
-    '</div>' +
-
-    // ---- PHASE 3: Snapshot ----
-    '<div id="phase3">' +
-    '  <div class="phase-indicator"><span class="step">Step 3 of 3:</span> Update vendor Notes and Blocker, then advance to next vendor.</div>' +
-    '  <div class="section-box">' +
+    // ---- PHASE: SNAPSHOT ----
+    '<div id="phaseSnapshot">' +
+    '  <div class="phase-indicator"><span class="step">Step 2 of 2:</span> Update vendor Notes and Blocker, then advance to next vendor.</div>' +
+    '  <div style="margin-bottom:8px;"><button class="btn btn-secondary" onclick="backToReview()">&#9664; Back to Review</button></div>' +
+    '  <div class="snapshot-box">' +
     '    <h4>Vendor Notes (saves to monday.com)</h4>' +
     '    <div style="font-size:11px;color:#666;margin-bottom:4px;">Current: ' + acctEscHtml_((ctx.currentNotes || '(none)').substring(0, 150)) + '</div>' +
     '    <textarea id="snapshotNotes" rows="4">' + acctEscHtml_(proposedNotes) + '</textarea>' +
     '  </div>' +
-    '  <div class="section-box">' +
+    '  <div class="snapshot-box">' +
     '    <h4>Current Blocker (saves to monday.com)</h4>' +
     '    <div style="font-size:11px;color:#666;margin-bottom:4px;">Current: ' + acctEscHtml_((ctx.currentBlockers || '(none)').substring(0, 150)) + '</div>' +
     '    <textarea id="snapshotBlocker" rows="2">' + acctEscHtml_(proposedBlocker === 'None' ? '' : proposedBlocker) + '</textarea>' +
@@ -23026,62 +23049,95 @@ function acctAnalysisShowDialog_(ctx) {
     '</div>' +
 
     '<script>' +
+    'var totalSections = ' + sections.length + ';' +
+
+    // Toggle individual section card open/closed
+    'function toggleCard(idx) {' +
+    '  var body = document.getElementById("body-" + idx);' +
+    '  var toggle = document.getElementById("toggle-" + idx);' +
+    '  if (body.classList.contains("hidden")) {' +
+    '    body.classList.remove("hidden");' +
+    '    toggle.classList.remove("collapsed");' +
+    '  } else {' +
+    '    body.classList.add("hidden");' +
+    '    toggle.classList.add("collapsed");' +
+    '  }' +
+    '}' +
+
+    'function collapseAll() {' +
+    '  for (var i = 0; i < totalSections; i++) {' +
+    '    var b = document.getElementById("body-" + i); var t = document.getElementById("toggle-" + i);' +
+    '    if (b) { b.classList.add("hidden"); } if (t) { t.classList.add("collapsed"); }' +
+    '  }' +
+    '}' +
+
+    'function expandAll() {' +
+    '  for (var i = 0; i < totalSections; i++) {' +
+    '    var b = document.getElementById("body-" + i); var t = document.getElementById("toggle-" + i);' +
+    '    if (b) { b.classList.remove("hidden"); } if (t) { t.classList.remove("collapsed"); }' +
+    '  }' +
+    '}' +
+
+    // Collect all per-section notes into one feedback string
+    'function collectSectionNotes() {' +
+    '  var notes = [];' +
+    '  var fields = document.querySelectorAll(".card-note-input");' +
+    '  for (var i = 0; i < fields.length; i++) {' +
+    '    var val = fields[i].value.trim();' +
+    '    if (val) {' +
+    '      var section = fields[i].getAttribute("data-section");' +
+    '      notes.push("[" + section + "] " + val);' +
+    '    }' +
+    '  }' +
+    '  return notes.join("\\n");' +
+    '}' +
+
+    // Revise: collect all section notes, send to server, update cards in-place
     'function doRevise() {' +
-    '  var feedback = document.getElementById("corrections").value.trim();' +
-    '  if (!feedback) { alert("Please enter your corrections or notes."); return; }' +
+    '  var feedback = collectSectionNotes();' +
+    '  if (!feedback) { alert("No notes entered. Add corrections to at least one section, or click Go to Snapshot."); return; }' +
     '  document.getElementById("reviseBtn").disabled = true;' +
     '  document.getElementById("reviseLoading").style.display = "block";' +
     '  google.script.run' +
     '    .withSuccessHandler(function(result) {' +
     '      document.getElementById("reviseLoading").style.display = "none";' +
-    '      if (result.error) { alert("Error: " + result.error); document.getElementById("reviseBtn").disabled = false; return; }' +
-    '      document.getElementById("revised-content").innerHTML = result.html;' +
+    '      document.getElementById("reviseBtn").disabled = false;' +
+    '      if (result.error) { alert("Error: " + result.error); return; }' +
+    // Update section cards in-place with revised content
+    '      if (result.sections) {' +
+    '        for (var i = 0; i < result.sections.length; i++) {' +
+    '          var sec = result.sections[i];' +
+    '          var el = document.getElementById("content-" + sec.idx);' +
+    '          if (el) el.innerHTML = sec.html;' +
+    '          var noteEl = document.getElementById("note-" + sec.idx);' +
+    '          if (noteEl) { noteEl.value = ""; }' +
+    '          var statusEl = document.getElementById("status-" + sec.idx);' +
+    '          if (statusEl) statusEl.textContent = "revised";' +
+    '        }' +
+    '      }' +
     '      if (result.proposedNotes) document.getElementById("snapshotNotes").value = result.proposedNotes;' +
     '      if (result.proposedBlocker && result.proposedBlocker !== "None") document.getElementById("snapshotBlocker").value = result.proposedBlocker;' +
-    '      document.getElementById("phase1").style.display = "none";' +
-    '      document.getElementById("phase2").style.display = "block";' +
     '    })' +
     '    .withFailureHandler(function(err) {' +
     '      document.getElementById("reviseLoading").style.display = "none";' +
-    '      alert("Error: " + (err.message || err));' +
     '      document.getElementById("reviseBtn").disabled = false;' +
-    '    })' +
-    '    .accountAnalysisRevise(feedback);' +
-    '}' +
-
-    'function doRevise2() {' +
-    '  var feedback = document.getElementById("additionalNotes").value.trim();' +
-    '  if (!feedback) { alert("Please enter additional notes."); return; }' +
-    '  document.getElementById("revise2Btn").disabled = true;' +
-    '  document.getElementById("revise2Loading").style.display = "block";' +
-    '  google.script.run' +
-    '    .withSuccessHandler(function(result) {' +
-    '      document.getElementById("revise2Loading").style.display = "none";' +
-    '      document.getElementById("revise2Btn").disabled = false;' +
-    '      if (result.error) { alert("Error: " + result.error); return; }' +
-    '      document.getElementById("revised-content").innerHTML = result.html;' +
-    '      if (result.proposedNotes) document.getElementById("snapshotNotes").value = result.proposedNotes;' +
-    '      if (result.proposedBlocker && result.proposedBlocker !== "None") document.getElementById("snapshotBlocker").value = result.proposedBlocker;' +
-    '      document.getElementById("additionalNotes").value = "";' +
-    '    })' +
-    '    .withFailureHandler(function(err) {' +
-    '      document.getElementById("revise2Loading").style.display = "none";' +
     '      alert("Error: " + (err.message || err));' +
-    '      document.getElementById("revise2Btn").disabled = false;' +
     '    })' +
     '    .accountAnalysisRevise(feedback);' +
     '}' +
 
-    'function skipToSnapshot() {' +
-    '  document.getElementById("phase1").style.display = "none";' +
-    '  document.getElementById("phase3").style.display = "block";' +
-    '}' +
-
+    // Navigation between phases
     'function goToSnapshot() {' +
-    '  document.getElementById("phase2").style.display = "none";' +
-    '  document.getElementById("phase3").style.display = "block";' +
+    '  document.getElementById("phaseReview").style.display = "none";' +
+    '  document.getElementById("phaseSnapshot").style.display = "block";' +
     '}' +
 
+    'function backToReview() {' +
+    '  document.getElementById("phaseSnapshot").style.display = "none";' +
+    '  document.getElementById("phaseReview").style.display = "block";' +
+    '}' +
+
+    // Save snapshot
     'function doSaveSnapshot() { saveSnapshot_(true); }' +
     'function doSaveOnly() { saveSnapshot_(false); }' +
 
@@ -23122,6 +23178,40 @@ function acctAnalysisShowDialog_(ctx) {
   var html = HtmlService.createHtmlOutput(htmlContent).setWidth(900).setHeight(800);
   SpreadsheetApp.getUi().showModalDialog(html, 'Account Analysis: ' + ctx.vendor);
   SpreadsheetApp.getActive().toast('Analysis ready!', 'Done', 3);
+}
+
+/**
+ * Parse Claude's analysis into sections split by ## headers.
+ * Returns array of {key, title, body} objects.
+ */
+function acctAnalysisParseSections_(rawContent) {
+  var lines = rawContent.split('\n');
+  var sections = [];
+  var currentTitle = '';
+  var currentKey = '';
+  var currentBody = [];
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    var headerMatch = line.match(/^##\s+(.+)/);
+    if (headerMatch) {
+      // Save previous section
+      if (currentTitle) {
+        sections.push({ key: currentKey, title: currentTitle, body: currentBody.join('\n').trim() });
+      }
+      currentTitle = headerMatch[1].trim();
+      // Strip emoji prefix for the key (used for matching)
+      currentKey = currentTitle.replace(/^[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]+\s*/u, '').trim();
+      currentBody = [];
+    } else {
+      currentBody.push(line);
+    }
+  }
+  // Don't forget the last section
+  if (currentTitle) {
+    sections.push({ key: currentKey, title: currentTitle, body: currentBody.join('\n').trim() });
+  }
+  return sections;
 }
 
 /** HTML-escape helper for Account Analysis dialog */
@@ -23209,15 +23299,23 @@ function accountAnalysisRevise(feedback) {
     saveGeneralNotes_(updated);
   }
 
-  // Extract proposed notes and blocker from revised analysis
+  // Parse revised content into sections for per-card updates
+  var revisedSections = acctAnalysisParseSections_(revised);
   var proposedNotes = '';
   var proposedBlocker = '';
-  var notesMatch = revised.match(/## PROPOSED NOTES\s*\n([\s\S]*?)(?=\n##|$)/);
-  if (notesMatch) proposedNotes = notesMatch[1].trim().replace(/^["']|["']$/g, '');
-  var blockerMatch = revised.match(/## PROPOSED BLOCKER\s*\n([\s\S]*?)(?=\n##|$)/);
-  if (blockerMatch) proposedBlocker = blockerMatch[1].trim().replace(/^["']|["']$/g, '');
+  var sectionUpdates = [];
 
-  // Format for HTML display
+  for (var s = 0; s < revisedSections.length; s++) {
+    var sec = revisedSections[s];
+    if (sec.key === 'PROPOSED NOTES') { proposedNotes = sec.body.trim(); continue; }
+    if (sec.key === 'PROPOSED BLOCKER') { proposedBlocker = sec.body.trim(); continue; }
+    var bodyHtml = acctEscHtml_(sec.body)
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    sectionUpdates.push({ idx: s, key: sec.key, html: bodyHtml });
+  }
+
+  // Also build full HTML for legacy callers
   var html = revised
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -23228,6 +23326,7 @@ function accountAnalysisRevise(feedback) {
 
   return {
     html: html,
+    sections: sectionUpdates,
     proposedNotes: proposedNotes,
     proposedBlocker: proposedBlocker
   };
