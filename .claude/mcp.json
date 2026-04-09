@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "monday-api-mcp": {
+      "command": "npx",
+      "args": [
+        "@mondaydotcomorg/monday-api-mcp",
+        "--enable-dynamic-api-tools",
+        "true"
+      ],
+      "env": {
+        "monday_token": "eyJhbGciOiJIUzI1NiJ9.eyJ0aWQiOjQ1NDc2OTk0NywiYWFpIjoxMSwidWlkIjo1MzkyOTA3OCwiaWFkIjoiMjAyNS0wMS0wN1QxODoyNzo1My4wMDBaIiwicGVyIjoibWU6d3JpdGUiLCJhY3RpZCI6MjA1NzI0NjIsInJnbiI6InVzZTEifQ.h8_RIEP9thz-UwIT5SSbkf73n4mzRwyu7ALSZkkTDE8"
+      }
+    },
+    "airtable": {
+      "command": "npx",
+      "args": ["-y", "airtable-mcp-server"],
+      "env": {
+        "AIRTABLE_API_KEY": "pat9P76pQ7lJ8Cwoa.2a614804ad532a6e957e931e65f0e4f228928e9f2ce3d57b5d918dde832842db"
+      }
+    },
+    "google-workspace": {
+      "command": "npx",
+      "args": ["@googleworkspace/cli", "mcp"]
+    }
+  }
+}
