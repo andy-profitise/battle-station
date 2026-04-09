@@ -17,6 +17,10 @@
       "env": {
         "AIRTABLE_API_KEY": "pat9P76pQ7lJ8Cwoa.2a614804ad532a6e957e931e65f0e4f228928e9f2ce3d57b5d918dde832842db"
       }
+    },
+    "google-workspace": {
+      "command": "npx",
+      "args": ["@googleworkspace/cli", "mcp"]
     }
   }
 }
