@@ -22614,6 +22614,17 @@ function cleanSubjectLine_(subject) {
     .trim();
 }
 
+/**
+ * Get saved chat context for a vendor (from OCR screenshots).
+ * Returns the stored text or '(no chat data)'.
+ * Clears the stored context after reading so it doesn't persist across sessions.
+ */
+function getChatContext_(vendor) {
+  var key = 'CHAT_CONTEXT_' + vendor;
+  var text = PropertiesService.getScriptProperties().getProperty(key) || '';
+  return text || '(no chat data)';
+}
+
 
 /************************************************************
  * ACCOUNT ANALYSIS - Strategic vendor review workflow
@@ -23470,4 +23481,109 @@ function accountAnalysisNextUnprocessed() {
   }
 
   SpreadsheetApp.getUi().alert('All vendors have been processed!');
+}
+
+/** Save account analysis to the Action Plans sheet (uses same sheet, type = "ANALYSIS") */
+function saveAccountAnalysis_(vendor, analysis) {
+  var sheet = getOrCreateActionPlansSheet_();
+  var actionsMatch = analysis.match(/## .*RECOMMENDED ACTIONS[\s\S]*?(?=##|$)/);
+  var actions = actionsMatch ? actionsMatch[0].trim() : '';
+  sheet.appendRow([vendor, new Date().toISOString(), actions, analysis, '', 'ANALYSIS']);
+}
+
+/** Get previous account analysis for a vendor */
+function getPreviousAccountAnalysis_(vendor) {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return {
+        timestamp: data[i][1],
+        actions: data[i][2],
+        analysis: data[i][3],
+        userNotes: data[i][4]
+      };
+    }
+  }
+  return null;
+}
+
+/** Create monday.com tasks from the Recommended Actions in the analysis */
+function createTasksFromAnalysis() {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('acctAnalysisContext') ||
+                   PropertiesService.getUserProperties().getProperty('accountAnalysisContext');
+  if (!contextRaw) throw new Error('No analysis context found.');
+  var context = JSON.parse(contextRaw);
+  var rawContent = context.rawContent || context.analysis || '';
+
+  var actionsMatch = rawContent.match(/## .*RECOMMENDED ACTIONS([\s\S]*?)(?=##|$)/);
+  if (!actionsMatch) return 'No recommended actions found in the analysis.';
+
+  var lines = actionsMatch[1].trim().split('\n');
+  var created = 0;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/^\d+\.\s*/, '').replace(/^\-\s*/, '').trim();
+    if (!line || line.length < 5) continue;
+    // Strip priority prefix
+    line = line.replace(/^\[PRIORITY:\s*(HIGH|MED|LOW)\]\s*/i, '').trim();
+    if (line.length < 5) continue;
+
+    try {
+      var taskName = context.vendor + ': ' + line.substring(0, 120);
+      // Use the monday.com tasks API to create
+      var mutation = 'mutation { create_item (board_id: ' + BS_CFG.TASKS_BOARD_ID + ', item_name: "' +
+        taskName.replace(/"/g, '\\"') + '") { id } }';
+      var options = {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'Authorization': BS_CFG.MONDAY_API_TOKEN },
+        payload: JSON.stringify({ query: mutation }),
+        muteHttpExceptions: true
+      };
+      UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      created++;
+    } catch (e) {
+      Logger.log('[CreateTasks] Error creating task: ' + e.message);
+    }
+  }
+
+  return 'Created ' + created + ' task(s) on monday.com for ' + context.vendor;
+}
+
+/** Apply Notes and Blockers from the analysis to monday.com */
+function applyNotesFromAnalysis() {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('acctAnalysisContext') ||
+                   PropertiesService.getUserProperties().getProperty('accountAnalysisContext');
+  if (!contextRaw) throw new Error('No analysis context found.');
+  var context = JSON.parse(contextRaw);
+  var rawContent = context.rawContent || context.analysis || '';
+  var vendor = context.vendor;
+  var listRow = context.listRow;
+  var msgs = [];
+
+  // Extract suggested notes
+  var notesMatch = rawContent.match(/## .*(?:SUGGESTED NOTES|PROPOSED NOTES)[^\n]*\n([\s\S]*?)(?=\n##|$)/);
+  if (notesMatch) {
+    var notesText = notesMatch[1].trim().replace(/^["']|["']$/g, '');
+    if (notesText && notesText.length > 3) {
+      updateMondayComNotesForVendor_(vendor, notesText, listRow);
+      var listSh = SpreadsheetApp.getActive().getSheetByName(BS_CFG.LIST_SHEET);
+      if (listSh) listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(notesText);
+      cacheOriginalNotes_(notesText);
+      msgs.push('Notes updated');
+    }
+  }
+
+  // Extract suggested blocker
+  var blockerMatch = rawContent.match(/## .*(?:SUGGESTED BLOCKER|PROPOSED BLOCKER)[^\n]*\n([\s\S]*?)(?=\n##|$)/);
+  if (blockerMatch) {
+    var blockerText = blockerMatch[1].trim().replace(/^["']|["']$/g, '');
+    if (blockerText && blockerText.toLowerCase() !== '(none)') {
+      updateMondayBlockersForVendor_(vendor, blockerText, listRow);
+      msgs.push('Blockers updated');
+    }
+  }
+
+  return msgs.length > 0 ? msgs.join(' + ') + ' for ' + vendor : 'No notes/blocker changes found in the analysis.';
 }
