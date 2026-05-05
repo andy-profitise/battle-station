@@ -1,0 +1,22931 @@
+/************************************************************
+ * A(I)DEN - One-by-one vendor review dashboard
+ *
+ * Last Updated: 2026-03-24 12:00PM PST
+ *
+ * Features:
+ * - Navigate through vendors sequentially via menu
+ * - FAST MODE: Email-focused loading, skips Box/GDrive/Airtable/Calendar
+ * - View vendor details, notes, status, contacts
+ * - See all related emails and monday.com tasks (live search)
+ * - View helpful links from monday.com
+ * - Update monday.com notes directly
+ * - Mark vendors as reviewed/complete
+ * - Email contacts directly from A(I)DEN
+ * - Analyze emails with Claude AI (inline links)
+ * - Snooze vendors until a specific date (skipped unless checksum changes)
+ * - 🧠 Smart Briefing: AI-powered cross-vendor priority advisor
+ * - 📝 Auto-summarize: Claude summarizes vendor state to notes
+ * - ✉️ Draft Reply: Claude-powered email reply drafting
+ * - 📧 Email Rules: Automatic actions on inbound emails
+ * - ⚙️ Claude API key management via Script Properties
+ * - 📋 Inbox Review: Step-by-step vendor review with blocker + notes suggestions
+ *
+ * UPDATED: Fast Mode, Smart Briefing, Email Rules, Claude reply drafting
+ * NEW: Vendor Briefing (full intel aggregation), Bulk Actions match transparency
+ * FIXED: Preonboarding tasks warning, past meetings checksum, email diff logging
+ * NEW: Vendor Workflow - Full proactive loop (sync, build, brief, vendor review, tasks, emails, repeat)
+ ************************************************************/
+
+const BS_CFG = {
+  // Code version - displayed in UI to confirm deployment
+  CODE_VERSION: '2026-04-01 08:00AM PST',
+
+  // Sheet names
+  LIST_SHEET: 'List',
+  BATTLE_SHEET: 'A(I)DEN',
+  GMAIL_OUTPUT_SHEET: 'Gmail Review Output',
+  TASKS_SHEET: 'monday.com tasks',
+  
+  // List sheet columns (0-based)
+  L_VENDOR: 0,
+  L_TTL_USD: 1,
+  L_SOURCE: 2,
+  L_STATUS: 3,
+  L_NOTES: 4,
+  L_GMAIL_LINK: 5,
+  L_NO_SNOOZE: 6,
+  L_PROCESSED: 7,
+  
+  // A(I)DEN layout
+  HEADER_ROWS: 3,
+  DATA_START_ROW: 5,
+  
+  // Modern Color Palette - sleeker, more professional look
+  COLOR_HEADER: '#34a853',        // Google Green - main header
+  COLOR_SUBHEADER: '#e8f0fe',     // Light blue - section headers
+  COLOR_EMAIL: '#fef7e0',         // Warm cream - email section
+  COLOR_TASK: '#e6f4ea',          // Fresh mint - tasks section
+  COLOR_LINKS: '#f3e8fd',         // Soft lavender - helpful links
+  COLOR_BUTTON: '#e8f0fe',        // Light blue - buttons
+  COLOR_WARNING: '#fce8e6',       // Soft coral - warnings
+  COLOR_SUCCESS: '#ceead6',       // Success green
+  COLOR_SNOOZED: '#e1f5fe',       // Ice blue - snoozed emails
+  COLOR_WAITING: '#fff8e1',       // Warm yellow - waiting
+  COLOR_MISSING: '#fff3e0',       // Light amber - missing data
+  COLOR_PHONEXA: '#ffe0b2',       // Peach - Phonexa waiting
+  COLOR_OVERDUE: '#ffcdd2',       // Light red - overdue
+
+  // Row highlight colors for List sheet
+  COLOR_ROW_CURRENT: '#b3e5fc',   // Light blue - currently viewing
+  COLOR_ROW_VIEWED: '#fff9c4',    // Yellow - already looked at
+
+  // Section styling
+  COLOR_SECTION_BG: '#fafafa',    // Light gray for section backgrounds
+  COLOR_TABLE_HEADER: '#f5f5f5',  // Table header background
+  COLOR_TABLE_ALT: '#fafafa',     // Alternating row color
+  COLOR_BORDER: '#e0e0e0',        // Border color
+  COLOR_TEXT_MUTED: '#757575',    // Muted text
+  COLOR_TEXT_LINK: '#1a73e8',     // Link color
+  
+  // Overdue threshold: emails with "02.waiting/customer" or "02.waiting/me" older than this many business hours
+  OVERDUE_BUSINESS_HOURS: 16,
+  // Manual overdue label - emails with this label are always treated as overdue
+  MANUAL_OVERDUE_LABEL: '03.overdue/manual',
+
+  
+  // API Keys
+  MONDAY_API_TOKEN: PropertiesService.getScriptProperties().getProperty('MONDAY_API_TOKEN') || '',
+  CLAUDE_API_KEY: PropertiesService.getScriptProperties().getProperty('CLAUDE_API_KEY') || '',
+  
+  // Search terms to skip (too generic, cause false positives)
+  SKIP_SEARCH_TERMS: ['LLC', 'Inc', 'Inc.', 'Corp', 'Corp.', 'Co', 'Co.', 'Ltd', 'Ltd.', 'LP', 'LLP', 'PC', 'PLLC', 'NA', 'N/A'],
+  
+  // monday.com Board IDs
+  BUYERS_BOARD_ID: 'your-buyers-board-id',
+  AFFILIATES_BOARD_ID: 'your-affiliates-board-id',
+  TASKS_BOARD_ID: 'your-tasks-board-id',
+  CONTACTS_BOARD_ID: 'your-contacts-board-id',
+  HELPFUL_LINKS_BOARD_ID: 'your-helpful-links-board-id',
+  CHAT_LINKS_BOARD_ID: 'your-chat-links-board-id',
+  
+  // monday.com Column IDs
+  BUYERS_NOTES_COLUMN: 'text_mkqnvsqh',
+  AFFILIATES_NOTES_COLUMN: 'text_mkrdahqz',
+  BUYERS_CONTACTS_COLUMN: 'board_relation_mky0bt0z',
+  AFFILIATES_CONTACTS_COLUMN: 'board_relation_mky0n0rf',
+  
+  // Helpful Links Column IDs
+  HELPFUL_LINKS_LINK_COLUMN: 'link_mky0anm4',
+  HELPFUL_LINKS_BUYERS_COLUMN: 'board_relation_mky03dt4',
+  HELPFUL_LINKS_AFFILIATES_COLUMN: 'board_relation_mky0gxak',
+  HELPFUL_LINKS_NOTES_COLUMN: 'text_mky08ybx',
+
+  // Phonexa Link Column IDs
+  BUYERS_PHONEXA_COLUMN: 'link_mksmwprd',
+  AFFILIATES_PHONEXA_COLUMN: 'link_mksmgnc0',
+
+  // Live Verticals Column IDs
+  BUYERS_LIVE_VERTICALS_COLUMN: 'tag_mkskgt84',
+  AFFILIATES_LIVE_VERTICALS_COLUMN: 'tag_mkskrddx',
+
+  // Other Verticals Column IDs
+  BUYERS_OTHER_VERTICALS_COLUMN: 'tag_mkskewmq',
+  AFFILIATES_OTHER_VERTICALS_COLUMN: 'tag_mkskfs70',
+
+  // Live Modalities Column IDs
+  BUYERS_LIVE_MODALITIES_COLUMN: 'tag_mkskfmf3',
+  AFFILIATES_LIVE_MODALITIES_COLUMN: 'tag_mksk7whx',
+
+  // States Column IDs (Buyers only)
+  BUYERS_STATES_COLUMN: 'dropdown_mkyam4qw',
+  BUYERS_DEAD_STATES_COLUMN: 'dropdown_mkyazy2j',
+
+  // Other Name Column ID (for alternate vendor names)
+  BUYERS_OTHER_NAME_COLUMN: 'text_mkvkr178',
+  AFFILIATES_OTHER_NAME_COLUMN: 'text_mksmcrpw',
+
+  // Current Blocker(s) Column IDs
+  BUYERS_BLOCKERS_COLUMN: 'text_mm0r9srn',
+  AFFILIATES_BLOCKERS_COLUMN: 'text_mm0v3g4s',
+
+  // Blocker Template
+  BLOCKER_TEMPLATE_ITEM_ID: 'your-blocker-template-item-id',
+  BLOCKERS_GROUP_ID: 'your-blockers-group-id',
+
+  // Add to BS_CFG:
+  TASKS_PROJECT_COLUMN: 'board_relation_mkqbg3mb',
+
+  // monday.com termColumns parameter for task links (required for search to work)
+  MONDAY_TERM_COLUMNS: 'PLACEHOLDER_REPLACE_WITH_YOUR_TERM_COLUMNS_BASE64',  // Generate via monday.com API explorer: encode your board's column IDs,
+
+    // Large-Scale Projects ID to Name mapping
+    PROJECT_MAP: {
+      '9520665110': 'Home Services',
+      '9520665261': 'ACA',
+      '9618492546': 'Vertical Activation',
+      '9071022704': 'Monthly Returns',
+      '9268820620': 'CPL/Zip Optimizations',
+      '9520671333': 'Accounting/Invoices',
+      '9521113689': 'System Admin',
+      '9754457415': 'URL Whitelist',
+      '9007621458': 'Outbound Communication',
+      '9520669726': 'Pre-Onboarding',
+      '9007619323': 'Appointments',
+      '9080883844': 'Onboarding - Buyer',
+      '9323973905': 'Onboarding - Affiliate',
+      '9587318546': 'Onboarding - Vertical',
+      '9080886761': 'Templates',
+      '9549663466': 'Morning Meeting',
+      '9681907462': 'Week of 07/28/25',
+    },
+
+  // Last Updated Column IDs
+  BUYERS_LAST_UPDATED_INDEX: 15,      // Column P (1-based 16) -> 0-based 15
+  AFFILIATES_LAST_UPDATED_INDEX: 16,  // Column Q (1-based 17) -> 0-based 16
+
+  // Checksums
+  CHECKSUMS_SHEET: 'BS_Checksums',
+  
+  // Cache sheet for Airtable/Box data
+  CACHE_SHEET: 'BS_Cache',
+  CACHE_MAX_AGE_HOURS: 24,  // Refresh cache if older than this
+
+  // Airtable Contracts Configuration
+  AIRTABLE_API_TOKEN: PropertiesService.getScriptProperties().getProperty('AIRTABLE_API_TOKEN') || '',
+  AIRTABLE_BASE_ID: 'appYourBaseIdHere',
+  
+  // Contracts 2026
+  AIRTABLE_CONTRACTS_TABLE_2026: 'Contracts 2026',
+  AIRTABLE_CONTRACTS_TABLE_ID_2026: 'tblYour2026TableId',
+  AIRTABLE_CONTRACTS_VIEW_ID_2026: 'viwYourViewId',
+
+  // Contracts 2025
+  AIRTABLE_CONTRACTS_TABLE_2025: 'Contracts 2025',
+  AIRTABLE_CONTRACTS_TABLE_ID_2025: 'tblYour2025TableId',
+  AIRTABLE_CONTRACTS_VIEW_ID_2025: 'viwYourViewId',
+
+  // Contracts 2024
+  AIRTABLE_CONTRACTS_TABLE_2024: 'Contracts 2024',
+  AIRTABLE_CONTRACTS_TABLE_ID_2024: 'tblYour2024TableId',
+  AIRTABLE_CONTRACTS_VIEW_ID_2024: 'viwYourViewId',
+  
+  AIRTABLE_VENDOR_FIELD: 'Vendor Name',
+  AIRTABLE_STATUS_FIELD: 'Status',
+  AIRTABLE_CONTRACT_TYPE_FIELD: 'Contract Type',
+  AIRTABLE_NOTES_FIELD: 'Notes',
+  AIRTABLE_SUBMITTED_BY_FIELD: 'Submitted By',
+  AIRTABLE_VERTICAL_FIELD: 'Vertical',
+  AIRTABLE_CREATED_DATE_FIELD: 'Created Date',
+  
+  // Filter values for contracts
+  AIRTABLE_ALLOWED_SUBMITTERS: ['Submitter Name 1', 'Submitter Name 2'],
+  AIRTABLE_ALLOWED_VERTICALS: ['Home Services', 'Solar'],
+  
+  AIRTABLE_API_BASE_URL: 'https://api.airtable.com/v0',
+  
+  // Google Drive Vendors Folder
+  GDRIVE_VENDORS_FOLDER_ID: 'your-vendors-drive-folder-id',
+  
+  // Crystal Ball performance settings
+  CRYSTAL_BALL_MODEL: 'claude-haiku-4-5-20251001',  // Haiku for speed (~5-10s vs 60-120s with Sonnet)
+  CRYSTAL_BALL_MAX_TOKENS: 1000,                     // Reduced from 1500 - analysis doesn't need more
+
+  // Max characters for notes display (truncate with "..." if longer)
+  MAX_NOTES_LENGTH: 400,
+
+  // Canned Response Attachments (Google Drive file IDs)
+  REFERRAL_CONTRACT_FILE_ID: 'your-referral-contract-doc-id',
+  INITIAL_CALL_FOLLOWUP_FILE_ID: 'your-initial-call-followup-doc-id',
+
+  // Canned Response Templates - Google Doc IDs
+  // Use <CONTACT_NAME> and <VENDOR_NAME> as placeholders in the docs
+  // To get the ID: https://docs.google.com/document/d/[THIS_IS_THE_ID]/edit
+  CANNED_RESPONSE_DOCS: {
+    REFERRAL_PROGRAM: 'your-doc-id',
+    INITIAL_CALL_FOLLOWUP: 'your-doc-id'
+  },
+
+  // Vendor Review Log sheet (records Q&A, narratives, to-dos from Inbox Review sessions)
+  REVIEW_LOG_SHEET: 'Vendor Review Log',
+  REVIEW_LOG_COLUMNS: {
+    TIMESTAMP: 0,        // A - When the review happened
+    VENDOR: 1,           // B - Vendor name
+    SOURCE: 2,           // C - Buyer/Affiliate
+    STATUS: 3,           // D - Vendor status at time of review
+    QA_RESPONSES: 4,     // E - JSON of true/false Q&A answers
+    USER_NOTES: 5,       // F - Additional notes from user
+    NARRATIVE: 6,        // G - AI+User parsed narrative
+    TODOS: 7,            // H - Generated to-do items (JSON)
+    TODO_STATUS: 8,      // I - Status of each to-do (JSON: done/skip/pending)
+    WEEKLY_RECAP: 9,     // J - Weekly recap notes
+    RECAP_WEEK: 10       // K - ISO week identifier (e.g. "2026-W13")
+  }
+};
+
+// In-memory cache for calendar events within a single script execution.
+// Avoids redundant CalendarApp API calls when getAllCalendarEvents_ and
+// getUpcomingMeetingsForVendor_ run in the same invocation.
+let _calendarEventsCache = null;
+
+/**
+ * Add menu to Google Sheets
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+
+  // A(I)DEN menu - AI-powered features only
+  ui.createMenu('⚡ A(I)DEN')
+    .addItem('🧠 Smart Briefing (What to do next)', 'battleStationSmartBriefing')
+    .addItem('💡 Generate Insights (This Vendor)', 'battleStationGenerateInsights')
+    .addItem('🎯 Goal-Aligned Insights (All Vendors)', 'battleStationGoalInsights')
+    .addItem('📋 Vendor Briefing (Full Intel)', 'battleStationVendorBriefing')
+    .addSeparator()
+    .addItem('📝 Summarize & Update Notes (Claude)', 'battleStationSummarizeToNotes')
+    .addItem('✉️ Draft Reply (Claude)', 'battleStationDraftReply')
+    .addItem('🤖 Analyze Emails (Claude)', 'battleStationAnalyzeEmails')
+    .addItem('❓ Ask About Vendor (Claude)', 'askAboutVendor')
+    .addItem('🤖 Analyze Tasks (Claude)', 'analyzeTasksFromEmails')
+    .addItem('⚡ Bulk Actions (Claude)', 'battleStationBulkActions')
+    .addSeparator()
+    .addItem('📋 Inbox Review (Q&A + Record)', 'inboxReviewStart')
+    .addItem('📊 Weekly Recap', 'inboxReviewWeeklyRecap')
+    .addItem('✅ Update Review Todos', 'inboxReviewUpdateTodos')
+    .addSeparator()
+    .addItem('🚀 Vendor Workflow (Full Loop)', 'vendorWorkflowStart')
+    .addItem('⏭️ Workflow: Next Step', 'vendorWorkflowNextStep')
+    .addItem('❌ Workflow: Cancel', 'vendorWorkflowCancel')
+    .addToUi();
+
+  // Email Actions menu - reply templates + email management
+  ui.createMenu('📧 Email Actions')
+    .addItem('🔄 Cold Outreach - Follow Up', 'emailResponseColdFollowUp')
+    .addItem('📅 Schedule a Call', 'emailResponseScheduleCall')
+    .addItem('💰 Payment/Invoice Follow Up', 'emailResponsePaymentFollowUp')
+    .addItem('📋 General Follow Up', 'emailResponseGeneralFollowUp')
+    .addItem('🚫 Missed Meeting', 'emailResponseMissedMeeting')
+    .addItem('🔍 Check Affiliate', 'emailResponseCheckAffiliate')
+    .addItem('🎭 Current Sentiment', 'emailResponseCurrentSentiment')
+    .addItem('✍️ Custom Response...', 'emailResponseCustom')
+    .addItem('🔗 Generic URL Response...', 'genericUrlResponse')
+    .addSeparator()
+    .addItem('📨 Referral Program - Canned', 'cannedResponseReferralProgram')
+    .addItem('📞 Initial Call Follow-up - Canned', 'cannedResponseInitialCallFollowup')
+    .addSeparator()
+    .addItem('📧 Email Contacts', 'battleStationEmailContactsDialog')
+    .addItem('📧 Open Gmail Search', 'battleStationOpenGmail')
+    .addItem('📧 Open Gmail Search (00.received)', 'battleStationOpenGmailReceived')
+    .addItem('📇 Discover Contacts from Gmail', 'discoverContactsFromGmail')
+    .addSeparator()
+    .addItem('🔴 Mark Email as Overdue', 'markEmailAsOverdue')
+    .addItem('✅ Clear Overdue from Email', 'clearOverdueFromEmail')
+    .addItem('📤 Send to Aden', 'sendToAden')
+    .addItem('📤 Throw to Aden (Any)', 'throwToAden')
+    .addItem('📥 Archive Email', 'archiveSelectedEmail')
+    .addItem('⚰️ Bury Email', 'burySelectedEmail')
+    .addItem('⬇️ Unprioritize Email', 'unprioritizeSelectedEmail')
+    .addToUi();
+
+  // Navigation menu - movement and traversal
+  ui.createMenu('🧭 Navigation')
+    .addItem('⏭️ Skip Unchanged', 'skipToNextChanged')
+    .addItem('📥 Inbox Mode (Oldest First)', 'inboxModeNext')
+    .addSeparator()
+    .addItem('📬 Inbox Redirect Status', 'viewInboxRedirectStatus')
+    .addItem('❌ Clear Inbox Redirect', 'clearInboxRedirectState')
+    .addItem('🚀 Turbo Traverse (Batch)', 'turboTraverseAll')
+    .addItem('🌙 Schedule Turbo (Overnight)', 'scheduleTurboTraverse')
+    .addSeparator()
+    .addItem('🔄 Skip 5 & Return (Start/Continue)', 'skip5AndReturn')
+    .addItem('↩️ Return to Origin (Skip 5)', 'continueSkip5AndReturn')
+    .addItem('❌ Cancel Skip 5 Session', 'cancelSkip5Session')
+    .addItem('🔁 Auto-Traverse All', 'autoTraverseVendors')
+    .addSeparator()
+    .addItem('▶ Next Vendor (Fast)', 'battleStationNext')
+    .addItem('◀ Previous Vendor (Fast)', 'battleStationPrevious')
+    .addItem('🔍 Go to Specific Vendor...', 'battleStationGoTo')
+    .addItem('⏮️ Restart from Top', 'battleStationRestartFromTop')
+    .addSeparator()
+    .addItem('🔗 Copy Vendor Deep Link', 'copyVendorDeepLink')
+    .addItem('⚙️ Set Deep Link URL...', 'setDeepLinkBaseUrl')
+    .addToUi();
+
+  // Refresh menu - refresh current vendor view
+  ui.createMenu('🔄 Refresh')
+    .addItem('⚡ Quick Refresh (Email Only)', 'battleStationQuickRefresh')
+    .addItem('🔁 Quick Refresh Until Changed', 'battleStationQuickRefreshUntilChanged')
+    .addItem('🔄 Hard Refresh (Clear Cache)', 'battleStationHardRefresh')
+    .addItem('💥 Hardest Refresh (Reset All Caches)', 'battleStationHardestRefresh')
+    .addSeparator()
+    .addItem('🗑️ Reset Module Checksums (Fix False Positives)', 'resetAllModuleChecksums')
+    .addToUi();
+
+  // Settings menu - setup, config, tools
+  ui.createMenu('⚙️ Settings')
+    .addItem('🔧 Setup A(I)DEN', 'setupBattleStation')
+    .addItem('🔧 Build List', 'buildListWithGmailAndNotes')
+    .addItem('🔄 Sync monday.com Data', 'syncMondayComBoards')
+    .addItem('🔍 Check Duplicate Vendors', 'checkDuplicateVendors')
+    .addSeparator()
+    .addItem('📧 Manage Email Rules', 'battleStationManageEmailRules')
+    .addItem('📧 Process Email Rules', 'battleStationProcessEmailRules')
+    .addSeparator()
+    .addItem('📝 Update Task Status...', 'openTaskStatusDialog')
+    .addItem('🚧 Add a Blocker', 'createBlockerForVendor')
+    .addItem('💾 Update monday.com Notes', 'battleStationUpdateMondayNotes')
+    .addSeparator()
+    .addItem('📷 Chat OCR - Upload Image / Paste Text', 'openVendorOcrUpload')
+    .addItem('⚙️ Chat OCR - Setup Settings', 'setupOcrSettings')
+    .addItem('🧹 Chat OCR - Clear Tracking', 'clearAllOcrDetectedVendors')
+    .addSeparator()
+    .addItem('🎯 Manage Goals', 'battleStationManageGoals')
+    .addItem('📋 Set AI Instructions', 'battleStationSetAiInstructions')
+    .addItem('⚙️ Set Claude API Key', 'battleStationSetClaudeApiKey')
+    .addSeparator()
+    .addItem('🔮 Dismiss Crystal Ball Action...', 'dismissCrystalBallAction')
+    .addItem('🔮 Clear Dismissed Actions', 'clearDismissedCrystalBallActions')
+    .addToUi();
+
+  // Check for pending vendor from URL deep link
+  checkPendingVendorFromUrl_();
+}
+
+/**
+ * Detect clicks on interactive cell "buttons" in the A(I)DEN sheet.
+ * Currently supports: "➕ Add a Blocker"
+ */
+function onSelectionChange(e) {
+  const sheet = e.range.getSheet();
+  if (sheet.getName() !== BS_CFG.BATTLE_SHEET) return;
+
+  const cell = e.range;
+  if (cell.getNumRows() !== 1 || cell.getNumColumns() !== 1) return;
+
+  const value = cell.getValue();
+  if (typeof value === 'string' && value.trim() === '➕ Add a Blocker') {
+    createBlockerForVendor();
+  }
+}
+
+/**
+ * Inbox Review - Step-by-step vendor review with Q&A, notes, and AI-generated narrative + to-dos.
+ * Records results to the Vendor Review Log sheet for tracking and weekly recaps.
+ */
+function inboxReviewStart() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) { ui.alert('Vendor list not found.'); return; }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+
+  if (!vendor) { ui.alert('No vendor currently loaded. Please navigate to a vendor first.'); return; }
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) { ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key'); return; }
+
+  // Gather context for the Q&A dialog
+  let contactData = { contacts: [], notes: '', liveStatus: '', liveVerticals: '', liveModalities: '', states: '', blockers: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { /* skip */ }
+
+  const blockerTasks = (getTasksForVendor_(vendor, listRow) || []).filter(t => t.isBlocker && !t.isDone);
+  const blockerText = blockerTasks.map(t => t.subject).join(', ') || '(none)';
+  const mondayNotes = contactData.notes || '(no notes)';
+
+  // Store vendor context for the callback
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('IR_VENDOR', vendor);
+  props.setProperty('IR_SOURCE', source);
+  props.setProperty('IR_STATUS', status);
+  props.setProperty('IR_LIST_ROW', String(listRow));
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .context { background: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-size: 13px; }
+      .context strong { color: #333; }
+      .qa-section { margin-bottom: 15px; }
+      .qa-item { display: flex; align-items: center; margin-bottom: 8px; }
+      .qa-item label { margin-left: 8px; cursor: pointer; }
+      .qa-item input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
+      .notes-box { width: 100%; height: 80px; padding: 8px; border: 1px solid #ddd; border-radius: 5px; font-family: Arial; font-size: 13px; resize: vertical; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; margin-right: 8px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      .btn-primary:hover { background: #1557b0; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-cancel { background: #f1f3f4; color: #333; }
+      #loading { display: none; color: #666; margin-top: 10px; }
+      #result { display: none; margin-top: 15px; }
+      .narrative { background: #e8f0fe; padding: 12px; border-radius: 5px; white-space: pre-wrap; margin-bottom: 10px; }
+      .todos { background: #e6f4ea; padding: 12px; border-radius: 5px; white-space: pre-wrap; }
+      .success { color: #137333; font-weight: bold; margin-top: 10px; }
+    </style>
+    <h2>📋 Inbox Review: ${escapeHtml_(vendor)}</h2>
+    <div class="subtitle">${escapeHtml_(source)} | Status: ${escapeHtml_(status)}</div>
+
+    <div class="context">
+      <strong>Current Blockers:</strong> ${escapeHtml_(blockerText)}<br>
+      <strong>Monday Notes:</strong> ${escapeHtml_(mondayNotes.substring(0, 200))}${mondayNotes.length > 200 ? '...' : ''}
+    </div>
+
+    <div id="qaForm">
+      <div class="qa-section">
+        <strong>Quick Status Check:</strong>
+        <div class="qa-item"><input type="checkbox" id="q_responded"><label for="q_responded">Responded to latest email / message</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_blocker_resolved"><label for="q_blocker_resolved">Current blocker is resolved or progressing</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_invoice_ok"><label for="q_invoice_ok">Invoicing / payments up to date</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_performance_ok"><label for="q_performance_ok">Performance / quality acceptable</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_needs_attention"><label for="q_needs_attention">Needs immediate attention or escalation</label></div>
+        <div class="qa-item"><input type="checkbox" id="q_expansion"><label for="q_expansion">Expansion opportunity discussed or planned</label></div>
+      </div>
+
+      <strong>Your Notes / Observations:</strong><br>
+      <textarea class="notes-box" id="userNotes" placeholder="What happened? What's the current situation? Any context Claude should know..."></textarea>
+      <br><br>
+
+      <button class="btn btn-primary" id="submitBtn" onclick="submitReview()">🤖 Generate Narrative + To-Dos</button>
+      <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+      <div id="loading">⏳ Analyzing with Claude and recording review...</div>
+    </div>
+
+    <div id="result">
+      <strong>📝 Narrative:</strong>
+      <div class="narrative" id="narrativeBox"></div>
+      <strong>✅ Suggested To-Dos:</strong>
+      <div class="todos" id="todosBox"></div>
+      <div class="success" id="successMsg"></div>
+      <br>
+      <button class="btn btn-primary" onclick="google.script.host.close()">Done</button>
+    </div>
+
+    <script>
+      function submitReview() {
+        var qaResponses = {
+          responded: document.getElementById('q_responded').checked,
+          blocker_resolved: document.getElementById('q_blocker_resolved').checked,
+          invoice_ok: document.getElementById('q_invoice_ok').checked,
+          performance_ok: document.getElementById('q_performance_ok').checked,
+          needs_attention: document.getElementById('q_needs_attention').checked,
+          expansion: document.getElementById('q_expansion').checked
+        };
+        var userNotes = document.getElementById('userNotes').value;
+
+        document.getElementById('submitBtn').disabled = true;
+        document.getElementById('loading').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('loading').style.display = 'none';
+            if (result.error) {
+              alert('Error: ' + result.error);
+              document.getElementById('submitBtn').disabled = false;
+              return;
+            }
+            document.getElementById('qaForm').style.display = 'none';
+            document.getElementById('narrativeBox').textContent = result.narrative;
+            document.getElementById('todosBox').textContent = result.todos;
+            document.getElementById('successMsg').textContent = result.savedMsg;
+            document.getElementById('result').style.display = 'block';
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('loading').style.display = 'none';
+            alert('Error: ' + error.message);
+            document.getElementById('submitBtn').disabled = false;
+          })
+          .inboxReviewProcess(JSON.stringify(qaResponses), userNotes);
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(620).setHeight(650);
+  ui.showModalDialog(htmlOutput, `📋 Inbox Review: ${vendor}`);
+}
+
+/**
+ * Process Inbox Review submission: call Claude for narrative + todos, record to sheet.
+ * Called from the inboxReviewStart dialog.
+ */
+function inboxReviewProcess(qaResponsesJson, userNotes) {
+  const props = PropertiesService.getScriptProperties();
+  const vendor = props.getProperty('IR_VENDOR');
+  const source = props.getProperty('IR_SOURCE');
+  const status = props.getProperty('IR_STATUS');
+  const listRow = parseInt(props.getProperty('IR_LIST_ROW') || '0', 10);
+
+  if (!vendor) return { error: 'No active review session. Please start again.' };
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) return { error: 'No Claude API key configured.' };
+
+  const qaResponses = JSON.parse(qaResponsesJson);
+
+  // Gather additional context
+  let contactData = { contacts: [], notes: '', liveStatus: '', liveVerticals: '', liveModalities: '', blockers: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { /* skip */ }
+
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+  const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+  const openTasks = tasks.filter(t => !t.isDone && !t.isBlocker);
+
+  // Get recent emails (just snippets for context, not full bodies)
+  let emailSummary = '(no emails)';
+  try {
+    const emails = getEmailsForVendor_(vendor, listRow);
+    if (emails.length > 0) {
+      emailSummary = emails.slice(0, 10).map(e =>
+        `- ${e.subject} (${e.date || 'unknown'}, ${Array.isArray(e.labels) ? e.labels.join('/') : ''})`
+      ).join('\n');
+    }
+  } catch (e) { /* skip */ }
+
+  const qaText = [
+    `Responded to latest: ${qaResponses.responded ? 'Yes' : 'No'}`,
+    `Blocker resolved/progressing: ${qaResponses.blocker_resolved ? 'Yes' : 'No'}`,
+    `Invoicing up to date: ${qaResponses.invoice_ok ? 'Yes' : 'No'}`,
+    `Performance acceptable: ${qaResponses.performance_ok ? 'Yes' : 'No'}`,
+    `Needs immediate attention: ${qaResponses.needs_attention ? 'Yes' : 'No'}`,
+    `Expansion opportunity: ${qaResponses.expansion ? 'Yes' : 'No'}`
+  ].join('\n');
+
+  const tasksSummary = [
+    ...blockerTasks.map(t => `🚧 BLOCKER: ${t.subject} (${t.status})`),
+    ...openTasks.slice(0, 8).map(t => `- ${t.subject} (${t.status})`)
+  ].join('\n') || '(no open tasks)';
+
+  const aiInstructions = getAiInstructions_();
+
+  const systemPrompt = `You are A(I)DEN, the company's AI vendor intelligence system. You are helping the user conduct a structured inbox review of vendor "${vendor}".
+
+Your job: Based on Andy's Q&A answers and notes, generate TWO outputs:
+1. A concise NARRATIVE (2-4 sentences) summarizing the vendor's current state and what was reviewed.
+2. A list of ACTION TO-DOs (concrete next steps). Each to-do should be specific and actionable. If no action is needed, say "No action items - vendor is on track."
+
+Keep it practical and brief. Focus on what matters NOW.
+${aiInstructions}`;
+
+  const prompt = `VENDOR: ${vendor}
+TYPE: ${source}
+STATUS: ${status}
+
+MONDAY.COM NOTES: ${contactData.notes || '(none)'}
+LIVE STATUS: ${contactData.liveStatus || 'Unknown'}
+CURRENT BLOCKERS: ${blockerTasks.map(t => t.subject).join(', ') || '(none)'}
+LIVE VERTICALS: ${contactData.liveVerticals || 'N/A'}
+
+OPEN TASKS:
+${tasksSummary}
+
+RECENT EMAILS (newest first):
+${emailSummary}
+
+═══ ANDY'S REVIEW Q&A ═══
+${qaText}
+
+═══ ANDY'S NOTES ═══
+${userNotes || '(no notes)'}
+
+Generate:
+1. NARRATIVE: (2-4 sentence summary of current state)
+2. TO-DOS: (bulleted list of action items, or "No action items" if none needed)`;
+
+  const result = callClaudeAPI_(prompt, apiKey, {
+    system: systemPrompt,
+    maxTokens: 800,
+    model: BS_CFG.CRYSTAL_BALL_MODEL // Use Haiku for speed
+  });
+
+  if (result.error) return { error: result.error };
+
+  // Parse the response into narrative and todos
+  const content = result.content || '';
+  let narrative = content;
+  let todosText = '';
+
+  // Try to split on TO-DO or TODO header
+  const todoMatch = content.match(/(?:TO-?DOS?|ACTION ITEMS?|NEXT STEPS?)\s*:?\s*\n([\s\S]*?)$/i);
+  const narrativeMatch = content.match(/(?:NARRATIVE)\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:TO-?DOS?|ACTION ITEMS?|NEXT STEPS?))/i);
+
+  if (narrativeMatch && todoMatch) {
+    narrative = narrativeMatch[1].trim();
+    todosText = todoMatch[1].trim();
+  } else if (todoMatch) {
+    narrative = content.substring(0, todoMatch.index).replace(/^(?:NARRATIVE)\s*:?\s*/i, '').trim();
+    todosText = todoMatch[1].trim();
+  }
+
+  // Extract individual todo items
+  const todoItems = todosText.split('\n')
+    .map(l => l.replace(/^[\s\-•*]+/, '').trim())
+    .filter(l => l.length > 0 && !l.toLowerCase().startsWith('no action'));
+
+  // Record to Vendor Review Log sheet
+  const ss = SpreadsheetApp.getActive();
+  let logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh) {
+    logSh = ss.insertSheet(BS_CFG.REVIEW_LOG_SHEET);
+    // Add header row
+    const headers = ['Timestamp', 'Vendor', 'Source', 'Status', 'Q&A Responses', 'User Notes', 'Narrative', 'To-Dos', 'To-Do Status', 'Weekly Recap', 'Recap Week'];
+    logSh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold');
+    logSh.setFrozenRows(1);
+  }
+
+  const todoStatusJson = JSON.stringify(todoItems.map(() => 'pending'));
+  const row = [
+    new Date(),
+    vendor,
+    source,
+    status,
+    qaResponsesJson,
+    userNotes || '',
+    narrative,
+    JSON.stringify(todoItems),
+    todoStatusJson,
+    '',  // Weekly Recap (filled later)
+    ''   // Recap Week (filled later)
+  ];
+
+  logSh.appendRow(row);
+
+  return {
+    narrative: narrative,
+    todos: todoItems.length > 0 ? todoItems.map((t, i) => `${i + 1}. ${t}`).join('\n') : 'No action items - vendor is on track.',
+    savedMsg: `✓ Review recorded to "${BS_CFG.REVIEW_LOG_SHEET}" sheet`
+  };
+}
+
+/**
+ * Weekly Recap - Aggregates inbox reviews from the current week and generates a summary.
+ */
+function inboxReviewWeeklyRecap() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  const logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh || logSh.getLastRow() < 2) {
+    ui.alert('No review records found.\n\nUse "📋 Inbox Review (Q&A + Record)" to review vendors first.');
+    return;
+  }
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) { ui.alert('No Claude API key configured.'); return; }
+
+  // Get current ISO week
+  const now = new Date();
+  const tz = 'America/Los_Angeles';
+  const oneJan = new Date(now.getFullYear(), 0, 1);
+  const weekNum = Math.ceil(((now - oneJan) / 86400000 + oneJan.getDay() + 1) / 7);
+  const isoWeek = `${now.getFullYear()}-W${String(weekNum).padStart(2, '0')}`;
+
+  // Read all review log rows
+  const data = logSh.getDataRange().getValues();
+  const cols = BS_CFG.REVIEW_LOG_COLUMNS;
+
+  // Filter to this week's reviews (by timestamp within last 7 days)
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const weekReviews = [];
+  for (let i = 1; i < data.length; i++) {
+    const ts = data[i][cols.TIMESTAMP];
+    if (ts instanceof Date && ts >= weekAgo) {
+      weekReviews.push({
+        vendor: data[i][cols.VENDOR],
+        source: data[i][cols.SOURCE],
+        status: data[i][cols.STATUS],
+        qa: data[i][cols.QA_RESPONSES],
+        notes: data[i][cols.USER_NOTES],
+        narrative: data[i][cols.NARRATIVE],
+        todos: data[i][cols.TODOS],
+        todoStatus: data[i][cols.TODO_STATUS]
+      });
+    }
+  }
+
+  if (weekReviews.length === 0) {
+    ui.alert(`No reviews found in the past 7 days.\n\nUse "📋 Inbox Review (Q&A + Record)" to review vendors first.`);
+    return;
+  }
+
+  ss.toast(`Generating recap for ${weekReviews.length} reviews...`, '📊 Weekly Recap', 15);
+
+  // Build context for Claude
+  const reviewsContext = weekReviews.map((r, i) => {
+    let todoItems = [];
+    let todoStatuses = [];
+    try { todoItems = JSON.parse(r.todos || '[]'); } catch (e) { /* skip */ }
+    try { todoStatuses = JSON.parse(r.todoStatus || '[]'); } catch (e) { /* skip */ }
+
+    const todosFormatted = todoItems.map((t, j) =>
+      `  - [${todoStatuses[j] || 'pending'}] ${t}`
+    ).join('\n') || '  (none)';
+
+    return `--- Vendor ${i + 1}: ${r.vendor} (${r.source}, ${r.status}) ---
+Narrative: ${r.narrative}
+Notes: ${r.notes || '(none)'}
+To-Dos:\n${todosFormatted}`;
+  }).join('\n\n');
+
+  const aiInstructions = getAiInstructions_();
+  const goalsContext = getGoalsContext_();
+
+  const prompt = `You are A(I)DEN, the company's AI vendor intelligence system. Generate a WEEKLY RECAP for the user.
+
+Week: ${isoWeek}
+Reviews completed: ${weekReviews.length}
+${goalsContext ? `\nCurrent Goals:\n${goalsContext}` : ''}
+${aiInstructions}
+
+═══ THIS WEEK'S VENDOR REVIEWS ═══
+${reviewsContext}
+
+Generate a concise weekly recap with:
+1. **Overview**: How many vendors reviewed, general themes
+2. **Key Highlights**: Most important developments (good or concerning)
+3. **Priority Actions**: Top 3-5 actions Andy should focus on across all vendors
+4. **Patterns**: Any recurring themes or systemic issues
+
+Keep it executive-level, actionable, and under 400 words.`;
+
+  const result = callClaudeAPI_(prompt, apiKey, {
+    system: 'You are a business intelligence assistant generating concise weekly vendor recaps.',
+    maxTokens: 1200,
+    model: BS_CFG.CRYSTAL_BALL_MODEL
+  });
+
+  if (result.error) { ui.alert(`Error: ${result.error}`); return; }
+
+  const recap = result.content || '(no recap generated)';
+
+  // Store recap in the most recent review row for this week
+  for (let i = data.length - 1; i >= 1; i--) {
+    const ts = data[i][cols.TIMESTAMP];
+    if (ts instanceof Date && ts >= weekAgo) {
+      logSh.getRange(i + 1, cols.WEEKLY_RECAP + 1).setValue(recap);
+      logSh.getRange(i + 1, cols.RECAP_WEEK + 1).setValue(isoWeek);
+      break;
+    }
+  }
+
+  // Show in dialog
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .meta { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .recap { background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; margin-top: 15px; }
+      .btn-primary { background: #1a73e8; color: white; }
+    </style>
+    <h2>📊 Weekly Recap (${escapeHtml_(isoWeek)})</h2>
+    <div class="meta">${weekReviews.length} vendor${weekReviews.length !== 1 ? 's' : ''} reviewed this week</div>
+    <div class="recap">${escapeHtml_(recap)}</div>
+    <br>
+    <button class="btn btn-primary" onclick="google.script.host.close()">Done</button>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(650).setHeight(500);
+  ui.showModalDialog(htmlOutput, `📊 Weekly Recap: ${isoWeek}`);
+}
+
+/**
+ * Update To-Do Status - Shows pending todos from Inbox Reviews and allows marking done/skip.
+ */
+function inboxReviewUpdateTodos() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  const logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh || logSh.getLastRow() < 2) {
+    ui.alert('No review records found.\n\nUse "📋 Inbox Review (Q&A + Record)" to review vendors first.');
+    return;
+  }
+
+  const data = logSh.getDataRange().getValues();
+  const cols = BS_CFG.REVIEW_LOG_COLUMNS;
+
+  // Collect all pending todos across all reviews
+  const pendingTodos = [];
+  for (let i = 1; i < data.length; i++) {
+    let todoItems = [];
+    let todoStatuses = [];
+    try { todoItems = JSON.parse(data[i][cols.TODOS] || '[]'); } catch (e) { continue; }
+    try { todoStatuses = JSON.parse(data[i][cols.TODO_STATUS] || '[]'); } catch (e) { continue; }
+
+    const vendor = data[i][cols.VENDOR];
+    const ts = data[i][cols.TIMESTAMP];
+    const dateStr = ts instanceof Date ? Utilities.formatDate(ts, 'America/Los_Angeles', 'MMM d') : '';
+
+    for (let j = 0; j < todoItems.length; j++) {
+      if ((todoStatuses[j] || 'pending') === 'pending') {
+        pendingTodos.push({
+          rowIndex: i + 1, // 1-based sheet row
+          todoIndex: j,
+          vendor: vendor,
+          date: dateStr,
+          text: todoItems[j]
+        });
+      }
+    }
+  }
+
+  if (pendingTodos.length === 0) {
+    ui.alert('No pending to-dos found. All items are completed or skipped.');
+    return;
+  }
+
+  // Store pending todos for the callback
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('IR_PENDING_TODOS', JSON.stringify(pendingTodos));
+
+  const todoRows = pendingTodos.map((t, i) =>
+    `<tr>
+      <td style="padding:6px 8px">${escapeHtml_(t.vendor)}</td>
+      <td style="padding:6px 8px;font-size:12px;color:#666">${escapeHtml_(t.date)}</td>
+      <td style="padding:6px 8px">${escapeHtml_(t.text)}</td>
+      <td style="padding:6px 8px;text-align:center">
+        <button onclick="markTodo(${i},'done')" style="background:#34a853;color:white;border:none;border-radius:3px;padding:4px 10px;cursor:pointer;margin:2px" title="Mark done">✓</button>
+        <button onclick="markTodo(${i},'skip')" style="background:#f9ab00;color:white;border:none;border-radius:3px;padding:4px 10px;cursor:pointer;margin:2px" title="Skip">✗</button>
+      </td>
+    </tr>`
+  ).join('');
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      .meta { color: #666; font-size: 12px; margin-bottom: 10px; }
+      table { width: 100%; border-collapse: collapse; }
+      th { background: #f5f5f5; text-align: left; padding: 8px; font-size: 13px; border-bottom: 2px solid #e0e0e0; }
+      td { border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+      tr.done { opacity: 0.4; text-decoration: line-through; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; margin-top: 15px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      #statusMsg { color: #137333; font-size: 13px; margin-top: 10px; display: none; }
+    </style>
+    <h2>✅ Pending To-Dos</h2>
+    <div class="meta">${pendingTodos.length} pending item${pendingTodos.length !== 1 ? 's' : ''} from Inbox Reviews</div>
+    <table>
+      <tr><th>Vendor</th><th>Date</th><th>To-Do</th><th>Action</th></tr>
+      ${todoRows}
+    </table>
+    <div id="statusMsg"></div>
+    <br>
+    <button class="btn btn-primary" onclick="google.script.host.close()">Done</button>
+
+    <script>
+      function markTodo(index, newStatus) {
+        var row = document.querySelectorAll('table tr')[index + 1]; // +1 for header
+        row.classList.add('done');
+        row.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+
+        google.script.run
+          .withSuccessHandler(function(msg) {
+            var el = document.getElementById('statusMsg');
+            el.textContent = msg;
+            el.style.display = 'block';
+          })
+          .withFailureHandler(function(err) {
+            alert('Error: ' + err.message);
+          })
+          .inboxReviewMarkTodo(index, newStatus);
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(700).setHeight(500);
+  ui.showModalDialog(htmlOutput, '✅ Update To-Do Status');
+}
+
+/**
+ * Mark a single to-do item as done or skip. Called from the Update To-Dos dialog.
+ */
+function inboxReviewMarkTodo(todoGlobalIndex, newStatus) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingTodos = JSON.parse(props.getProperty('IR_PENDING_TODOS') || '[]');
+
+  if (todoGlobalIndex < 0 || todoGlobalIndex >= pendingTodos.length) {
+    return 'Invalid todo index.';
+  }
+
+  const todo = pendingTodos[todoGlobalIndex];
+  const ss = SpreadsheetApp.getActive();
+  const logSh = ss.getSheetByName(BS_CFG.REVIEW_LOG_SHEET);
+  if (!logSh) return 'Review log sheet not found.';
+
+  const cols = BS_CFG.REVIEW_LOG_COLUMNS;
+
+  // Read the current todo statuses for this row
+  const cell = logSh.getRange(todo.rowIndex, cols.TODO_STATUS + 1);
+  let todoStatuses = [];
+  try { todoStatuses = JSON.parse(cell.getValue() || '[]'); } catch (e) { return 'Error parsing todo status.'; }
+
+  // Update the specific todo's status
+  todoStatuses[todo.todoIndex] = newStatus;
+  cell.setValue(JSON.stringify(todoStatuses));
+
+  // Remove from pending list in properties
+  pendingTodos.splice(todoGlobalIndex, 1);
+  props.setProperty('IR_PENDING_TODOS', JSON.stringify(pendingTodos));
+
+  const remaining = pendingTodos.length;
+  return `✓ Marked as ${newStatus}. ${remaining} pending item${remaining !== 1 ? 's' : ''} remaining.`;
+}
+
+/**
+ * Web App entry point - handles deep links with vendor parameter
+ * Deploy as web app: Execute as "Me", Access "Anyone"
+ *
+ * URL format: https://script.google.com/macros/s/DEPLOYMENT_ID/exec?vendor=Vendor+Name
+ */
+function doGet(e) {
+  const vendor = e.parameter.vendor;
+
+  if (vendor) {
+    // Store the vendor name to load when sheet opens
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty('PENDING_VENDOR_URL', decodeURIComponent(vendor));
+    props.setProperty('PENDING_VENDOR_TIME', new Date().toISOString());
+
+    // Redirect to the Google Sheet's A(I)DEN tab
+    const ss = SpreadsheetApp.getActive();
+    const aidenSheet = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+    const sheetUrl = ss.getUrl();
+    const gid = aidenSheet ? aidenSheet.getSheetId() : '';
+    const fullUrl = gid ? `${sheetUrl}#gid=${gid}` : sheetUrl;
+
+    return HtmlService.createHtmlOutput(
+      `<html><head><meta http-equiv="refresh" content="0;url=${fullUrl}"></head>` +
+      `<body>Redirecting to ${vendor}...</body></html>`
+    );
+  }
+
+  return HtmlService.createHtmlOutput('Missing vendor parameter. Use ?vendor=Vendor+Name');
+}
+
+/**
+ * Check for pending vendor from URL deep link and navigate to it
+ * Called from onOpen
+ */
+function checkPendingVendorFromUrl_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingVendor = props.getProperty('PENDING_VENDOR_URL');
+  const pendingTime = props.getProperty('PENDING_VENDOR_TIME');
+
+  if (!pendingVendor || !pendingTime) return;
+
+  // Only process if the pending vendor was set within the last 30 seconds
+  const timeSince = Date.now() - new Date(pendingTime).getTime();
+  if (timeSince > 30000) {
+    // Too old, clear it
+    props.deleteProperty('PENDING_VENDOR_URL');
+    props.deleteProperty('PENDING_VENDOR_TIME');
+    return;
+  }
+
+  // Clear the pending vendor
+  props.deleteProperty('PENDING_VENDOR_URL');
+  props.deleteProperty('PENDING_VENDOR_TIME');
+
+  // Find and navigate to the vendor
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return;
+
+  const vendorIdx = findVendorIndexByName_(listSh, pendingVendor);
+
+  if (vendorIdx) {
+    // Store the index so the user can load it with a refresh
+    // (onOpen can't access Gmail due to simple trigger restrictions)
+    props.setProperty('aiden_current_index', String(vendorIdx));
+
+    // Activate the A(I)DEN sheet
+    const aidenSheet = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+    if (aidenSheet) {
+      ss.setActiveSheet(aidenSheet);
+      aidenSheet.getRange('A3').activate();
+    }
+
+    // Highlight the row in List sheet
+    const listRow = vendorIdx + 1;
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CURRENT);
+
+    ss.toast(`Found: ${pendingVendor}\n\nClick "Quick Refresh" to load vendor data.`, '🔗 Deep Link', 5);
+  } else {
+    SpreadsheetApp.getUi().alert(
+      '🔗 Vendor Not Found',
+      `Could not find vendor "${pendingVendor}" in the List.\n\nMake sure the vendor name matches exactly.`,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Copy a deep link URL for the current vendor to clipboard
+ * User can share this URL to open directly to this vendor
+ */
+function copyVendorDeepLink() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('List sheet not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    SpreadsheetApp.getUi().alert('Could not determine vendor name.');
+    return;
+  }
+
+  // Build the deep link URL
+  const encodedVendor = encodeURIComponent(vendor);
+
+  // Try to get the web app URL from script properties (user can set this)
+  const props = PropertiesService.getScriptProperties();
+  let webAppUrl = props.getProperty('VENDOR_DEEP_LINK_BASE_URL');
+
+  if (!webAppUrl) {
+    // Default placeholder - user needs to set this once
+    webAppUrl = 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec';
+  }
+
+  const fullUrl = webAppUrl + '?vendor=' + encodedVendor;
+
+  // Escape for HTML attribute
+  const escapedVendor = vendor.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const escapedUrl = fullUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+
+  const needsSetup = webAppUrl.includes('YOUR_DEPLOYMENT_ID');
+  const setupNote = needsSetup
+    ? '<p class="note">⚠️ First time setup: Run "Set Deep Link URL" from the Navigation menu after deploying as web app.</p>'
+    : '';
+
+  // Show dialog with the URL
+  const html = `
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .note { color: #d93025; font-size: 12px; margin-top: 15px; }
+        input { width: 100%; padding: 10px; font-size: 13px; box-sizing: border-box; }
+        button { margin-top: 15px; padding: 10px 20px; background: #34a853; color: white; border: none; border-radius: 4px; cursor: pointer; }
+      </style>
+    </head>
+    <body>
+      <h3>🔗 Vendor Deep Link</h3>
+      <p>URL for <strong>${escapedVendor}</strong>:</p>
+      <input type="text" id="url" value="${escapedUrl}" onclick="this.select()" readonly>
+      ${setupNote}
+      <button onclick="google.script.host.close()">Close</button>
+    </body>
+    </html>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(550)
+    .setHeight(220);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '🔗 Copy Vendor URL');
+}
+
+/**
+ * Set the base URL for vendor deep links (one-time setup)
+ */
+function setDeepLinkBaseUrl() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const currentUrl = props.getProperty('VENDOR_DEEP_LINK_BASE_URL') || '';
+
+  const response = ui.prompt(
+    '⚙️ Set Deep Link Base URL',
+    'Enter your web app deployment URL (without ?vendor= parameter):\n\nExample: https://script.google.com/macros/s/ABC123.../exec\n\nCurrent: ' + (currentUrl || '(not set)'),
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() === ui.Button.OK) {
+    let url = response.getResponseText().trim();
+
+    // Clean up the URL - remove any query params
+    if (url.includes('?')) {
+      url = url.split('?')[0];
+    }
+
+    if (url && url.includes('script.google.com')) {
+      props.setProperty('VENDOR_DEEP_LINK_BASE_URL', url);
+      ui.alert('✅ Deep link URL saved!\n\nYou can now use "Copy Vendor Deep Link" to get shareable URLs.');
+    } else if (url) {
+      ui.alert('⚠️ Invalid URL. Please enter a Google Apps Script web app URL.');
+    }
+  }
+}
+
+/************************************************************
+ * STYLING HELPER FUNCTIONS
+ * Reduce repetitive styling code and ensure visual consistency
+ ************************************************************/
+
+/**
+ * Apply section header styling (main sections like VENDOR INFO, EMAILS)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ * @param {string} [bgColor] - Optional background color (defaults to SUBHEADER)
+ */
+function styleHeader_(range, text, bgColor) {
+  range.setValue(text)
+    .setBackground(bgColor || BS_CFG.COLOR_SUBHEADER)
+    .setFontWeight('bold')
+    .setFontSize(11)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  return range;
+}
+
+/**
+ * Apply sub-section header styling (smaller headers within sections)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ */
+function styleSubHeader_(range, text) {
+  range.setValue(text)
+    .setBackground(BS_CFG.COLOR_SECTION_BG)
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor(BS_CFG.COLOR_TEXT_LINK)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  return range;
+}
+
+/**
+ * Apply table header styling (column headers in tables)
+ * @param {Range} range - The range to style
+ * @param {string} text - Header text
+ */
+function styleTableHeader_(range, text) {
+  range.setValue(text)
+    .setFontWeight('bold')
+    .setFontSize(9)
+    .setBackground(BS_CFG.COLOR_TABLE_HEADER)
+    .setHorizontalAlignment('left');
+  return range;
+}
+
+/**
+ * Apply link cell styling
+ * @param {Range} range - The range to style
+ * @param {string} url - URL for the hyperlink
+ * @param {string} displayText - Text to display
+ */
+function styleLink_(range, url, displayText) {
+  range.setFormula(`=HYPERLINK("${url}", "${displayText.replace(/"/g, '""')}")`)
+    .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+  return range;
+}
+
+/**
+ * Apply empty/no data styling
+ * @param {Range} range - The range to style
+ * @param {string} text - Text to display (e.g., "No data found")
+ */
+function styleEmpty_(range, text) {
+  range.setValue(text)
+    .setFontStyle('italic')
+    .setFontColor(BS_CFG.COLOR_TEXT_MUTED)
+    .setBackground(BS_CFG.COLOR_SECTION_BG)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  return range;
+}
+
+/**
+ * Apply warning/missing data styling
+ * @param {Range} range - The range to style
+ * @param {string} text - Warning text
+ * @param {string} [linkUrl] - Optional link to fix the issue
+ */
+function styleWarning_(range, text, linkUrl) {
+  if (linkUrl) {
+    range.setFormula(`=HYPERLINK("${linkUrl}", "${text}")`)
+      .setBackground(BS_CFG.COLOR_MISSING)
+      .setFontColor(BS_CFG.COLOR_TEXT_LINK);
+  } else {
+    range.setValue(text)
+      .setBackground(BS_CFG.COLOR_WARNING)
+      .setFontColor('#c62828');
+  }
+  return range;
+}
+
+/**
+ * Apply label styling (left column labels like "Vendor:", "Status:")
+ * @param {Range} range - The range to style
+ * @param {string} text - Label text
+ */
+function styleLabel_(range, text) {
+  range.setValue(text)
+    .setFontWeight('bold')
+    .setFontColor('#424242');
+  return range;
+}
+
+/**
+ * Set column divider styling (thin black separator)
+ * @param {Sheet} sheet - The sheet to style
+ * @param {number} col - Column number for the divider
+ * @param {number} startRow - Starting row
+ * @param {number} numRows - Number of rows
+ */
+function styleColumnDivider_(sheet, col, startRow, numRows) {
+  sheet.getRange(startRow, col, numRows, 1)
+    .setBackground('#424242');
+}
+
+/**
+ * Batch set multiple cell values and styles efficiently
+ * @param {Sheet} sheet - The sheet
+ * @param {Array} cells - Array of {row, col, value, styles} objects
+ *   styles can include: bg, fontWeight, fontSize, fontColor, align, wrap
+ */
+function batchStyleCells_(sheet, cells) {
+  for (const cell of cells) {
+    const range = sheet.getRange(cell.row, cell.col);
+
+    if (cell.value !== undefined) {
+      if (cell.formula) {
+        range.setFormula(cell.value);
+      } else {
+        range.setValue(cell.value);
+      }
+    }
+
+    const s = cell.styles || {};
+    if (s.bg) range.setBackground(s.bg);
+    if (s.fontWeight) range.setFontWeight(s.fontWeight);
+    if (s.fontSize) range.setFontSize(s.fontSize);
+    if (s.fontColor) range.setFontColor(s.fontColor);
+    if (s.align) range.setHorizontalAlignment(s.align);
+    if (s.vAlign) range.setVerticalAlignment(s.vAlign);
+    if (s.wrap) range.setWrap(s.wrap);
+    if (s.fontStyle) range.setFontStyle(s.fontStyle);
+    if (s.numberFormat) range.setNumberFormat(s.numberFormat);
+  }
+}
+
+/**
+ * Helper function: Get current vendor index from the display row
+ */
+function getCurrentVendorIndex_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) return null;
+
+  // Navigation bar is in row 3, format: "◀  X / Y  ▶"
+  const cellValue = String(bsSh.getRange(3, 1).getValue() || '');
+  const match = cellValue.match(/(\d+)\s*\/\s*\d+/);
+
+  if (!match) {
+    Logger.log(`Could not parse index from navigation: "${cellValue}"`);
+    return null;
+  }
+
+  return parseInt(match[1]);
+}
+
+/**
+ * Create or reset the A(I)DEN sheet
+ */
+function setupBattleStation() {
+  const ss = SpreadsheetApp.getActive();
+  let bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  
+  if (!bsSh) {
+    bsSh = ss.insertSheet(BS_CFG.BATTLE_SHEET);
+  } else {
+    bsSh.clear();
+    bsSh.clearConditionalFormatRules();
+  }
+  
+  // Narrower column widths for better screen fit at higher zoom
+  // Left side columns (1-4)
+  bsSh.setColumnWidth(1, 130);  // Labels (was 200)
+  bsSh.setColumnWidth(2, 180);  // Values (was 250)
+  bsSh.setColumnWidth(3, 90);   // Secondary labels (was 150)
+  bsSh.setColumnWidth(4, 180);  // Secondary values (was 300)
+  
+  // Divider column (5) - thin black separator
+  bsSh.setColumnWidth(5, 3);
+  
+  // Right side columns (6-9) for Contracts, Links, Documents
+  bsSh.setColumnWidth(6, 130);  // Name (was 180)
+  bsSh.setColumnWidth(7, 80);   // Type (was 120)
+  bsSh.setColumnWidth(8, 90);   // Status (was 150)
+  bsSh.setColumnWidth(9, 180);  // Notes/Folder (was 300)
+  
+  loadVendorData(1);
+  
+  SpreadsheetApp.getUi().alert('A(I)DEN initialized!\n\nUse the ⚡ A(I)DEN menu to navigate:\n- ▶ Next Vendor\n- ◀ Previous Vendor\n- 💾 Update monday.com Notes\n- ✓ Mark as Reviewed\n- ✉️ Email Contacts\n- 🤖 Analyze Emails (Claude)');
+}
+
+/**
+ * Load and display data for a specific vendor by index
+ */
+function loadVendorData(vendorIndex, options) {
+  // Default options
+  options = options || {};
+  const useCache = options.useCache !== undefined ? options.useCache : false;
+  const forceChanged = options.forceChanged || false;  // If true, skip the ✅ indicator (used when skipToNextChanged detected a change)
+  const loadMode = options.loadMode || 'full';
+  const isFastMode = loadMode === 'fast';
+  const changeType = options.changeType || null;  // The type of change detected (e.g., 'overdue emails')
+  const turboMode = options.turboMode || false;  // If true, skip expensive operations like vendor label checksum
+  // Box is skipped in turbo mode - loads in real-time when viewing individual vendors
+
+
+  // Track script start time for time budget checks (Crystal Ball will skip AI if running too long)
+  PropertiesService.getScriptProperties().setProperty('_loadStartMs', String(Date.now()));
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) {
+    throw new Error('Required sheets not found');
+  }
+
+  // Get previous vendor index before we update, so we can set its row to yellow (viewed)
+  const previousIndex = getCurrentVendorIndex_();
+
+  const totalVendors = listSh.getLastRow() - 1;
+
+  if (vendorIndex < 1) vendorIndex = 1;
+  if (vendorIndex > totalVendors) vendorIndex = totalVendors;
+
+  const listRow = vendorIndex + 1;
+
+  // Set previous vendor's row to yellow (viewed) when navigating away
+  if (previousIndex && previousIndex !== vendorIndex) {
+    const prevListRow = previousIndex + 1;
+    if (prevListRow > 1 && prevListRow <= totalVendors + 1) {
+      setListRowColor_(listSh, prevListRow, BS_CFG.COLOR_ROW_VIEWED);
+    }
+  }
+
+  // Highlight current vendor's row in blue (current)
+  Logger.log(`Setting row ${listRow} color to blue (current)`);
+  setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_CURRENT);
+  SpreadsheetApp.flush();  // Force the color change to be applied immediately
+
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  
+  const vendor = vendorData[BS_CFG.L_VENDOR] || '';
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+  const mondayBoardId = source.toLowerCase().includes('buyer') ? `${BS_CFG.BUYERS_BOARD_ID} (Buyers)` :
+                        source.toLowerCase().includes('affiliate') ? `${BS_CFG.AFFILIATES_BOARD_ID} (Affiliates)` :
+                        `${BS_CFG.BUYERS_BOARD_ID} (Buyers - default)`;
+  
+  // Clear entire sheet (9 columns now - includes divider)
+  const lastRow = bsSh.getMaxRows();
+  if (lastRow > 0) {
+    bsSh.getRange(1, 1, lastRow, 9).clearContent().clearFormat().clearDataValidations();
+  }
+  
+  let currentRow = 1;
+
+  // Title - full width, modern blue header with subtle shadow effect
+  bsSh.getRange(currentRow, 1, 1, 9).merge()
+    .setValue(isFastMode ? `⚡ A(I)DEN [FAST]` : `⚡ A(I)DEN`)
+    .setFontSize(16).setFontWeight('bold')
+    .setBackground(BS_CFG.COLOR_HEADER)
+    .setFontColor('white')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 40);
+  currentRow++;
+
+  // Vendor name banner - prominent display (with flag/snooze indicators)
+  let vendorDisplay = vendor;
+  if (isVendorFlagged_(vendor)) {
+    vendorDisplay += ' ⚑';
+  }
+  const snoozeDate = getVendorSnoozeDate_(vendor);
+  if (snoozeDate && snoozeDate > new Date()) {
+    const dateStr = Utilities.formatDate(snoozeDate, Session.getScriptTimeZone(), 'M/d');
+    vendorDisplay += ` 💤${dateStr}`;
+  }
+  bsSh.getRange(currentRow, 1, 1, 9).merge()
+    .setValue(vendorDisplay)
+    .setFontSize(13).setFontWeight('bold')
+    .setBackground('#e3f2fd')
+    .setFontColor('#1565c0')
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 32);
+  currentRow++;
+
+  // Navigation bar - cleaner, more modern - includes code version for deployment verification
+  const navText = `◀  ${vendorIndex} / ${totalVendors}  ▶                    v${BS_CFG.CODE_VERSION}`;
+  bsSh.getRange(currentRow, 1, 1, 9).merge()
+    .setValue(navText)
+    .setFontSize(10)
+    .setHorizontalAlignment('center')
+    .setVerticalAlignment('middle')
+    .setBackground('#fafafa')
+    .setFontColor(BS_CFG.COLOR_TEXT_MUTED);
+  bsSh.setRowHeight(currentRow, 22);
+  currentRow++;
+
+  bsSh.setFrozenRows(currentRow - 1);
+
+  // Spacer row
+  bsSh.setRowHeight(currentRow, 6);
+  currentRow++;
+
+  // VENDOR INFO SECTION - using helper
+  bsSh.getRange(currentRow, 1, 1, 4).merge();
+  styleHeader_(bsSh.getRange(currentRow, 1), `📊 VENDOR INFO`)
+    .setFontSize(11)
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 26);
+  
+  // Track right column starting row - starts at same row as VENDOR header
+  const rightColumnStartRow = currentRow;
+  let rightColumnRow = rightColumnStartRow;
+  
+  currentRow++;
+  
+  // Get contacts and notes from monday.com
+  ss.toast('Loading vendor details...', '📊 Loading', 2);
+  const contactData = getVendorContacts_(vendor, listRow);
+  const mondayNotes = contactData.notes || notes;
+  const contacts = contactData.contacts;
+
+  // Get preferred communication method from Chat Links board
+  const chatInfo = getVendorChatInfo_(vendor);
+
+  // Cache original notes for auto-save detection on transition
+  cacheOriginalNotes_(mondayNotes || '');
+  
+  // Vendor details - build Phonexa link display
+  let phonexaDisplay = '';
+  let phonexaFormula = '';
+  let phonexaMissing = false;
+  
+  if (contactData.phonexaLink) {
+    phonexaDisplay = contactData.phonexaLink;
+    phonexaFormula = `=HYPERLINK("${contactData.phonexaLink}", "Open in Phonexa")`;
+  } else {
+    // Generate monday.com link filtered by vendor name
+    const encodedVendor = encodeURIComponent(vendor);
+    const mondayFilterLink = `https://profitise-company.monday.com/boards/${contactData.boardId || (source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID)}?term=${encodedVendor}`;
+    phonexaDisplay = '(not set)';
+    phonexaFormula = `=HYPERLINK("${mondayFilterLink}", "⚠️ Add in monday.com →")`;
+    phonexaMissing = true;
+  }
+  
+  // Use live status from monday.com, fallback to List sheet
+  const liveStatus = contactData.liveStatus || vendorData[BS_CFG.L_STATUS] || '';
+  
+  // Build Status link to appropriate board
+  const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  const encodedVendorForStatus = encodeURIComponent(vendor);
+  const statusLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendorForStatus}`;
+  const statusFormula = `=HYPERLINK("${statusLink}", "${liveStatus}${status === 'Dead' ? ' ⚠️' : ' ✅'}")`;
+  
+  // VENDOR INFO - 2 COLUMN LAYOUT
+  // Left column: Label (col 1) + Value (col 2)
+  // Right column: Label (col 3) + Value (col 4)
+  
+  // Row 1: Vendor | Status
+  bsSh.getRange(currentRow, 1).setValue('Vendor:').setFontWeight('bold');
+  bsSh.getRange(currentRow, 2).setValue(vendor);
+  bsSh.getRange(currentRow, 3).setValue('Status:').setFontWeight('bold');
+  const statusCell = bsSh.getRange(currentRow, 4);
+  statusCell.setFormula(statusFormula).setFontColor('#1a73e8');
+  if (status === 'Dead') {
+    statusCell.setBackground(BS_CFG.COLOR_WARNING);
+  }
+  currentRow++;
+  
+  // Row 2: Source | Total USD
+  bsSh.getRange(currentRow, 1).setValue('Source:').setFontWeight('bold');
+  bsSh.getRange(currentRow, 2).setValue(source);
+  // bsSh.getRange(currentRow, 3).setValue('Total USD:').setFontWeight('bold'); // TODO: Re-enable TTL when actively used
+  // bsSh.getRange(currentRow, 4).setValue(`$${Number(ttlUsd).toLocaleString()}`).setHorizontalAlignment('left'); // TODO: Re-enable TTL when actively used
+  currentRow++;
+  
+  // Row 3: Live Verticals | Live Modalities
+  bsSh.getRange(currentRow, 1).setValue('Live Verticals:').setFontWeight('bold');
+  const liveVertCell = bsSh.getRange(currentRow, 2).setValue(contactData.liveVerticals || '(none)');
+  if (!contactData.liveVerticals) liveVertCell.setBackground(BS_CFG.COLOR_MISSING);
+  bsSh.getRange(currentRow, 3).setValue('Live Modalities:').setFontWeight('bold');
+  const liveModCell = bsSh.getRange(currentRow, 4).setValue(contactData.liveModalities || '(none)');
+  if (!contactData.liveModalities) liveModCell.setBackground(BS_CFG.COLOR_MISSING);
+  currentRow++;
+  
+  // Row 4: Other Verticals | Phonexa Link
+  bsSh.getRange(currentRow, 1).setValue('Other Verticals:').setFontWeight('bold');
+  bsSh.getRange(currentRow, 2).setValue(contactData.otherVerticals || '(none)');
+  bsSh.getRange(currentRow, 3).setValue('Phonexa Link:').setFontWeight('bold');
+  const phonexaCell = bsSh.getRange(currentRow, 4);
+  phonexaCell.setFormula(phonexaFormula).setFontColor('#1a73e8');
+  if (phonexaMissing) phonexaCell.setBackground(BS_CFG.COLOR_MISSING);
+  currentRow++;
+  
+  // Row 5: State(s) - full width (all 4 columns)
+  bsSh.getRange(currentRow, 1).setValue('State(s):').setFontWeight('bold');
+  const statesCell = bsSh.getRange(currentRow, 2, 1, 3).merge();
+  if (contactData.states) {
+    statesCell.setValue(contactData.states);
+  } else if (!source.toLowerCase().includes('affiliate')) {
+    // Only show as missing for Buyers (Affiliates don't have states)
+    const encodedVendor = encodeURIComponent(vendor);
+    const mondayStatesLink = `https://profitise-company.monday.com/boards/${contactData.boardId || BS_CFG.BUYERS_BOARD_ID}?term=${encodedVendor}`;
+    statesCell.setFormula(`=HYPERLINK("${mondayStatesLink}", "⚠️ Add in monday.com")`);
+    statesCell.setBackground(BS_CFG.COLOR_WARNING).setFontColor('#1a73e8');
+  } else {
+    statesCell.setValue('N/A');
+  }
+  currentRow++;
+  
+  // Row 6: Dead State(s) - full width (Buyers only) - strikethrough to indicate dead
+  bsSh.getRange(currentRow, 1).setValue('Dead State(s):').setFontWeight('bold').setFontLine('line-through');
+  const deadStatesCell = bsSh.getRange(currentRow, 2, 1, 3).merge().setFontLine('line-through');
+  if (contactData.deadStates) {
+    deadStatesCell.setValue(contactData.deadStates);
+  } else if (!source.toLowerCase().includes('affiliate')) {
+    deadStatesCell.setValue('(none)').setFontStyle('italic').setFontColor('#999999');
+  } else {
+    deadStatesCell.setValue('N/A');
+  }
+  currentRow++;
+  
+  // Row 7: Last Updated | Processed
+  bsSh.getRange(currentRow, 1).setValue('Last Updated:').setFontWeight('bold');
+  
+  // lastUpdated now comes formatted from API as "Dec 3, 2025 10:25 PM"
+  const lastUpdDisplay = contactData.lastUpdated || '(not available)';
+  
+  const lastUpdCell = bsSh.getRange(currentRow, 2).setValue(lastUpdDisplay).setHorizontalAlignment('left');
+  if (!contactData.lastUpdated) lastUpdCell.setBackground(BS_CFG.COLOR_MISSING);
+  bsSh.getRange(currentRow, 3).setValue('Pref. Comm:').setFontWeight('bold');
+  const prefCommCell = bsSh.getRange(currentRow, 4);
+  if (chatInfo && chatInfo.label) {
+    if (chatInfo.clickableLink) {
+      const prefCommFormula = `=HYPERLINK("${chatInfo.clickableLink}", "${chatInfo.label}")`;
+      prefCommCell.setFormula(prefCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK);
+    } else {
+      prefCommCell.setValue(chatInfo.label);
+    }
+  } else {
+    const chatLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.CHAT_LINKS_BOARD_ID}?term=${encodeURIComponent(vendor)}`;
+    const addCommFormula = `=HYPERLINK("${chatLinksUrl}", "⚠️ Add in Chat Links →")`;
+    prefCommCell.setFormula(addCommFormula).setFontColor(BS_CFG.COLOR_TEXT_LINK).setBackground(BS_CFG.COLOR_MISSING);
+  }
+  currentRow++;
+  
+  currentRow++;
+  
+  // ========== LEFT SIDE (Columns 1-4) ==========
+  
+  // Track row where Contacts starts (for Helpful Links alignment)
+  let helpfulLinksStartRow = currentRow;
+  
+  // CONTACTS SECTION (moved above calendar)
+  if (contacts.length > 0) {
+    // Define contact type priority order
+    const contactTypePriority = {
+      'Primary': 1,
+      'Technical': 2,
+      'Contracts': 3,
+      'Accounting': 4,
+      'Management': 5,
+      'Other/Unknown': 6
+    };
+
+    // Sort contacts by: Status (Active first) -> Type priority -> Name
+    contacts.sort((a, b) => {
+      // First: Sort by status (Active before Not Active)
+      const aActive = (a.status && a.status.toLowerCase() !== 'not active') ? 0 : 1;
+      const bActive = (b.status && b.status.toLowerCase() !== 'not active') ? 0 : 1;
+      
+      if (aActive !== bActive) {
+        return aActive - bActive;
+      }
+      
+      // Second: Sort by contact type priority
+      const aPriority = contactTypePriority[a.contactType] || 999;
+      const bPriority = contactTypePriority[b.contactType] || 999;
+      
+      if (aPriority !== bPriority) {
+        return aPriority - bPriority;
+      }
+      
+      // Third: Sort alphabetically by name
+      return a.name.localeCompare(b.name);
+    });
+    
+    // Get last Contact Discovery run date for this vendor
+    const contactDiscoveryProps = PropertiesService.getScriptProperties();
+    const contactDiscoveryKey = `BS_CONTACT_DISCOVERY_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const lastDiscoveryDate = contactDiscoveryProps.getProperty(contactDiscoveryKey);
+    const discoveryDisplay = lastDiscoveryDate ? `  📅 Last scanned: ${lastDiscoveryDate}` : '';
+
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue(`👤 CONTACTS (${contacts.length})${discoveryDisplay}`)
+      .setBackground('#f8f9fa')
+      .setFontWeight('bold')
+      .setFontSize(10)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('middle');
+    bsSh.setRowHeight(currentRow, 24);
+    currentRow++;
+    
+    // Header row for contacts
+    bsSh.getRange(currentRow, 1).setValue('Name').setFontWeight('bold').setBackground('#f3f3f3').setFontSize(9);
+    bsSh.getRange(currentRow, 2).setValue('Email / Phone').setFontWeight('bold').setBackground('#f3f3f3').setFontSize(9);
+    bsSh.getRange(currentRow, 3).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3').setFontSize(9);
+    bsSh.getRange(currentRow, 4).setValue('Type').setFontWeight('bold').setBackground('#f3f3f3').setFontSize(9);
+    currentRow++;
+    
+    for (const contact of contacts) {
+      // Name column - ALWAYS clickable and links to Contacts board
+      const encodedContact = encodeURIComponent(contact.name);
+      const contactsFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.CONTACTS_BOARD_ID}?term=${encodedContact}`;
+      const nameCell = bsSh.getRange(currentRow, 1)
+        .setFormula(`=HYPERLINK("${contactsFilterLink}", "${contact.name}")`)
+        .setFontSize(10)
+        .setBackground('#f0f8ff')
+        .setFontColor('#1a73e8');
+      
+      // Email / Phone column - highlight if both missing
+      // Format phone: normalize to (XXX) XXX-XXXX
+      let phone = contact.phone || '';
+      if (phone) {
+        // Strip all non-digits
+        let digits = phone.replace(/\D/g, '');
+        // Remove leading "1" if 11 digits (country code)
+        if (digits.length === 11 && digits.startsWith('1')) {
+          digits = digits.substring(1);
+        }
+        // Format as (XXX) XXX-XXXX if we have 10 digits
+        if (digits.length === 10) {
+          phone = digits.replace(/(\d{3})(\d{3})(\d{4})/, '($1) $2-$3');
+        }
+      }
+      
+      const emailPhone = [contact.email, phone].filter(x => x).join(' / ');
+      const emailPhoneCell = bsSh.getRange(currentRow, 2).setValue(emailPhone || '(missing)').setFontSize(10);
+      
+      if (!emailPhone) {
+        emailPhoneCell.setFormula(`=HYPERLINK("${contactsFilterLink}", "⚠️ Add in monday.com")`);
+        emailPhoneCell.setBackground(BS_CFG.COLOR_MISSING).setFontColor('#1a73e8');
+      } else {
+        emailPhoneCell.setBackground('#f0f8ff');
+      }
+      
+      // Status column - highlight if missing
+      const statusCell = bsSh.getRange(currentRow, 3).setValue(contact.status || '(missing)').setFontSize(10);
+      if (!contact.status) {
+        statusCell.setFormula(`=HYPERLINK("${contactsFilterLink}", "⚠️ Add")`);
+        statusCell.setBackground(BS_CFG.COLOR_MISSING).setFontColor('#1a73e8');
+      } else {
+        statusCell.setBackground('#f0f8ff');
+      }
+      
+      // Contact Type column - highlight if missing
+      const typeCell = bsSh.getRange(currentRow, 4).setValue(contact.contactType || '(missing)').setFontSize(10);
+      if (!contact.contactType) {
+        typeCell.setFormula(`=HYPERLINK("${contactsFilterLink}", "⚠️ Add")`);
+        typeCell.setBackground(BS_CFG.COLOR_MISSING).setFontColor('#1a73e8');
+      } else {
+        typeCell.setBackground('#f0f8ff');
+      }
+      
+      // If Not Active, strikethrough the entire row
+      if (contact.status && contact.status.toLowerCase() === 'not active') {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setFontLine('line-through')
+          .setFontColor('#999999');
+      }
+      
+      currentRow++;
+    }
+    currentRow++;
+  }
+  
+  // Default values for sections that may be skipped in fast mode
+  let meetings = [];
+  let totalMeetingCount = 0;
+  let helpfulLinks = [];
+  let contractsData = { hasContracts: false, contractCount: 0, contracts: [] };
+  let contractsMatchedOn = '';
+  let boxDocs = [];
+  let gDriveFiles = [];
+  let gDriveFolderFound = false;
+  let gDriveFolderUrl = null;
+  let gDriveMatchedOn = '';
+  let gDriveError = null;
+
+  if (!isFastMode) {
+  // Track row where Upcoming Meetings starts (for Box Documents alignment)
+  const upcomingMeetingsStartRow = currentRow;
+
+  // CALENDAR MEETINGS SECTION
+  // Extract contact emails to search for in calendar events
+  const contactEmails = (contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
+  // Skip Calendar in turbo mode (not essential for checksum updates)
+  if (turboMode) {
+    Logger.log('Skipping Calendar search in turbo mode');
+  } else {
+    ss.toast('Checking calendar...', '📅 Loading', 2);
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    meetings = meetingsResult.meetings || [];
+    totalMeetingCount = meetingsResult.totalCount || 0;
+  }
+  
+  bsSh.getRange(currentRow, 1, 1, 4).merge()
+    .setValue(`📅 UPCOMING MEETINGS (${meetings.length})`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 24);
+  currentRow++;
+  
+  if (meetings.length === 0) {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('No upcoming meetings found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('middle');
+    bsSh.setRowHeight(currentRow, 25);
+    currentRow++;
+  } else {
+    // Meeting headers
+    bsSh.getRange(currentRow, 1).setValue('Event').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(currentRow, 3).setValue('Time').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(currentRow, 4).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    currentRow++;
+    
+    for (const meeting of meetings.slice(0, 10)) {
+      // Event title - clickable link
+      if (meeting.link) {
+        bsSh.getRange(currentRow, 1)
+          .setFormula(`=HYPERLINK("${meeting.link}", "${meeting.title.replace(/"/g, '""')}")`)
+          .setFontColor('#1a73e8');
+      } else {
+        bsSh.getRange(currentRow, 1).setValue(meeting.title);
+      }
+      
+      bsSh.getRange(currentRow, 2).setValue(meeting.date).setNumberFormat('@').setHorizontalAlignment('left');
+      bsSh.getRange(currentRow, 3).setValue(meeting.time).setHorizontalAlignment('left');
+      bsSh.getRange(currentRow, 4).setValue(meeting.status).setHorizontalAlignment('left');
+      
+      // Color code by timing
+      if (meeting.isToday) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#fff2cc'); // Yellow for today
+      } else if (meeting.isPast) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#f3f3f3'); // Gray for past
+      } else {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#d9ead3'); // Green for upcoming
+      }
+      
+      currentRow++;
+    }
+    
+    // Show "more meetings" link with Google Calendar search
+    if (totalMeetingCount > meetings.length || meetings.length > 10) {
+      const moreCount = totalMeetingCount > meetings.length ? totalMeetingCount - meetings.length : meetings.length - 10;
+      const calSearchUrl = `https://calendar.google.com/calendar/r/search?q=${encodeURIComponent(vendor)}`;
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setFormula(`=HYPERLINK("${calSearchUrl}", "🔍 ${moreCount}+ more meetings - Search in Google Calendar")`)
+        .setFontStyle('italic')
+        .setFontColor('#1a73e8')
+        .setHorizontalAlignment('left');
+      currentRow++;
+    }
+  }
+  
+  currentRow++;
+  
+  // ========== RIGHT SIDE (Columns 5-8) ==========
+  
+  // HELPFUL LINKS SECTION (right side - aligned with VENDOR INFO at top)
+  // Skip Helpful Links in turbo mode for speed - will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Helpful Links in turbo mode');
+  } else {
+    ss.toast('Loading helpful links...', '🔗 Loading', 2);
+    helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow);
+  }
+
+  // Generate L2M Reporting link if we have a Phonexa link
+  const l2mLink = getL2MReportingLink_(contactData.phonexaLink, source);
+  const totalLinksCount = helpfulLinks.length + 1; // +1 for L2M row (always shown)
+
+
+  const helpfulLinksUrl = `https://profitise-company.monday.com/boards/${BS_CFG.HELPFUL_LINKS_BOARD_ID}`;
+  bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
+    .setFormula(`=HYPERLINK("${helpfulLinksUrl}", "🔗 HELPFUL LINKS (${totalLinksCount})")`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(rightColumnRow, 24);
+  rightColumnRow++;
+
+  // Header row for links table
+  bsSh.getRange(rightColumnRow, 6).setValue('Description').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+  bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('Link').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+  rightColumnRow++;
+
+  // L2M Reporting link first (light grey background to distinguish from monday.com links)
+  const l2mBgColor = '#e8e8e8'; // Light grey
+  if (l2mLink) {
+    bsSh.getRange(rightColumnRow, 6).setValue(l2mLink.label).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l2mBgColor);
+    bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+      .setFormula(`=HYPERLINK("${l2mLink.url}", "https://your-crm-domain.com/p2/report/...")`)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top')
+      .setBackground(l2mBgColor);
+    rightColumnRow++;
+  } else {
+    // No Phonexa link - show warning with link to monday.com board
+    const encodedVendor = encodeURIComponent(vendor);
+    const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+    const mondayLink = `https://profitise-company.monday.com/boards/${vendorBoardId}?term=${encodedVendor}`;
+    bsSh.getRange(rightColumnRow, 6).setValue('⚠️ NO PHONEXA LINK FOUND').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top').setBackground(l2mBgColor).setFontColor('#b71c1c');
+    bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+      .setFormula(`=HYPERLINK("${mondayLink}", "Add in monday.com →")`)
+      .setFontColor('#1a73e8')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top')
+      .setBackground(l2mBgColor);
+    rightColumnRow++;
+  }
+
+  if (helpfulLinks.length === 0) {
+    bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
+      .setValue('No helpful links found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(rightColumnRow, 25);
+    rightColumnRow++;
+  } else if (helpfulLinks.length > 0) {
+    // monday.com links (no grey background - default white)
+    for (const link of helpfulLinks.slice(0, 8)) {
+      bsSh.getRange(rightColumnRow, 6).setValue(link.notes || '(no description)').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
+
+      if (link.url) {
+        bsSh.getRange(rightColumnRow, 7, 1, 3).merge()
+          .setFormula(`=HYPERLINK("${link.url}", "${link.url.substring(0, 50)}${link.url.length > 50 ? '...' : ''}")`)
+          .setFontColor('#1a73e8')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top');
+      } else {
+        bsSh.getRange(rightColumnRow, 7, 1, 3).merge().setValue('(no URL)').setHorizontalAlignment('left').setVerticalAlignment('top');
+      }
+
+      rightColumnRow++;
+    }
+
+    if (helpfulLinks.length > 8) {
+      bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
+        .setValue(`... and ${helpfulLinks.length - 8} more links`)
+        .setFontStyle('italic')
+        .setHorizontalAlignment('left');
+      rightColumnRow++;
+    }
+  }
+  
+  rightColumnRow++;
+  
+  // CONTRACTS SECTION (right side - aligned with CONTACTS)
+  ss.toast('Checking contracts...', '📋 Loading', 2);
+  contractsData = getVendorContracts_(vendor);
+  contractsMatchedOn = contractsData.hasContracts ? vendor : '';
+  
+  // If no contracts found, try Other Name(s)
+  if (!contractsData.hasContracts && contactData.otherName) {
+    // First try the full Other Name value (in case it's like "Acme Corp, LLC")
+    Logger.log(`No contracts for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
+    const fullResult = getVendorContracts_(contactData.otherName);
+    
+    if (fullResult.hasContracts) {
+      contractsData = fullResult;
+      contractsMatchedOn = contactData.otherName;
+    } else if (contactData.otherName.includes(',')) {
+      // If full name found nothing, try splitting by comma for multiple values
+      const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+      Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
+      
+      for (const altName of otherNames) {
+        // Skip generic terms that cause false positives
+        if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
+          Logger.log(`Skipping generic term: "${altName}"`);
+          continue;
+        }
+        Logger.log(`Searching Airtable contracts for: "${altName}"`);
+        const altResult = getVendorContracts_(altName);
+        if (altResult.hasContracts) {
+          contractsData = altResult;
+          contractsMatchedOn = altName;
+          break; // Found contracts, stop searching
+        }
+      }
+    }
+  }
+  
+  // Use helpfulLinksStartRow to align with Contacts section
+  let contractsRow = helpfulLinksStartRow;
+  
+  const airtableContractsUrl = 'https://airtable.com/appYourBaseIdHere/tblYour2026TableId/viwYourViewId?blocks=hide';
+  // Escape quotes in matchedOn for use in formula
+  const escapedMatchedOn = contractsMatchedOn ? contractsMatchedOn.replace(/"/g, '""') : '';
+  const matchedDisplay = escapedMatchedOn && contractsMatchedOn !== vendor ? ` (matched ""${escapedMatchedOn}"")` : '';
+  bsSh.getRange(contractsRow, 6, 1, 4).merge()
+    .setFormula(`=HYPERLINK("${airtableContractsUrl}", "📋 AIRTABLE CONTRACTS (${contractsData.contractCount})${matchedDisplay}")`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(contractsRow, 24);
+  contractsRow++;
+  
+  if (!contractsData.hasContracts) {
+    bsSh.getRange(contractsRow, 6, 1, 4).merge()
+      .setValue('No contracts found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(contractsRow, 25);
+    contractsRow++;
+  } else {
+    // Contract headers
+    bsSh.getRange(contractsRow, 6).setValue('Contract').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(contractsRow, 7).setValue('Type').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(contractsRow, 8).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(contractsRow, 9).setValue('Notes').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    contractsRow++;
+    
+    for (const contract of contractsData.contracts.slice(0, 10)) {
+      // Contract name - clickable link to Airtable
+      const contractTitle = (contract.vendorName || 'View Contract')
+        .replace(/"/g, '""')  // Escape double quotes for formula
+        .replace(/\n/g, ' ')  // Replace newlines with space
+        .replace(/\r/g, '');  // Remove carriage returns
+      
+      // Clean the URL - remove any problematic characters
+      const cleanUrl = (contract.airtableUrl || '')
+        .replace(/"/g, '%22')  // URL encode any quotes in URL
+        .replace(/\s/g, '%20'); // URL encode spaces
+      
+      if (cleanUrl) {
+        const formula = `=HYPERLINK("${cleanUrl}", "${contractTitle}")`;
+        Logger.log(`Contract formula: ${formula}`);
+        bsSh.getRange(contractsRow, 6)
+          .setFormula(formula)
+          .setFontColor('#1a73e8')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top');
+      } else {
+        bsSh.getRange(contractsRow, 6).setValue(contract.vendorName || 'Contract').setHorizontalAlignment('left').setVerticalAlignment('top');
+      }
+      
+      bsSh.getRange(contractsRow, 7).setValue(contract.contractType || '').setHorizontalAlignment('left').setVerticalAlignment('top');
+
+      // Default blank status to "Waiting on Legal"
+      const displayStatus = contract.status || 'Waiting on Legal';
+      bsSh.getRange(contractsRow, 8).setValue(displayStatus).setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
+      bsSh.getRange(contractsRow, 9).setValue(contract.notes || '').setWrap(true).setHorizontalAlignment('left').setVerticalAlignment('top');
+      
+      // Color code by status
+      const status = displayStatus.toLowerCase();
+      if (status.includes('active') || status.includes('signed') || status.includes('executed')) {
+        bsSh.getRange(contractsRow, 6, 1, 4).setBackground('#d9ead3'); // Green for active
+      } else if (status.includes('pending') || status.includes('draft')) {
+        bsSh.getRange(contractsRow, 6, 1, 4).setBackground('#fff2cc'); // Yellow for pending
+      } else if (status.includes('expired') || status.includes('terminated')) {
+        bsSh.getRange(contractsRow, 6, 1, 4).setBackground('#f3f3f3'); // Gray for expired
+      } else if (status.includes('waiting')) {
+        bsSh.getRange(contractsRow, 6, 1, 4).setBackground('#fce5cd'); // Light orange for waiting
+      }
+      
+      contractsRow++;
+    }
+    
+    if (contractsData.contractCount > 10) {
+      bsSh.getRange(contractsRow, 6, 1, 4).merge()
+        .setValue(`... and ${contractsData.contractCount - 10} more contracts`)
+        .setFontStyle('italic')
+        .setHorizontalAlignment('left');
+      contractsRow++;
+    }
+  }
+  
+  // Update rightColumnRow to track furthest row used on right side
+  rightColumnRow = Math.max(rightColumnRow, contractsRow);
+  
+  contractsRow++; // Add spacing
+  
+  // BOX DOCUMENTS SECTION (right side - aligned with Upcoming Meetings)
+  boxDocs = [];
+  let boxRow = upcomingMeetingsStartRow;
+
+  // Skip Box entirely in turbo mode for speed - it will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Box search in turbo mode');
+  } else {
+  ss.toast('Searching Box...', '📦 Loading', 2);
+
+  // Get blacklist from Settings sheet
+  const boxBlacklist = getBoxBlacklist_();
+
+  // Check cache for Box docs if useCache is true
+  let boxDocsFromCache = null;
+  if (useCache) {
+    boxDocsFromCache = getCachedData_('box', vendor);
+    if (boxDocsFromCache) {
+      boxDocs = boxDocsFromCache;
+      Logger.log(`Box docs loaded from cache: ${boxDocs.length} documents`);
+    }
+  }
+
+  // Only search Box if not loaded from cache
+  if (!boxDocsFromCache) {
+    try {
+      // Check if Box is authorized before searching
+      const boxService = getBoxService_();
+      if (boxService.hasAccess()) {
+        // PARALLEL MODE: Search all vendor name variants at once using fetchAll
+        // This is ~5x faster than sequential when vendor has alternate names
+        boxDocs = searchBoxForVendorParallel(vendor, contactData.otherName || '');
+        Logger.log(`Box parallel search found ${boxDocs.length} unique documents`);
+
+      // Filter out "Signing Log" documents (Box Sign creates these alongside the actual document)
+      const beforeSigningLogCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => !(doc.name || '').toLowerCase().includes('signing log'));
+      if (beforeSigningLogCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeSigningLogCount - boxDocs.length} Signing Log documents`);
+      }
+
+      // Dedupe documents with same name + folder + modified + matchedOn
+      // (Box API sometimes returns duplicates or same document with different IDs)
+      const seen = new Set();
+      const beforeDedupeCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => {
+        const key = `${doc.name || ''}|${doc.folderName || ''}|${doc.modifiedAt || ''}|${doc.matchedOn || ''}`;
+        if (seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      });
+      if (beforeDedupeCount !== boxDocs.length) {
+        Logger.log(`Deduped Box results: ${beforeDedupeCount} -> ${boxDocs.length}`);
+      }
+
+      // Helper to strip file extension for comparison
+      const stripExtension = (name) => {
+        return (name || '').toLowerCase().replace(/\.(pdf|doc|docx|xlsx|xls|ppt|pptx)$/i, '');
+      };
+
+      // Helper to check if file is a PDF
+      const isPdf = (name) => (name || '').toLowerCase().endsWith('.pdf');
+
+      // Remove "My Sign Requests" documents if same document exists in another folder
+      // (My Sign Requests is a draft/pending folder, prefer the final version)
+      // Compare without extensions so "file.pdf" and "file.docx" are considered duplicates
+      const docNamesInOtherFolders = new Set();
+      for (const doc of boxDocs) {
+        const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
+        if (!folderPath.includes('my sign requests')) {
+          docNamesInOtherFolders.add(stripExtension(doc.name));
+        }
+      }
+      const beforeSignReqCount = boxDocs.length;
+      boxDocs = boxDocs.filter(doc => {
+        const folderPath = (doc.folderPath || doc.parentFolder || '').toLowerCase();
+        const docNameNoExt = stripExtension(doc.name);
+        // Keep if not in My Sign Requests, OR if no duplicate exists elsewhere
+        return !folderPath.includes('my sign requests') || !docNamesInOtherFolders.has(docNameNoExt);
+      });
+      if (beforeSignReqCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeSignReqCount - boxDocs.length} My Sign Requests duplicates`);
+      }
+
+      // Dedupe by base name (without extension), preferring PDF over DOC/DOCX
+      const seenBaseNames = new Map(); // baseName -> doc (prefer PDF)
+      for (const doc of boxDocs) {
+        const baseName = stripExtension(doc.name);
+        const existing = seenBaseNames.get(baseName);
+        if (!existing) {
+          seenBaseNames.set(baseName, doc);
+        } else {
+          // Prefer PDF over non-PDF
+          if (isPdf(doc.name) && !isPdf(existing.name)) {
+            seenBaseNames.set(baseName, doc);
+          }
+          // If both same type, keep the one in a better folder (company folder > others)
+          else if (isPdf(doc.name) === isPdf(existing.name)) {
+            const docFolder = (doc.folderPath || '').toLowerCase();
+            const existingFolder = (existing.folderPath || '').toLowerCase();
+            if (docFolder.includes('profitise') && !existingFolder.includes('profitise')) {
+              seenBaseNames.set(baseName, doc);
+            }
+          }
+        }
+      }
+      const beforeExtDedupeCount = boxDocs.length;
+      boxDocs = [...seenBaseNames.values()];
+      if (beforeExtDedupeCount !== boxDocs.length) {
+        Logger.log(`Removed ${beforeExtDedupeCount - boxDocs.length} extension duplicates (preferring PDF)`);
+      }
+
+      // Apply blacklist - remove files blacklisted for this vendor
+      if (boxBlacklist[vendor]) {
+        const blacklistedIds = boxBlacklist[vendor];
+        const beforeCount = boxDocs.length;
+        boxDocs = boxDocs.filter(doc => !blacklistedIds.includes(doc.id));
+        if (beforeCount !== boxDocs.length) {
+          Logger.log(`Blacklist removed ${beforeCount - boxDocs.length} files for ${vendor}`);
+        }
+      }
+      
+      // Sort Box results: 
+      // 1. Vendor name matches first, then Other Name matches (in order they were searched)
+      // 2. Then by Modified date DESC
+      // 3. Then by Folder name DESC
+      if (boxDocs.length > 0) {
+        // Build priority map: vendor name = 0, then each other name in order
+        const matchPriority = { [vendor]: 0 };
+        if (contactData.otherName) {
+          // Full other name gets priority 1
+          matchPriority[contactData.otherName] = 1;
+          // Individual values get subsequent priorities
+          if (contactData.otherName.includes(',')) {
+            const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+            otherNames.forEach((name, idx) => {
+              if (!(name in matchPriority)) {
+                matchPriority[name] = idx + 2;
+              }
+            });
+          }
+        }
+        
+        boxDocs.sort((a, b) => {
+          // First: sort by modified date DESC (newest first)
+          const dateA = a.modifiedAt || '';
+          const dateB = b.modifiedAt || '';
+          if (dateA !== dateB) return dateB.localeCompare(dateA);
+          
+          // Second: sort by match priority ASC (vendor name first, then other names in order)
+          const priorityA = matchPriority[a.matchedOn] ?? 999;
+          const priorityB = matchPriority[b.matchedOn] ?? 999;
+          if (priorityA !== priorityB) return priorityA - priorityB;
+          
+          // Third: sort by document name ASC
+          const nameA = a.name || '';
+          const nameB = b.name || '';
+          return nameA.localeCompare(nameB);
+        });
+        
+        Logger.log(`Sorted Box results by modified DESC, then matched ASC, then document ASC`);
+      }
+
+          // Cache the Box results
+          setCachedData_('box', vendor, boxDocs);
+
+    } else {
+      Logger.log('Box not authorized - skipping Box search');
+    }
+  } catch (e) {
+    Logger.log(`Box search error: ${e.message}`);
+  }
+  } // End of !boxDocsFromCache block
+  } // End of else (not turbo mode)
+
+  bsSh.getRange(boxRow, 6, 1, 4).merge()
+    .setValue(`📦 BOX DOCUMENTS (${boxDocs.length})`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(boxRow, 24);
+  boxRow++;
+  
+  if (boxDocs.length === 0) {
+    bsSh.getRange(boxRow, 6, 1, 4).merge()
+      .setValue('No Box documents found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(boxRow, 25);
+    boxRow++;
+  } else {
+    // Box document headers
+    bsSh.getRange(boxRow, 6).setValue('Document').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(boxRow, 7).setValue('Folder').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(boxRow, 8).setValue('Modified').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(boxRow, 9).setValue('Matched').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    boxRow++;
+
+    // Check if there's a document in "YourCompany > VENDOR_NAME" folder (the primary/final location)
+    // Update the folder path check below to match your Box folder structure
+    // System folders to exclude from being considered "vendor folders"
+    const systemFolders = ['w-9', 'w9', 'new publishers', 'my sign', 'my signed', 'templates'];
+
+    // Helper to check if a folder path is a vendor-specific company folder
+    // Update 'yourcompany/' to match the top-level folder name in your Box account
+    const isProfitiseVendorFolder = (path) => {
+      const pathLower = (path || '').toLowerCase();
+      if (!pathLower.includes('yourcompany/')) return false;
+      // Check it's not a system folder
+      return !systemFolders.some(sys => pathLower.includes(sys));
+    };
+
+    // Find if any doc is in a company vendor folder
+    const hasProfitiseVendorFolder = boxDocs.some(doc => isProfitiseVendorFolder(doc.folderPath));
+
+    for (const doc of boxDocs.slice(0, 10)) {
+      const folderPath = (doc.folderPath || '').toLowerCase();
+      const isInProfitiseVendorFolder = isProfitiseVendorFolder(doc.folderPath);
+      const isInW9Folder = folderPath.includes('w-9') || folderPath.includes('w9');
+      // Gray out if: there's a vendor folder doc AND this isn't in vendor folder AND this isn't W-9
+      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder && !isInW9Folder;
+
+      // Document name - clickable link to Box (no truncation - user controls column width)
+      const docCell = bsSh.getRange(boxRow, 6)
+        .setFormula(`=HYPERLINK("${doc.webUrl}", "${doc.name.replace(/"/g, '""')}")`)
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+
+      if (shouldGrayOut) {
+        docCell.setFontColor('#999999');
+      } else {
+        docCell.setFontColor('#1a73e8');
+      }
+      
+      // Folder - show full path with underscores, clickable link to parent folder
+      // folderPath is like "All Files/YourCompany/Vendor Name"
+      // Skip "All Files" and join with " > "
+      let folderDisplayName = 'Root';
+      if (doc.folderPath) {
+        const pathParts = doc.folderPath.split('/').filter(p => p && p !== 'All Files');
+        folderDisplayName = pathParts.join(' > ') || 'Root';
+      } else if (doc.parentFolder) {
+        folderDisplayName = doc.parentFolder;
+      }
+      
+      // No truncation - user controls column width
+      const folderUrl = doc.parentFolderUrl || '';
+      const folderCell = bsSh.getRange(boxRow, 7);
+      if (folderUrl) {
+        folderCell
+          .setFormula(`=HYPERLINK("${folderUrl}", "${folderDisplayName.replace(/"/g, '""')}")`)
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top');
+      } else {
+        folderCell.setValue(folderDisplayName).setHorizontalAlignment('left').setVerticalAlignment('top');
+      }
+      folderCell.setFontColor(shouldGrayOut ? '#999999' : '#1a73e8');
+
+      // Modified date
+      const modDate = doc.modifiedAt ? Utilities.formatDate(new Date(doc.modifiedAt), Session.getScriptTimeZone(), 'yyyy-MM-dd') : '';
+      const modCell = bsSh.getRange(boxRow, 8).setValue(modDate).setHorizontalAlignment('left').setVerticalAlignment('top');
+      if (shouldGrayOut) modCell.setFontColor('#999999');
+
+      // Matched search term (in quotes)
+      const matchedTerm = doc.matchedOn ? `"${doc.matchedOn}"` : '';
+      const matchCell = bsSh.getRange(boxRow, 9).setValue(matchedTerm).setFontStyle('italic').setHorizontalAlignment('left').setVerticalAlignment('top');
+      matchCell.setFontColor(shouldGrayOut ? '#999999' : '#666666');
+      
+      boxRow++;
+    }
+    
+    if (boxDocs.length > 10) {
+      bsSh.getRange(boxRow, 6, 1, 4).merge()
+        .setValue(`... and ${boxDocs.length - 10} more documents`)
+        .setFontStyle('italic')
+        .setHorizontalAlignment('left');
+      boxRow++;
+    }
+  }
+  
+  // Update rightColumnRow to track furthest row used on right side
+  rightColumnRow = Math.max(rightColumnRow, boxRow);
+  
+  // Fetch Google Drive files now, but display section later (aligned with EMAILS)
+  // Skip Google Drive in turbo mode for speed - will load in real-time when viewing vendors
+  if (turboMode) {
+    Logger.log('Skipping Google Drive in turbo mode');
+  } else {
+    ss.toast('Searching Google Drive...', '📁 Loading', 2);
+
+    // Check cache for GDrive files if useCache is true
+    let gDriveFromCache = null;
+    if (useCache) {
+      gDriveFromCache = getCachedData_('gdrive', vendor);
+      if (gDriveFromCache) {
+        gDriveFiles = gDriveFromCache.files || [];
+        gDriveFolderFound = gDriveFromCache.folderFound || false;
+        gDriveFolderUrl = gDriveFromCache.folderUrl || null;
+        gDriveMatchedOn = gDriveFromCache.matchedOn || '';
+        Logger.log(`GDrive files loaded from cache: ${gDriveFiles.length} files`);
+      }
+    }
+
+    // Only search GDrive if not loaded from cache
+    if (!gDriveFromCache) {
+      try {
+        const result = getGDriveFilesForVendor_(vendor);
+        gDriveFiles = result.files || [];
+        gDriveFolderFound = result.folderFound || false;
+        gDriveFolderUrl = result.folderUrl || null;
+        if (result.error) gDriveError = result.error;
+        if (gDriveFolderFound) gDriveMatchedOn = vendor;
+
+        // Only try Other Name(s) if NO FOLDER was found and no API error (not just empty folder)
+        if (!gDriveFolderFound && !gDriveError && contactData.otherName) {
+          // First try the full Other Name value (in case it's like "Acme Corp, LLC")
+          Logger.log(`No GDrive folder for "${vendor}", trying full Other Name: "${contactData.otherName}"`);
+          const fullResult = getGDriveFilesForVendor_(contactData.otherName);
+
+          if (fullResult.error) {
+            gDriveError = fullResult.error;
+          } else if (fullResult.folderFound) {
+            gDriveFiles = fullResult.files || [];
+            gDriveFolderFound = true;
+            gDriveFolderUrl = fullResult.folderUrl || null;
+            gDriveMatchedOn = contactData.otherName;
+          } else if (contactData.otherName.includes(',')) {
+            // If full name found nothing, try splitting by comma for multiple values
+            const otherNames = contactData.otherName.split(',').map(n => n.trim()).filter(n => n.length > 0);
+            Logger.log(`Full name found nothing, trying individual values: ${otherNames.join(', ')}`);
+
+            for (const altName of otherNames) {
+              // Skip generic terms that cause false positives
+              if (BS_CFG.SKIP_SEARCH_TERMS.some(term => term.toLowerCase() === altName.toLowerCase())) {
+                Logger.log(`Skipping generic term: "${altName}"`);
+                continue;
+              }
+              Logger.log(`Searching GDrive for: "${altName}"`);
+              const altResult = getGDriveFilesForVendor_(altName);
+              if (altResult.error) {
+                gDriveError = altResult.error;
+                break;
+              }
+              if (altResult.folderFound) {
+                gDriveFiles = altResult.files || [];
+                gDriveFolderFound = true;
+                gDriveFolderUrl = altResult.folderUrl || null;
+                gDriveMatchedOn = altName;
+                break; // Found a folder, stop searching
+              }
+            }
+          }
+        }
+
+        // Cache the GDrive results
+        setCachedData_('gdrive', vendor, {
+          files: gDriveFiles,
+          folderFound: gDriveFolderFound,
+          folderUrl: gDriveFolderUrl,
+          matchedOn: gDriveMatchedOn
+        });
+
+      } catch (e) {
+        Logger.log(`Google Drive search error: ${e.message}`);
+        gDriveError = e.message;
+      }
+    }
+  }
+  
+  } // end if (!isFastMode) - Calendar, Helpful Links, Contracts, Box, GDrive fetch
+
+  // In fast mode, show compact right-side message
+  if (isFastMode) {
+    bsSh.getRange(rightColumnRow, 6, 1, 4).merge()
+      .setValue('⚡ Fast Mode - Use 🔄 Refresh for Box, GDrive, Airtable, Calendar')
+      .setBackground('#f5f5f5')
+      .setFontStyle('italic')
+      .setFontColor('#888888')
+      .setFontSize(9)
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle');
+    rightColumnRow++;
+  }
+
+  // ========== CONTINUE LEFT SIDE ==========
+
+  // Notes section
+  bsSh.getRange(currentRow, 1, 1, 4).merge()
+    .setValue('📝 NOTES')
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left');
+  bsSh.setRowHeight(currentRow, 24);
+  currentRow++;
+  
+  const notesCell = bsSh.getRange(currentRow, 1, 2, 4).merge()
+    .setValue(mondayNotes || '(no notes)')
+    .setWrap(true)
+    .setVerticalAlignment('top');
+  
+  if (!mondayNotes || mondayNotes === '(no notes)') {
+    // Link to monday.com board filtered by vendor
+    const encodedVendor = encodeURIComponent(vendor);
+    const mondayFilterLink = `https://profitise-company.monday.com/boards/${contactData.boardId || (source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID)}?term=${encodedVendor}`;
+    notesCell.setFormula(`=HYPERLINK("${mondayFilterLink}", "⚠️ Add notes in monday.com")`);
+    notesCell.setBackground(BS_CFG.COLOR_MISSING).setFontColor('#1a73e8');
+  } else {
+    notesCell.setBackground('#fafafa');
+  }
+  
+  currentRow += 2;
+
+  // Fetch tasks once and reuse for blockers, task display, and Crystal Ball
+  const allVendorTasks_ = getTasksForVendor_(vendor, listRow);
+
+  // Current Blocker(s) section - check ALL blocker tasks for notes
+  const blockerTasks = allVendorTasks_.filter(t => t.isBlocker && !t.isDone);
+  if (blockerTasks.length > 0) {
+    // Collect notes from all blocker tasks that have them
+    const blockerNotes = [];
+    const blockerNames = [];
+    for (var bt = 0; bt < blockerTasks.length; bt++) {
+      if (blockerTasks[bt].notes) {
+        blockerNotes.push(blockerTasks[bt].notes);
+      }
+      blockerNames.push(blockerTasks[bt].subject);
+    }
+
+    // Use aggregated notes if any task has them, otherwise show task names
+    const hasNotes = blockerNotes.length > 0;
+    const blockerText = hasNotes
+      ? blockerNotes.join('\n---\n')
+      : blockerNames.join('; ');
+
+    bsSh.getRange(currentRow, 1, 1, 3).merge()
+      .setValue('🚧 CURRENT BLOCKER(S)')
+      .setBackground('#fff3e0')
+      .setFontWeight('bold')
+      .setFontSize(10)
+      .setFontColor('#e65100')
+      .setHorizontalAlignment('left');
+    bsSh.getRange(currentRow, 4)
+      .setValue('➕ Add a Blocker')
+      .setBackground('#fff3e0')
+      .setFontColor('#e65100')
+      .setFontSize(9)
+      .setHorizontalAlignment('right');
+    bsSh.setRowHeight(currentRow, 24);
+    currentRow++;
+
+    const blockerCell = bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue(blockerText)
+      .setWrap(true)
+      .setVerticalAlignment('top')
+      .setBackground('#fff8e1');
+    if (!hasNotes) {
+      blockerCell.setFontColor('#999999');  // Grey when showing item name as fallback
+    }
+    currentRow++;
+  } else {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('➕ Add a Blocker')
+      .setFontColor('#e65100')
+      .setFontSize(9)
+      .setBackground('#fff3e0')
+      .setHorizontalAlignment('left');
+    bsSh.setRowHeight(currentRow, 24);
+    currentRow++;
+  }
+
+  currentRow++;
+
+  // Track row where Emails starts (for Google Drive alignment)
+  const emailsStartRow = currentRow;
+  
+  if (!isFastMode) {
+  // GOOGLE DRIVE FOLDER SECTION (right side - starts after Box section OR aligned with Emails, whichever is later)
+  let gDriveRow = Math.max(emailsStartRow, rightColumnRow);
+  
+  // Get folder URL - use tracked URL or default to Vendors folder
+  const displayFolderUrl = gDriveFolderUrl || `https://drive.google.com/drive/folders/${BS_CFG.GDRIVE_VENDORS_FOLDER_ID}`;
+  
+  bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+    .setFormula(`=HYPERLINK("${displayFolderUrl}", "📁 GOOGLE DRIVE (${gDriveFiles.length})")`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(gDriveRow, 24);
+  gDriveRow++;
+  
+  if (gDriveError) {
+    // API error - show error so user knows it's not "no folder"
+    bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+      .setValue('⚠️ Google Drive error - try refreshing')
+      .setFontStyle('italic')
+      .setFontColor('#c5221f')
+      .setBackground('#fce8e6')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(gDriveRow, 25);
+    gDriveRow++;
+  } else if (!gDriveFolderFound) {
+    // No folder found - show link to create
+    const vendorsFolderUrl = `https://drive.google.com/drive/folders/${BS_CFG.GDRIVE_VENDORS_FOLDER_ID}`;
+    bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+      .setFormula(`=HYPERLINK("${vendorsFolderUrl}", "📂 No folder found - Click to create in Vendors")`)
+      .setFontStyle('italic')
+      .setFontColor('#1a73e8')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(gDriveRow, 25);
+    gDriveRow++;
+  } else if (gDriveFiles.length === 0) {
+    // Folder found but empty
+    bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+      .setFormula(`=HYPERLINK("${displayFolderUrl}", "📂 Folder empty - Click to open")`)
+      .setFontStyle('italic')
+      .setFontColor('#1a73e8')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left')
+      .setVerticalAlignment('top');
+    bsSh.setRowHeight(gDriveRow, 25);
+    gDriveRow++;
+  } else {
+    // Google Drive file headers - show matched term in header if available
+    const matchedDisplay = gDriveMatchedOn ? ` (matched "${gDriveMatchedOn}")` : '';
+    bsSh.getRange(gDriveRow, 6).setValue('File').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(gDriveRow, 7).setValue('Type').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(gDriveRow, 8).setValue('Modified').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    bsSh.getRange(gDriveRow, 9).setValue(matchedDisplay).setFontStyle('italic').setFontColor('#666666').setBackground('#f3f3f3').setHorizontalAlignment('left');
+    gDriveRow++;
+    
+    for (const file of gDriveFiles.slice(0, 10)) {
+      // File name - clickable link (no truncation - user controls column width)
+      bsSh.getRange(gDriveRow, 6)
+        .setFormula(`=HYPERLINK("${file.url}", "${file.name.replace(/"/g, '""')}")`)
+        .setFontColor('#1a73e8')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      
+      // File type
+      bsSh.getRange(gDriveRow, 7).setValue(file.type).setHorizontalAlignment('left').setVerticalAlignment('top');
+      
+      // Modified date
+      bsSh.getRange(gDriveRow, 8).setValue(file.modified).setHorizontalAlignment('left').setVerticalAlignment('top');
+      
+      // Clear column 9 (no per-file matched term for Google Drive - it's at folder level)
+      bsSh.getRange(gDriveRow, 9).setValue('').setBackground(null);
+      
+      gDriveRow++;
+    }
+    
+    if (gDriveFiles.length > 10) {
+      // Link to the vendor's folder in Google Drive
+      const folderUrl = gDriveFiles[0].folderUrl || `https://drive.google.com/drive/folders/${BS_CFG.GDRIVE_VENDORS_FOLDER_ID}`;
+      bsSh.getRange(gDriveRow, 6, 1, 4).merge()
+        .setFormula(`=HYPERLINK("${folderUrl}", "... and ${gDriveFiles.length - 10} more files - Open Folder")`)
+        .setFontStyle('italic')
+        .setFontColor('#1a73e8')
+        .setHorizontalAlignment('left');
+      gDriveRow++;
+    }
+  }
+  
+  // Update rightColumnRow to track furthest row used on right side
+  rightColumnRow = Math.max(rightColumnRow, gDriveRow);
+  } // end if (!isFastMode) - right side panel render (contacts, calendar, links, contracts, box, gdrive)
+
+  // EMAILS SECTION - loaded before Crystal Ball to ensure emails always display
+  // (Crystal Ball calls Claude API which can take 60-120s and block everything after it)
+  ss.toast('Searching Gmail...', '📧 Loading', 2);
+  const emails = getEmailsForVendor_(vendor, listRow);
+
+  bsSh.getRange(currentRow, 1, 1, 4).merge()
+    .setValue(`📧 EMAILS (${emails.length})  |  🔵 Snoozed  🔴 Overdue  🟠 Phonexa  🟢 Accounting  🟡 Waiting`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 24);
+  currentRow++;
+
+  if (emails.length === 0) {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('No emails found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle');
+    bsSh.setRowHeight(currentRow, 25);
+    currentRow++;
+  } else {
+    // Email headers
+    bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
+    currentRow++;
+
+    for (const email of emails.slice(0, 20)) {
+      bsSh.getRange(currentRow, 1).setValue(email.subject);
+      const emailDateCell = bsSh.getRange(currentRow, 2);
+      emailDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell.setValue(email.date);
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
+      bsSh.getRange(currentRow, 4).setValue(email.labels);
+
+      if (email.link) {
+        bsSh.getRange(currentRow, 1)
+          .setFormula(`=HYPERLINK("${email.link}", "${email.subject.replace(/"/g, '""')}")`);
+      }
+
+      // Check if this email is overdue (waiting/customer + >16 business hours)
+      const isOverdue = isEmailOverdue_(email);
+
+      // Check if email has priority label
+      const hasPriority = email.labels.includes('01.priority/1');
+
+      // Color priority: Snoozed (blue) > OVERDUE (red) > Phonexa (coral) > Accounting (green) > Waiting/Customer (yellow) > Active (white)
+      if (email.isSnoozed) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_SNOOZED);
+      } else if (isOverdue) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_OVERDUE);
+        bsSh.getRange(currentRow, 1, 1, 4).setFontWeight('bold');
+      } else if (email.labels.includes('02.waiting/phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_PHONEXA);
+      } else if (email.labels.includes('04.accounting-invoices')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#d9ead3'); // Green
+      } else if (email.labels.includes('02.waiting/customer')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_WAITING);
+      } else {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#ffffff');
+      }
+
+      // If missing 01.priority/1, make text grey to indicate lower importance
+      if (!hasPriority) {
+        bsSh.getRange(currentRow, 1, 1, 4).setFontColor('#999999');
+      }
+
+      currentRow++;
+    }
+
+    if (emails.length > 20) {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`... and ${emails.length - 20} more emails (showing first 20)`)
+        .setFontStyle('italic')
+        .setHorizontalAlignment('center');
+      currentRow++;
+    }
+  }
+
+  bsSh.setRowHeight(currentRow, 10);
+  currentRow++;
+
+  // TASKS SECTION (reuse fetched tasks)
+  let tasks = allVendorTasks_.slice();
+
+  // Filter out inappropriate onboarding tasks based on source
+  // If source is Affiliates, don't show "Onboarding - Buyer" tasks
+  // If source is Buyers, don't show "Onboarding - Affiliate" tasks
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+  const isBuyer = source.toLowerCase().includes('buyer');
+
+  tasks = tasks.filter(task => {
+    const project = (task.project || '').toLowerCase();
+    if (isAffiliate && project.includes('onboarding - buyer')) {
+      return false;
+    }
+    if (isBuyer && project.includes('onboarding - affiliate')) {
+      return false;
+    }
+    return true;
+  });
+
+  const nonDoneTasks = tasks.filter(t => !t.isDone);
+
+  bsSh.getRange(currentRow, 1, 1, 4).merge()
+    .setValue(`📋 MONDAY.COM TASKS (${nonDoneTasks.length})`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  bsSh.setRowHeight(currentRow, 24);
+  currentRow++;
+
+  if (tasks.length === 0) {
+    // Check if vendor is Live/Paused/Onboarding - should have tasks
+    // Note: "preonboarding" contains "onboarding" so we must exclude it explicitly
+    const statusLower = (liveStatus || '').toLowerCase();
+    const isPreonboarding = statusLower.includes('pre');
+    const needsTasksWarning = !isPreonboarding && (
+                               statusLower.includes('live') ||
+                               statusLower.includes('onboarding') ||
+                               statusLower.includes('paused'));
+
+    if (needsTasksWarning) {
+      // Show warning with link to Claude task generator
+      const vendorType = source.toLowerCase().includes('affiliate') ? 'Affiliate' : 'Buyer';
+      const vendorTypeLabel = vendorType === 'Affiliate' && contactData.liveModalities
+        ? `Affiliate - ${contactData.liveModalities}`
+        : vendorType;
+      const claudeChatUrl = 'https://claude.ai/chat/33d0e36c-23ad-4e7d-b354-bd6cf3692f3f';
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setFormula(`=HYPERLINK("${claudeChatUrl}", "⚠️ No tasks - Click to generate tasks")`)
+        .setFontColor('#d32f2f')
+        .setBackground('#ffebee')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+
+      // Add copy/paste line for vendor name and type
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`${vendor} (${vendorTypeLabel})`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 22);
+      currentRow++;
+    } else {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue('No tasks found')
+        .setFontStyle('italic')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('middle');
+      bsSh.setRowHeight(currentRow, 25);
+      currentRow++;
+    }
+  } else {
+    bsSh.getRange(currentRow, 1).setValue('Task').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 2).setValue('Status').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Created').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 4).setValue('Project').setFontWeight('bold').setBackground('#f3f3f3');
+    currentRow++;
+
+    // Build fallback suffix from vendor's vertical and live modality (used when task has no own vertical/modality)
+    const vendorSuffixParts = [];
+    if (contactData.liveVerticals) vendorSuffixParts.push(contactData.liveVerticals);
+    if (contactData.liveModalities) vendorSuffixParts.push(contactData.liveModalities);
+    const vendorSuffix = vendorSuffixParts.length > 0 ? ` [${vendorSuffixParts.join(' | ')}]` : '';
+
+    let lastGroupTitle = null;
+    for (const task of tasks) {
+      // Insert group sub-header when the group changes
+      if (task.groupTitle && task.groupTitle !== lastGroupTitle) {
+        lastGroupTitle = task.groupTitle;
+        bsSh.getRange(currentRow, 1, 1, 4).merge()
+          .setValue(task.groupTitle)
+          .setFontWeight('bold')
+          .setFontSize(9)
+          .setFontColor('#555555')
+          .setBackground('#e8eaf6')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('middle');
+        bsSh.setRowHeight(currentRow, 22);
+        currentRow++;
+      }
+
+      // Build per-task suffix from task's own vertical/modality columns (fall back to vendor-level)
+      const taskSuffixParts = [];
+      if (task.vertical) taskSuffixParts.push(task.vertical);
+      else if (contactData.liveVerticals) taskSuffixParts.push(contactData.liveVerticals);
+      if (task.modality) taskSuffixParts.push(task.modality);
+      else if (contactData.liveModalities) taskSuffixParts.push(contactData.liveModalities);
+      const taskSuffix = taskSuffixParts.length > 0 ? ` [${taskSuffixParts.join(' | ')}]` : vendorSuffix;
+
+      // Task name - clickable link to Tasks board filtered by task name
+      const encodedTask = encodeURIComponent(task.subject);
+      const taskFilterLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodedTask}${BS_CFG.MONDAY_TERM_COLUMNS}`;
+      const taskDisplayName = task.subject + taskSuffix;
+      bsSh.getRange(currentRow, 1)
+        .setFormula(`=HYPERLINK("${taskFilterLink}", "${taskDisplayName.replace(/"/g, '""')}")`)
+        .setWrap(true)
+        .setFontColor('#1a73e8');
+
+      // Status display:
+      // - For Done tasks: show "Done - YYYY-MM-DD" (lastUpdated date)
+      // - For non-Done tasks with taskDate: show "Status - taskDate"
+      // - Otherwise: just show status
+      let statusDisplay = task.status;
+      if (task.isDone && task.lastUpdated) {
+        statusDisplay = `${task.status} - ${task.lastUpdated}`;
+      } else if (task.taskDate && !task.isDone) {
+        statusDisplay = `${task.status} - ${task.taskDate}`;
+      }
+      bsSh.getRange(currentRow, 2).setValue(statusDisplay).setWrap(true);
+      const taskDateCell = bsSh.getRange(currentRow, 3);
+      taskDateCell.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      taskDateCell.setValue(task.created).setWrap(true);
+      bsSh.getRange(currentRow, 4).setValue(task.project).setWrap(true);
+
+      // Color coding for task status
+      if (task.isDone) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setFontLine('line-through')
+          .setFontColor('#999999');
+      } else if (task.isBlocker) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2')   // Red for blockers - needs action
+          .setFontWeight('bold');
+      } else if (task.status && task.status.toLowerCase().includes('waiting on phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#ffcdd2');  // Red for waiting on phonexa
+      } else if (task.status && task.status.toLowerCase().includes('waiting on client')) {
+        bsSh.getRange(currentRow, 1, 1, 4)
+          .setBackground('#fff2cc');  // Yellow for waiting on client
+      }
+
+      currentRow++;
+    }
+  }
+
+  // CRYSTAL BALL SECTION (right side - below Google Drive)
+  // Loaded LAST because it calls Claude API which can take 60-120s
+  // Emails and tasks are already rendered above, so user sees those even if Crystal Ball is slow
+  if (!isFastMode) {
+  // Skip Crystal Ball in turbo mode - redundant with Gmail search
+  let crystalBall = { items: [], snoozed: [], summary: null, suggestedActions: [], error: null };
+  if (turboMode) {
+    Logger.log('Skipping Crystal Ball in turbo mode');
+  } else {
+    ss.toast('Analyzing emails + blockers + tasks...', '🔮 Crystal Ball', 3);
+    // Pass blockers, tasks, and vendor context for cross-referencing (reuse fetched tasks)
+    crystalBall = getCrystalBallData_(vendor, listRow, {
+      blockerTasks: blockerTasks,
+      tasks: allVendorTasks_,
+      contactData: contactData,
+      notes: mondayNotes
+    });
+  }
+
+  let crystalRow = rightColumnRow + 1;
+
+  // Crystal Ball header
+  const crystalCount = crystalBall.items.length + crystalBall.snoozed.length;
+  const blockerCount = blockerTasks.length;
+  const headerParts = [`${crystalCount} threads`];
+  if (blockerCount > 0) headerParts.push(`${blockerCount} blockers`);
+  bsSh.getRange(crystalRow, 6, 1, 4).merge()
+    .setValue(`🔮 CRYSTAL BALL (${headerParts.join(', ')})`)
+    .setBackground('#e8f5e9')  // Light green
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#2e7d32')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('top');
+  bsSh.setRowHeight(crystalRow, 24);
+  crystalRow++;
+
+  if (crystalBall.error) {
+    bsSh.getRange(crystalRow, 6, 1, 4).merge()
+      .setValue(`Error: ${crystalBall.error}`)
+      .setFontStyle('italic')
+      .setFontColor('#d32f2f')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left');
+    crystalRow++;
+  } else if (crystalBall.summary) {
+    // Display the AI-generated summary (blockers analysis + summary)
+    const summaryLines = crystalBall.summary.split('\n').filter(l => l.trim());
+
+    for (const line of summaryLines.slice(0, 12)) {
+      // Detect section headers (bold markdown) and style differently
+      const isSectionHeader = line.trim().startsWith('**') && line.trim().endsWith('**');
+      const cell = bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(isSectionHeader ? line.trim().replace(/\*\*/g, '') : line.trim())
+        .setFontSize(9)
+        .setBackground(isSectionHeader ? '#e8f5e9' : '#fafafa')
+        .setWrap(true)
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      if (isSectionHeader) {
+        cell.setFontWeight('bold').setFontColor('#2e7d32');
+      }
+      bsSh.setRowHeight(crystalRow, 22);
+      crystalRow++;
+    }
+
+    if (summaryLines.length > 12) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue(`... and ${summaryLines.length - 12} more items`)
+        .setFontStyle('italic')
+        .setFontColor('#666666')
+        .setBackground('#fafafa')
+        .setHorizontalAlignment('left');
+      crystalRow++;
+    }
+
+    // Display suggested actions if any
+    const suggestedActions = crystalBall.suggestedActions || [];
+    if (suggestedActions.length > 0) {
+      bsSh.getRange(crystalRow, 6, 1, 4).merge()
+        .setValue('⚡ SUGGESTED ACTIONS')
+        .setBackground('#fff3e0')
+        .setFontWeight('bold')
+        .setFontSize(9)
+        .setFontColor('#e65100')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(crystalRow, 22);
+      crystalRow++;
+
+      for (const action of suggestedActions.slice(0, 5)) {
+        const whoIcon = action.who === 'vendor' ? '👤' : '👈';
+        const actionText = `${whoIcon} ${action.description}${action.relatedItem ? ' → ' + action.relatedItem : ''}`;
+        bsSh.getRange(crystalRow, 6, 1, 4).merge()
+          .setValue(actionText)
+          .setFontSize(9)
+          .setBackground('#fff8e1')
+          .setWrap(true)
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top');
+        bsSh.setRowHeight(crystalRow, 22);
+        crystalRow++;
+      }
+    }
+  } else {
+    bsSh.getRange(crystalRow, 6, 1, 4).merge()
+      .setValue('No outstanding items found')
+      .setFontStyle('italic')
+      .setFontColor('#666666')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('left');
+    crystalRow++;
+  }
+
+  // Update rightColumnRow
+  rightColumnRow = Math.max(rightColumnRow, crystalRow);
+  } // end if (!isFastMode) - Crystal Ball
+
+
+  // Use the greater of currentRow or rightColumnRow for final row count
+  const finalRow = isFastMode ? currentRow : Math.max(currentRow, rightColumnRow);
+
+  // Style the divider column (column 5) - black background from row 3 to end (skip in fast mode)
+  if (!isFastMode && finalRow > 2) {
+    bsSh.getRange(3, 5, finalRow - 2, 1)
+      .setBackground('#000000')
+      .setValue('');
+  }
+
+  if (finalRow > 5) {
+    bsSh.autoResizeRows(5, finalRow - 5);
+  }
+
+  // Generate and compare checksum to detect changes (skip full checksum in fast mode)
+  if (!isFastMode) {
+  try {
+    // Generate module sub-checksums
+    const newModuleChecksums = generateModuleChecksums_(
+      vendor, emails, tasks, contactData.notes || '', contactData.liveStatus || '',
+      contactData.states || '', contractsData.contracts || [], helpfulLinks || [],
+      meetings || [], boxDocs || [], gDriveFiles || [], contacts || []
+    );
+
+    // Generate email sub-checksum (for backward compatibility and early exit)
+    const newEmailChecksum = newModuleChecksums.emails;
+
+    // Get previously stored checksums
+    const storedData = getStoredChecksum_(vendor);
+    Logger.log(`Stored data for ${vendor}: ${storedData ? JSON.stringify({checksum: storedData.checksum, hasModules: !!storedData.moduleChecksums}) : 'null'}`);
+
+    // Generate full checksum
+    const newChecksum = generateVendorChecksum_(
+      vendor, emails, tasks, contactData.notes || '', contactData.liveStatus || '',
+      contactData.states || '', contractsData.contracts || [], helpfulLinks || [],
+      meetings || [], boxDocs || [], gDriveFiles || []
+    );
+
+    Logger.log(`Checksum comparison for ${vendor}: stored=${storedData?.checksum} (type: ${typeof storedData?.checksum}), new=${newChecksum} (type: ${typeof newChecksum})`);
+    const isUnchanged = !forceChanged && storedData && String(storedData.checksum) === String(newChecksum);
+    Logger.log(`Is unchanged: ${isUnchanged}${forceChanged ? ' (forceChanged=true)' : ''}`);
+
+    // Determine which modules changed (only if stored version matches to avoid false positives)
+    const changedModules = [];
+    const storedModuleVersion = storedData?.moduleChecksums?._version || 0;
+    if (storedData && storedData.moduleChecksums && storedModuleVersion === MODULE_CHECKSUMS_VERSION) {
+      const stored = storedData.moduleChecksums;
+      if (stored.emails !== newModuleChecksums.emails) changedModules.push('emails');
+      if (stored.tasks !== newModuleChecksums.tasks) changedModules.push('tasks');
+      if (stored.notes !== newModuleChecksums.notes) changedModules.push('notes');
+      if (stored.status !== newModuleChecksums.status) changedModules.push('status');
+      if (stored.states !== newModuleChecksums.states) changedModules.push('states');
+      if (stored.contracts !== newModuleChecksums.contracts) changedModules.push('contracts');
+      if (stored.helpfulLinks !== newModuleChecksums.helpfulLinks) changedModules.push('helpfulLinks');
+      if (stored.meetings !== newModuleChecksums.meetings) changedModules.push('meetings');
+      if (stored.boxDocs !== newModuleChecksums.boxDocs) changedModules.push('boxDocs');
+      if (stored.gDriveFiles !== newModuleChecksums.gDriveFiles) changedModules.push('gDriveFiles');
+      if (stored.contacts !== newModuleChecksums.contacts) changedModules.push('contacts');
+    }
+
+    // If we stopped due to overdue emails, make sure emails is in changedModules
+    if (changeType === 'overdue emails' && !changedModules.includes('emails')) {
+      changedModules.push('emails');
+      Logger.log(`Added emails to changedModules due to overdue emails`);
+    }
+
+    if (isUnchanged && !changedModules.length) {
+      // Add ✅ to title row
+      const currentTitle = bsSh.getRange(1, 1).getValue();
+      bsSh.getRange(1, 1).setValue(`${currentTitle} ✅`);
+      Logger.log(`Added ✅ indicator for ${vendor} - no changes`);
+    } else if (storedData && changedModules.length > 0) {
+      // Highlight changed section headers with 🔄
+      Logger.log(`Changed modules for ${vendor}: ${changedModules.join(', ')}`);
+
+      // Map module names to their header row search patterns
+      const moduleHeaderMap = {
+        'emails': '📧 EMAILS',
+        'tasks': '📋 MONDAY.COM TASKS',
+        'meetings': '📅 UPCOMING MEETINGS',
+        'contracts': '📋 AIRTABLE CONTRACTS',
+        'boxDocs': '📦 BOX DOCUMENTS',
+        'gDriveFiles': '📁 GOOGLE DRIVE',
+        'contacts': '👤 CONTACTS',
+        'notes': '📝 NOTES',
+        'helpfulLinks': '🔗 HELPFUL LINKS',
+        'status': '📊 VENDOR INFO',
+        'states': '📊 VENDOR INFO'
+      };
+
+      // Find and update headers for changed modules
+      const dataRange = bsSh.getDataRange();
+      const values = dataRange.getValues();
+
+      for (const moduleName of changedModules) {
+        const searchPattern = moduleHeaderMap[moduleName];
+        if (!searchPattern) continue;
+
+        for (let row = 0; row < values.length; row++) {
+          const cellValue = String(values[row][0] || '');
+          if (cellValue.includes(searchPattern) && !cellValue.includes('🔄')) {
+            // Add 🔄 indicator to show this section changed
+            bsSh.getRange(row + 1, 1).setValue(cellValue + ' 🔄');
+            Logger.log(`Marked ${searchPattern} as changed (row ${row + 1})`);
+            break;
+          }
+        }
+      }
+    } else if (!storedData) {
+      Logger.log(`First view for ${vendor} - no previous checksums`);
+    }
+
+    // Create email summary data for change tracking
+    const emailData = (emails || []).map(e => ({
+      subject: (e.subject || '').substring(0, 60),
+      date: e.date
+    }));
+
+    // Log email changes and get added/removed details
+    let emailChanges = { added: [], removed: [] };
+    if (changedModules.includes('emails') && storedData && storedData.emailData) {
+      emailChanges = logEmailChanges_(storedData.emailData, emailData, vendor);
+    }
+
+    // ========== WHAT CHANGED SECTION (right side - below Google Drive) ==========
+    // Show if:
+    // 1. There's a legitimate changeType (Overdue emails, Flagged, etc.) - always show
+    // 2. There are changedModules AND stored version matches (avoids false positives from format changes)
+    const hasLegitimateChangeType = changeType && changeType !== 'First view' && changeType !== 'unchanged';
+    const hasCompatibleModuleChanges = changedModules.length > 0;  // Already filtered by version above
+    const shouldShowWhatChanged = forceChanged || hasLegitimateChangeType || hasCompatibleModuleChanges;
+    if (shouldShowWhatChanged) {
+      // Find where to render - use rightColumnRow which tracks furthest row on right side
+      let changeRow = rightColumnRow + 1;
+
+      bsSh.getRange(changeRow, 6, 1, 4).merge()
+        .setValue('🔄 WHAT CHANGED')
+        .setBackground('#fff3cd')  // Light yellow/amber
+        .setFontWeight('bold')
+        .setFontSize(10)
+        .setFontColor('#856404')
+        .setHorizontalAlignment('left')
+        .setVerticalAlignment('top');
+      bsSh.setRowHeight(changeRow, 24);
+      changeRow++;
+
+      // Build change descriptions
+      const changeDescriptions = [];
+
+      // Add the main changeType if provided (from skip detection)
+      if (changeType && changeType !== 'First view') {
+        changeDescriptions.push({ text: `• ${changeType}` });
+      }
+
+      // Add detailed module changes
+      if (changedModules.length > 0) {
+        // Email changes with details
+        if (changedModules.includes('emails')) {
+          const emailDesc = getEmailChangeDescription_(
+            storedData?.emailChecksum,
+            newEmailChecksum,
+            emailChanges.added.length,
+            emailChanges.removed.length
+          );
+          if (!changeType || !changeType.includes('emails')) {
+            changeDescriptions.push({ text: `• Emails: ${emailDesc}` });
+          }
+          // Show specific added emails with clickable links
+          for (const e of emailChanges.added.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ➕ "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
+          }
+          if (emailChanges.added.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${emailChanges.added.length - 3} more added` });
+          }
+          // Show specific removed emails (no link - they're gone)
+          for (const e of emailChanges.removed.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            changeDescriptions.push({ text: `  ➖ "${subjectDisplay}"` });
+          }
+          if (emailChanges.removed.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${emailChanges.removed.length - 3} more removed` });
+          }
+
+          // Show specific emails that are no longer overdue
+          const oldOverdueEmails = storedData?.moduleChecksums?.overdueEmails || [];
+          const newOverdueEmails = newModuleChecksums?.overdueEmails || [];
+          const newOverdueIds = new Set(newOverdueEmails.map(e => e.threadId));
+          const noLongerOverdue = oldOverdueEmails.filter(e => !newOverdueIds.has(e.threadId));
+
+          for (const e of noLongerOverdue.slice(0, 3)) {
+            const subjectDisplay = e.subject.substring(0, 50) + (e.subject.length > 50 ? '...' : '');
+            const gmailLink = `https://mail.google.com/mail/u/0/#inbox/${e.threadId}`;
+            changeDescriptions.push({
+              text: `  ✅ No longer overdue: "${subjectDisplay}"`,
+              link: gmailLink,
+              linkText: subjectDisplay
+            });
+          }
+          if (noLongerOverdue.length > 3) {
+            changeDescriptions.push({ text: `  ... and ${noLongerOverdue.length - 3} more no longer overdue` });
+          }
+        }
+
+        // Other module changes (skip if already mentioned in changeType to avoid duplicates)
+        const ct = (changeType || '').toLowerCase();
+        if (changedModules.includes('tasks') && !ct.includes('task')) changeDescriptions.push({ text: '• Tasks updated' });
+        if (changedModules.includes('notes') && !ct.includes('note')) changeDescriptions.push({ text: '• Notes changed' });
+        if (changedModules.includes('status') && !ct.includes('status')) changeDescriptions.push({ text: '• Status changed' });
+        if (changedModules.includes('states') && !ct.includes('state')) changeDescriptions.push({ text: '• States changed' });
+        if (changedModules.includes('contacts') && !ct.includes('contact')) changeDescriptions.push({ text: '• Contacts updated' });
+        if (changedModules.includes('meetings') && !ct.includes('meeting')) changeDescriptions.push({ text: '• Meetings changed' });
+        if (changedModules.includes('contracts') && !ct.includes('contract')) changeDescriptions.push({ text: '• Contracts updated' });
+        if (changedModules.includes('helpfulLinks') && !ct.includes('link')) changeDescriptions.push({ text: '• Helpful links changed' });
+        if (changedModules.includes('boxDocs') && !ct.includes('box')) changeDescriptions.push({ text: '• Box documents changed' });
+        if (changedModules.includes('gDriveFiles') && !ct.includes('drive')) changeDescriptions.push({ text: '• Google Drive files changed' });
+      }
+
+      // First view message
+      if (changeType === 'First view' || !storedData) {
+        changeDescriptions.push({ text: '• First time viewing this vendor' });
+      }
+
+      // Render each change description
+      if (changeDescriptions.length === 0) {
+        changeDescriptions.push({ text: '• Changes detected (details unavailable)' });
+      }
+
+      for (const desc of changeDescriptions) {
+        const range = bsSh.getRange(changeRow, 6, 1, 4).merge();
+
+        if (desc.link && desc.linkText) {
+          // Create rich text with clickable link
+          const prefix = desc.text.substring(0, desc.text.indexOf(desc.linkText));
+          const suffix = desc.text.substring(desc.text.indexOf(desc.linkText) + desc.linkText.length);
+          const richText = SpreadsheetApp.newRichTextValue()
+            .setText(desc.text)
+            .setLinkUrl(prefix.length, prefix.length + desc.linkText.length, desc.link)
+            .build();
+          range.setRichTextValue(richText);
+        } else {
+          range.setValue(desc.text);
+        }
+
+        range.setBackground('#fff9e6')  // Lighter yellow
+          .setFontColor('#664d03')
+          .setHorizontalAlignment('left')
+          .setVerticalAlignment('top')
+          .setWrap(true);
+        changeRow++;
+      }
+
+      // Update rightColumnRow
+      rightColumnRow = changeRow;
+    }
+
+    // Generate vendor-label-only checksum (secondary checksum for catching unlabeled emails)
+    // Skip during Turbo mode - it's redundant with other checksums and expensive (~6-8s for 100 threads)
+    let vendorLabelChecksum = null;
+    if (!turboMode) {
+      const gmailLinkForChecksum = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+      vendorLabelChecksum = generateVendorLabelChecksum_(gmailLinkForChecksum);
+    } else {
+      Logger.log(`Skipping vendor label checksum in turbo mode`);
+    }
+
+    // Store the new checksums including module checksums, email data, and vendor label checksum
+    storeChecksum_(vendor, newChecksum, newEmailChecksum, newModuleChecksums, emailData, vendorLabelChecksum);
+    Logger.log(`Stored checksums for ${vendor}: full=${newChecksum}, vendorLabel=${vendorLabelChecksum || 'skipped'}`);
+  } catch (e) {
+    Logger.log(`Error with checksum: ${e.message}`);
+  }
+
+  // Check if this vendor was detected via OCR (chat platforms)
+  // Show dialog to alert user this vendor communicates via chat, not email
+  if (!turboMode) {
+    try {
+      const ocrInfo = checkOcrDetectedVendor(vendor);
+      if (ocrInfo) {
+        const detectedDate = ocrInfo.detectedAt ? new Date(ocrInfo.detectedAt).toLocaleDateString() : 'Unknown';
+        SpreadsheetApp.getUi().alert(
+          '💬 Chat Platform Vendor',
+          `"${vendor}" was detected from a chat screenshot.\n\n` +
+          `Source: ${ocrInfo.sourceFile || 'Unknown'}\n` +
+          `Detected: ${detectedDate}\n\n` +
+          `This vendor communicates via chat (Teams, Telegram, etc.), not email.\n\n` +
+          `Click OK to continue, or use the menu to clear this alert.`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+
+        // Clear the vendor from OCR tracking after showing the alert
+        clearOcrDetectedVendor(vendor);
+      }
+    } catch (e) {
+      Logger.log(`Error checking OCR vendor: ${e.message}`);
+    }
+  }
+
+  // Check if vendor has no blocker tasks - prompt user to add one
+  if (blockerTasks.length === 0 && !turboMode) {
+    try {
+      showNoBlockerDialog_(vendor, source, status, contactData, emails, mondayNotes, allVendorTasks_);
+    } catch (e) {
+      Logger.log(`Error showing no-blocker dialog: ${e.message}`);
+    }
+  }
+
+  } // end if (!isFastMode) - checksum generation
+
+  const modeLabel = isFastMode ? '⚡ Fast' : '✅ Ready';
+  ss.toast(`Loaded vendor ${vendorIndex} of ${totalVendors}`, modeLabel, 2);
+}
+
+/**
+ * Generate L2M (Last 2 Months) Reporting permalink for a vendor
+ * @param {string} phonexaLink - The Phonexa link from monday.com
+ * @param {string} source - The source (Buyers or Affiliates)
+ * @returns {object|null} - { url, label } or null if can't generate
+ */
+function getL2MReportingLink_(phonexaLink, source) {
+  if (!phonexaLink) return null;
+
+  const isBuyer = source.toLowerCase().includes('buyer');
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+
+  if (!isBuyer && !isAffiliate) return null;
+
+  // Extract the ID from the Phonexa link
+  let vendorId = null;
+
+  if (isBuyer) {
+    // Buyers: https://your-crm-domain.com/p2/buyer/partner/view?id=65
+    const match = phonexaLink.match(/[?&]id=(\d+)/);
+    if (match) vendorId = match[1];
+  } else {
+    // Affiliates: https://your-crm-domain.com/p2/user/webmaster/view?userId=2160
+    const match = phonexaLink.match(/[?&]userId=(\d+)/);
+    if (match) vendorId = match[1];
+  }
+
+  if (!vendorId) return null;
+
+  // Generate date range: 2 months ago to today
+  const today = new Date();
+  const twoMonthsAgo = new Date(today);
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+  const formatDate = (d) => {
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const year = d.getFullYear();
+    return `${month}/${day}/${year}`;
+  };
+
+  const dateRange = `${formatDate(twoMonthsAgo)}%20-%20${formatDate(today)}`;
+
+  let url;
+  if (isBuyer) {
+    url = `https://your-crm-domain.com/p2/report/summarypartnerbypartner/index?searchForm[pr.productType]=1&searchForm[productId]=&searchForm[date]=${dateRange}&searchForm[partnerId]=${vendorId}`;
+  } else {
+    url = `https://your-crm-domain.com/p2/report/summarypublisherbywm/index?searchForm[pr.productType]=1&searchForm[r.date]=${dateRange}&searchForm[productId]=&searchForm[webmasterId]=${vendorId}`;
+  }
+
+  return { url: url, label: 'Link to L2M Reporting' };
+}
+
+/**
+ * Get helpful links for a specific vendor from monday.com
+ */
+function getHelpfulLinksForVendor_(vendor, listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!listSh) return [];
+  
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const source = listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '';
+  
+  // Determine if buyer or affiliate
+  const isBuyer = source.toLowerCase().includes('buyer');
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+  
+  Logger.log(`=== HELPFUL LINKS SEARCH ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Source: ${source} (isBuyer: ${isBuyer}, isAffiliate: ${isAffiliate})`);
+  
+  // Query all helpful links with linked_items
+  const query = `
+    query {
+      boards (ids: [${BS_CFG.HELPFUL_LINKS_BOARD_ID}]) {
+        items_page (limit: 200) {
+          items {
+            id
+            name
+            column_values {
+              id
+              type
+              text
+              value
+              ... on BoardRelationValue {
+                linked_items {
+                  id
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: query }),
+      muteHttpExceptions: true
+    };
+    
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+    
+    if (!result.data?.boards?.[0]?.items_page?.items) {
+      Logger.log('No helpful links found');
+      return [];
+    }
+    
+    const allLinks = result.data.boards[0].items_page.items;
+    const matchingLinks = [];
+    
+    for (const item of allLinks) {
+      let isMatch = false;
+      let linkUrl = '';
+      let linkNotes = '';
+      
+      for (const col of item.column_values) {
+        // Check Buyers relation
+        if (col.id === BS_CFG.HELPFUL_LINKS_BUYERS_COLUMN && col.linked_items) {
+          for (const linkedItem of col.linked_items) {
+            if (linkedItem.name.toLowerCase() === vendor.toLowerCase()) {
+              isMatch = true;
+              break;
+            }
+          }
+        }
+        
+        // Check Affiliates relation
+        if (col.id === BS_CFG.HELPFUL_LINKS_AFFILIATES_COLUMN && col.linked_items) {
+          for (const linkedItem of col.linked_items) {
+            if (linkedItem.name.toLowerCase() === vendor.toLowerCase()) {
+              isMatch = true;
+              break;
+            }
+          }
+        }
+        
+        // Get link URL
+        if (col.id === BS_CFG.HELPFUL_LINKS_LINK_COLUMN && col.text) {
+          linkUrl = col.text;
+        }
+        
+        // Get notes
+        if (col.id === BS_CFG.HELPFUL_LINKS_NOTES_COLUMN && col.text) {
+          linkNotes = col.text;
+        }
+      }
+      
+      if (isMatch) {
+        matchingLinks.push({
+          name: item.name,
+          url: linkUrl,
+          notes: linkNotes
+        });
+        Logger.log(`Found matching link: ${linkNotes || item.name} -> ${linkUrl}`);
+      }
+    }
+    
+    Logger.log(`Returning ${matchingLinks.length} helpful links`);
+    return matchingLinks;
+    
+  } catch (e) {
+    Logger.log(`Error fetching helpful links: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get contacts, notes, Phonexa link, LIVE STATUS (from group), and last updated for a vendor from monday.com API
+ */
+function getVendorContacts_(vendor, listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!listSh) return { contacts: [], notes: '', phonexaLink: '', lastUpdated: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: null, boardId: null };
+  
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const source = listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '';
+  
+  let boardId, notesColumnId, contactsColumnId, phonexaColumnId, liveVerticalsColumnId, otherVerticalsColumnId, liveModalitiesColumnId, statesColumnId, deadStatesColumnId, otherNameColumnId, blockersColumnId, isAffiliates;
+
+  if (source.toLowerCase().includes('buyer')) {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    notesColumnId = BS_CFG.BUYERS_NOTES_COLUMN;
+    contactsColumnId = BS_CFG.BUYERS_CONTACTS_COLUMN;
+    phonexaColumnId = BS_CFG.BUYERS_PHONEXA_COLUMN;
+    liveVerticalsColumnId = BS_CFG.BUYERS_LIVE_VERTICALS_COLUMN;
+    otherVerticalsColumnId = BS_CFG.BUYERS_OTHER_VERTICALS_COLUMN;
+    liveModalitiesColumnId = BS_CFG.BUYERS_LIVE_MODALITIES_COLUMN;
+    statesColumnId = BS_CFG.BUYERS_STATES_COLUMN;
+    deadStatesColumnId = BS_CFG.BUYERS_DEAD_STATES_COLUMN;
+    otherNameColumnId = BS_CFG.BUYERS_OTHER_NAME_COLUMN;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
+    isAffiliates = false;
+  } else if (source.toLowerCase().includes('affiliate')) {
+    boardId = BS_CFG.AFFILIATES_BOARD_ID;
+    notesColumnId = BS_CFG.AFFILIATES_NOTES_COLUMN;
+    contactsColumnId = BS_CFG.AFFILIATES_CONTACTS_COLUMN;
+    phonexaColumnId = BS_CFG.AFFILIATES_PHONEXA_COLUMN;
+    liveVerticalsColumnId = BS_CFG.AFFILIATES_LIVE_VERTICALS_COLUMN;
+    otherVerticalsColumnId = BS_CFG.AFFILIATES_OTHER_VERTICALS_COLUMN;
+    liveModalitiesColumnId = BS_CFG.AFFILIATES_LIVE_MODALITIES_COLUMN;
+    statesColumnId = null; // Affiliates don't have states
+    deadStatesColumnId = null; // Affiliates don't have dead states
+    otherNameColumnId = BS_CFG.AFFILIATES_OTHER_NAME_COLUMN;
+    blockersColumnId = BS_CFG.AFFILIATES_BLOCKERS_COLUMN;
+    isAffiliates = true;
+  } else {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    notesColumnId = BS_CFG.BUYERS_NOTES_COLUMN;
+    contactsColumnId = BS_CFG.BUYERS_CONTACTS_COLUMN;
+    phonexaColumnId = BS_CFG.BUYERS_PHONEXA_COLUMN;
+    liveVerticalsColumnId = BS_CFG.BUYERS_LIVE_VERTICALS_COLUMN;
+    otherVerticalsColumnId = BS_CFG.BUYERS_OTHER_VERTICALS_COLUMN;
+    liveModalitiesColumnId = BS_CFG.BUYERS_LIVE_MODALITIES_COLUMN;
+    statesColumnId = BS_CFG.BUYERS_STATES_COLUMN;
+    deadStatesColumnId = BS_CFG.BUYERS_DEAD_STATES_COLUMN;
+    otherNameColumnId = BS_CFG.BUYERS_OTHER_NAME_COLUMN;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
+    isAffiliates = false;
+  }
+  
+  Logger.log(`=== CONTACTS SEARCH ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Board ID: ${boardId}`);
+  Logger.log(`Is Affiliates: ${isAffiliates}`);
+  
+  const itemId = findMondayItemIdByVendor_(vendor, boardId, apiToken);
+  
+  if (!itemId) {
+    Logger.log('Could not find monday.com item for contacts');
+    return { contacts: [], notes: '', phonexaLink: '', lastUpdated: '', liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: null, boardId: boardId };
+  }
+  
+  let lastUpdated = '';
+  
+  // Fetch item data including GROUP, updated_at, column values, AND contact details in one query
+  // (previously required a second API call to fetch contact column_values)
+  const query = `
+    query {
+      items (ids: [${itemId}]) {
+        updated_at
+        group {
+          id
+          title
+        }
+        column_values {
+          id
+          type
+          text
+          value
+          ... on BoardRelationValue {
+            linked_items {
+              id
+              name
+              column_values {
+                id
+                text
+                type
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: query }),
+      muteHttpExceptions: true
+    };
+    
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+    
+    if (!result.data?.items?.[0]) {
+      Logger.log('No item data found');
+      return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: itemId, boardId: boardId };
+    }
+
+    // Get updated_at from the item (ISO 8601 format)
+    const updatedAtRaw = result.data.items[0].updated_at || '';
+    if (updatedAtRaw) {
+      const updatedDate = new Date(updatedAtRaw);
+      const tz = 'America/Los_Angeles';
+      lastUpdated = Utilities.formatDate(updatedDate, tz, 'MMM d, yyyy h:mm a');
+      Logger.log(`Last Updated (from API): ${lastUpdated}`);
+    }
+    
+    // Get status from GROUP title (not a column!)
+    const liveStatus = result.data.items[0].group?.title || '';
+    Logger.log(`Live Status from Group: ${liveStatus}`);
+    
+    const columnValues = result.data.items[0].column_values;
+    const contactIds = [];
+    let contactItems = [];  // Full linked_items with column_values (from single query)
+    let notes = '';
+    let phonexaLink = '';
+    let liveVerticals = '';
+    let otherVerticals = '';
+    let liveModalities = '';
+    let states = '';
+    let deadStates = '';
+    let otherName = '';
+    let blockers = '';
+
+    for (const col of columnValues) {
+      // Get contacts from linked_items (for 2-way board relations)
+      // column_values are included in linked_items - no second API call needed
+      if (col.id === contactsColumnId && col.linked_items && col.linked_items.length > 0) {
+        Logger.log(`Found ${col.linked_items.length} linked contacts`);
+        contactItems = col.linked_items;
+        for (const linkedItem of col.linked_items) {
+          contactIds.push(linkedItem.id);
+          Logger.log(`  Contact ID: ${linkedItem.id}, Name: ${linkedItem.name}`);
+        }
+      }
+      // Notes column
+      else if (col.id === notesColumnId && col.text) {
+        notes = col.text;
+      }
+      // Phonexa Link column
+      else if (col.id === phonexaColumnId && col.text) {
+        phonexaLink = col.text;
+        Logger.log(`Phonexa Link: ${phonexaLink}`);
+      }
+      // Live Verticals column (tags)
+      else if (col.id === liveVerticalsColumnId && col.text) {
+        liveVerticals = col.text;
+        Logger.log(`Live Verticals: ${liveVerticals}`);
+      }
+      // Other Verticals column (tags)
+      else if (col.id === otherVerticalsColumnId && col.text) {
+        otherVerticals = col.text;
+        Logger.log(`Other Verticals: ${otherVerticals}`);
+      }
+      // Live Modalities column (tags)
+      else if (col.id === liveModalitiesColumnId && col.text) {
+        liveModalities = col.text;
+        Logger.log(`Live Modalities: ${liveModalities}`);
+      }
+      // States column (dropdown - Buyers only)
+      else if (statesColumnId && col.id === statesColumnId && col.text) {
+        states = col.text;
+        Logger.log(`States: ${states}`);
+      }
+      // Dead States column (dropdown - Buyers only)
+      else if (deadStatesColumnId && col.id === deadStatesColumnId && col.text) {
+        deadStates = col.text;
+        Logger.log(`Dead States: ${deadStates}`);
+      }
+      // Other Name column (text - Buyers only)
+      else if (otherNameColumnId && col.id === otherNameColumnId && col.text) {
+        otherName = col.text;
+        Logger.log(`Other Name: ${otherName}`);
+      }
+      // Current Blocker(s) column
+      else if (blockersColumnId && col.id === blockersColumnId && col.text) {
+        blockers = col.text;
+        Logger.log(`Current Blocker(s): ${blockers}`);
+      }
+    }
+    
+    Logger.log(`Found ${contactIds.length} contact IDs`);
+    Logger.log(`Notes: ${notes}`);
+
+    const contacts = [];
+
+    // Contact details are already fetched in the same query via linked_items.column_values
+    // (no second API call needed)
+    if (contactItems.length > 0) {
+      for (const item of contactItems) {
+        const contact = {
+          name: item.name,
+          email: '',
+          phone: '',
+          status: '',
+          contactType: ''
+        };
+
+        for (const col of (item.column_values || [])) {
+          if (col.id === 'email_mkrk53z4') {
+            contact.email = col.text || '';
+          } else if (col.id === 'phone_mkrkzxq2') {
+            contact.phone = col.text || '';
+          } else if (col.id === 'status') {
+            contact.status = col.text || '';
+          } else if (col.id === 'color_mkrkh4bk') {
+            contact.contactType = col.text || '';
+          }
+        }
+
+        contacts.push(contact);
+        Logger.log(`Contact found: ${contact.name} <${contact.email}> | ${contact.phone} | ${contact.status} | ${contact.contactType}`);
+      }
+    }
+    
+    Logger.log(`Returning ${contacts.length} contacts`);
+    return { contacts: contacts, notes: notes, phonexaLink: phonexaLink, lastUpdated: lastUpdated, liveStatus: liveStatus, liveVerticals: liveVerticals, otherVerticals: otherVerticals, liveModalities: liveModalities, states: states, deadStates: deadStates, otherName: otherName, blockers: blockers, mondayItemId: itemId, boardId: boardId };
+    
+  } catch (e) {
+    Logger.log(`Error fetching contacts: ${e.message}`);
+    return { contacts: [], notes: '', phonexaLink: '', lastUpdated: lastUpdated, liveStatus: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', otherName: '', blockers: '', mondayItemId: itemId, boardId: boardId };
+  }
+}
+
+/**
+ * Get preferred communication method for a vendor from the Chat Links board.
+ * Fetches all items once and caches for session.
+ * Returns { label, clickableLink } or null if not found.
+ */
+function getVendorChatInfo_(vendor) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.CHAT_LINKS_BOARD_ID;
+  const cacheKey = `chat_links_map`;
+
+  // Check session cache first
+  let chatMap = getCachedData_('monday_items', cacheKey);
+
+  if (!chatMap) {
+    Logger.log(`Fetching Chat Links board ${boardId}...`);
+
+    const query = `
+      query {
+        boards (ids: [${boardId}]) {
+          columns { id title }
+          items_page (limit: 500) {
+            items {
+              id
+              name
+              column_values {
+                id
+                text
+                value
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const options = {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'Authorization': apiToken, 'API-Version': '2024-10' },
+        payload: JSON.stringify({ query: query }),
+        muteHttpExceptions: true
+      };
+
+      const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      const result = JSON.parse(response.getContentText());
+
+      if (!result.data?.boards?.[0]) {
+        Logger.log('Chat Links board not found');
+        return null;
+      }
+
+      const board = result.data.boards[0];
+      const columns = board.columns;
+
+      // Find column IDs by title
+      let labelColId = null;
+      let clickableLinkColId = null;
+      let vendorNameColId = null;
+      let altNameColId = null;
+
+      for (const col of columns) {
+        const title = col.title.toLowerCase();
+        if (title === 'label') labelColId = col.id;
+        else if (title === 'clickable link') clickableLinkColId = col.id;
+        else if (title === 'vendor name') vendorNameColId = col.id;
+        else if (title === 'alt name') altNameColId = col.id;
+      }
+
+      Logger.log(`Chat Links columns - Label: ${labelColId}, Clickable Link: ${clickableLinkColId}, Vendor Name: ${vendorNameColId}, Alt Name: ${altNameColId}`);
+
+      // Build vendor → chat info map
+      chatMap = {};
+      const items = board.items_page?.items || [];
+
+      for (const item of items) {
+        let vendorName = '';
+        let altName = '';
+        let label = '';
+        let clickableLink = '';
+
+        for (const col of item.column_values) {
+          if (col.id === vendorNameColId && col.text) {
+            vendorName = col.text.trim();
+          } else if (col.id === altNameColId && col.text) {
+            altName = col.text.trim();
+          } else if (col.id === labelColId && col.text) {
+            label = col.text.trim();
+          } else if (col.id === clickableLinkColId && col.text) {
+            clickableLink = col.text.trim();
+          }
+        }
+
+        const chatEntry = { label: label, clickableLink: clickableLink };
+        const itemName = item.name.trim();
+
+        // Store under all available names for robust matching
+        const names = new Set();
+        if (vendorName) names.add(vendorName.toLowerCase());
+        if (altName) names.add(altName.toLowerCase());
+        if (itemName) names.add(itemName.toLowerCase());
+
+        for (const name of names) {
+          chatMap[name] = chatEntry;
+        }
+
+        Logger.log(`Chat Links: ${vendorName || itemName} → ${label} (${clickableLink})${altName ? ` [alt: ${altName}]` : ''}`);
+      }
+
+      setCachedData_('monday_items', cacheKey, chatMap);
+      Logger.log(`Cached ${Object.keys(chatMap).length} chat link entries`);
+
+    } catch (e) {
+      Logger.log(`Error fetching Chat Links: ${e.message}`);
+      return null;
+    }
+  }
+
+  // Look up vendor in the map
+  const searchTerm = vendor.toLowerCase();
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
+
+  // Exact match first
+  if (chatMap[searchTerm]) return chatMap[searchTerm];
+  if (chatMap[withoutParens]) return chatMap[withoutParens];
+
+  // Contains match
+  for (const key of Object.keys(chatMap)) {
+    if (key.includes(searchTerm) || searchTerm.includes(key) ||
+        key.includes(withoutParens) || withoutParens.includes(key)) {
+      Logger.log(`Chat Links contains match: "${key}" for "${vendor}"`);
+      return chatMap[key];
+    }
+  }
+
+  Logger.log(`No Chat Links entry found for "${vendor}"`);
+  return null;
+}
+
+/**
+ * Get emails for a specific vendor by searching Gmail live
+ */
+function getEmailsForVendor_(vendor, listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!listSh) {
+    Logger.log('List sheet not found');
+    return [];
+  }
+  
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    const gmailLinkNoSnooze = listSh.getRange(listRow, BS_CFG.L_NO_SNOOZE + 1).getValue();
+    
+    Logger.log(`=== GMAIL SEARCH ===`);
+    Logger.log(`Vendor: ${vendor}`);
+    Logger.log(`Gmail Link (All): ${gmailLinkAll}`);
+    Logger.log(`Gmail Link (No Snooze): ${gmailLinkNoSnooze}`);
+    
+    const allEmails = [];
+    
+    if (gmailLinkAll && gmailLinkAll.toString().includes('#search')) {
+      const threadsAll = searchGmailFromLink_(gmailLinkAll, 'All');
+      Logger.log(`Found ${threadsAll.length} threads in "All" query`);
+      allEmails.push(...threadsAll);
+    }
+    
+    const noSnoozeThreadIds = new Set();
+    if (gmailLinkNoSnooze && gmailLinkNoSnooze.toString().includes('#search')) {
+      const threadsNoSnooze = searchGmailFromLink_(gmailLinkNoSnooze, 'No Snooze');
+      Logger.log(`Found ${threadsNoSnooze.length} threads in "No Snooze" query`);
+      
+      for (const email of threadsNoSnooze) {
+        noSnoozeThreadIds.add(email.threadId);
+      }
+    }
+    
+    const uniqueEmails = [];
+    const seenThreadIds = new Set();
+    
+    for (const email of allEmails) {
+      if (!seenThreadIds.has(email.threadId)) {
+        seenThreadIds.add(email.threadId);
+        email.isSnoozed = !noSnoozeThreadIds.has(email.threadId);
+        uniqueEmails.push(email);
+      }
+    }
+    
+    uniqueEmails.sort((a, b) => new Date(b.date) - new Date(a.date));
+    
+    Logger.log(`Returning ${uniqueEmails.length} total emails (${uniqueEmails.filter(e => e.isSnoozed).length} snoozed)`);
+    return uniqueEmails;
+    
+  } catch (e) {
+    Logger.log(`ERROR in getEmailsForVendor_: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * FAST: Get just email thread count without fetching message content
+ * Used for quick change detection in Skip Unchanged
+ * @param {number} listRow - Row number in List sheet
+ * @returns {number} Thread count, or -1 on error
+ */
+function getEmailThreadCountFast_(listRow) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return -1;
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll || !gmailLinkAll.toString().includes('#search')) return 0;
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const urlParts = gmailLinkStr.split('#search/');
+    if (urlParts.length < 2) return 0;
+
+    let searchQuery = decodeURIComponent(urlParts[1]);
+    if (searchQuery.includes('?')) searchQuery = searchQuery.split('?')[0];
+    searchQuery = searchQuery.replace(/\+/g, ' ').replace(/-is:snoozed/gi, '-label:snoozed');
+
+    // Just get thread count - don't fetch messages (fast!)
+    const threads = GmailApp.search(searchQuery, 0, 50);
+    return threads.length;
+  } catch (e) {
+    Logger.log(`ERROR in getEmailThreadCountFast_: ${e.message}`);
+    return -1;
+  }
+}
+
+/**
+ * Get ALL emails from vendor's Gmail sublabel for task analysis context
+ * Uses label search (not filtered search) to get complete email history
+ * @param {number} listRow - The row number in the list sheet
+ * @param {number} maxThreads - Maximum threads to fetch (default 50)
+ * @returns {Array} - Array of email objects with full context
+ */
+function getAllEmailsFromVendorLabel_(listRow, maxThreads = 50) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return [];
+
+  try {
+    // Get the Gmail link to extract the vendor label
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return [];
+
+    const gmailLinkStr = gmailLinkAll.toString();
+
+    // Extract vendor label (zzzvendors-*) from URL
+    // Format: label%3Azzzvendors-vendorname or label:zzzvendors-vendorname
+    // Include periods, underscores, hyphens in vendor name (e.g., "inc." in "american-remodeling-enterprises-inc.")
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      Logger.log('Could not extract vendor label from Gmail link');
+      return [];
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+    // Convert dash format to slash format for GmailApp: zzzvendors-name -> zzzVendors/Name
+    const labelPath = vendorLabel.replace('zzzvendors-', 'zzzVendors/').replace(/-/g, ' ');
+
+    Logger.log(`Searching vendor label: ${labelPath}`);
+
+    // Search by label only - no filters, get ALL emails
+    const searchQuery = `label:${vendorLabel}`;
+    const threads = GmailApp.search(searchQuery, 0, maxThreads);
+
+    Logger.log(`Found ${threads.length} threads in vendor label`);
+
+    const emails = [];
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const firstMessage = messages[0];
+
+      // Get labels for this thread
+      const labels = thread.getLabels().map(l => l.getName());
+
+      emails.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        from: lastMessage.getFrom(),
+        to: lastMessage.getTo(),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
+        messageCount: messages.length,
+        labels: labels,
+        isUnread: thread.isUnread(),
+        lastMessageDate: lastMessage.getDate()
+      });
+    }
+
+    // Sort by date descending
+    emails.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+
+    return emails;
+
+  } catch (e) {
+    Logger.log(`ERROR in getAllEmailsFromVendorLabel_: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Helper function to search Gmail from a link
+ */
+function searchGmailFromLink_(gmailLink, querySetName) {
+  try {
+    const gmailLinkStr = gmailLink.toString();
+    const urlParts = gmailLinkStr.split('#search/');
+    
+    if (urlParts.length < 2) {
+      Logger.log(`Could not parse Gmail search URL for ${querySetName}`);
+      return [];
+    }
+    
+    let searchQuery = decodeURIComponent(urlParts[1]);
+    
+    if (searchQuery.includes('?')) {
+      searchQuery = searchQuery.split('?')[0];
+    }
+    
+    searchQuery = searchQuery.replace(/\+/g, ' ');
+    searchQuery = searchQuery.replace(/-is:snoozed/gi, '-label:snoozed');
+    
+    Logger.log(`${querySetName} search query: ${searchQuery}`);
+    
+    const threads = GmailApp.search(searchQuery, 0, 50);
+    Logger.log(`${querySetName} found ${threads.length} threads`);
+    
+    const emails = [];
+    
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      if (messages.length === 0) continue;
+
+      // Find the last message from a real person (skip bounces/system messages)
+      let lastMessage = messages[messages.length - 1];
+      let lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if last message is a bounce/system message, if so find the previous real message
+      if (isSystemOrBounceEmail_(lastSender)) {
+        for (let i = messages.length - 2; i >= 0; i--) {
+          const prevSender = messages[i].getFrom().toLowerCase();
+          if (!isSystemOrBounceEmail_(prevSender)) {
+            lastMessage = messages[i];
+            lastSender = prevSender;
+            break;
+          }
+        }
+      }
+
+      const subject = thread.getFirstMessageSubject();
+      const date = lastMessage.getDate(); // Use last real message date
+
+      // Determine who sent the last message
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      let lastFrom = 'VENDOR';
+      if (lastSender.includes(myEmail)) {
+        lastFrom = 'ME';
+      } else if (lastSender.includes('aden')) {
+        lastFrom = 'ADEN';
+      } else if (lastSender.includes('legal@yourdomain.com')) {
+        lastFrom = 'LEGAL';
+      } else if (lastSender.includes('accounting')) {
+        lastFrom = 'ACCOUNTING';
+      } else if (lastSender.includes('@yourpartner.com') || lastSender.includes('@yourdomain.com') || lastSender.includes('@yourcrmplatform.com')) {
+        lastFrom = 'INTERNAL';
+      } else {
+        // It's a vendor - extract first name from the From field
+        const senderRaw = lastMessage.getFrom(); // Get original case
+        let firstName = '';
+        // Try to extract name from "First Last <email>" format
+        const nameMatch = senderRaw.match(/^"?([^"<]+)/);
+        if (nameMatch) {
+          const fullName = nameMatch[1].trim();
+          firstName = fullName.split(/\s+/)[0]; // Get first word
+        }
+        if (firstName && firstName.length > 1 && !firstName.includes('@')) {
+          lastFrom = `VENDOR (${firstName})`;
+        }
+      }
+
+      // Get labels - include INBOX if thread is in inbox (system labels not returned by getLabels)
+      const userLabels = thread.getLabels().map(label => label.getName());
+      if (thread.isInInbox()) {
+        userLabels.push('INBOX');
+      }
+      const labels = userLabels.sort().join(', ');
+      const threadId = thread.getId();
+      const threadLink = `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
+      
+      let snippet = '';
+      try {
+        snippet = lastMessage.getPlainBody().substring(0, 200) + '...';
+      } catch (e) {
+        snippet = '(unable to load snippet)';
+      }
+      
+      // Format date in Pacific timezone with leading zeros
+      const tz = 'America/Los_Angeles';
+      const dateFormatted = Utilities.formatDate(date, tz, 'yyyy-MM-dd HH:mm');
+      
+      emails.push({
+        threadId: threadId,
+        subject: subject || '(no subject)',
+        date: dateFormatted,
+        lastFrom: lastFrom,
+        count: messages.length,  // Keep for Claude analysis context
+        labels: labels,
+        link: threadLink,
+        querySet: querySetName,
+        snippet: snippet,
+        isSnoozed: false
+      });
+    }
+    
+    return emails;
+    
+  } catch (e) {
+    Logger.log(`Error searching Gmail for ${querySetName}: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get tasks for a specific vendor from monday.com Tasks board
+ * Uses cached batch data from getAllMondayTasks_() for fast lookups
+ */
+function getTasksForVendor_(vendor, listRow) {
+  Logger.log(`=== MONDAY.COM TASKS SEARCH (cached) ===`);
+  Logger.log(`Vendor: ${vendor}`);
+
+  // Get all tasks from cache (or fetch if not cached)
+  const allTasks = getAllMondayTasks_();
+
+  if (!allTasks || allTasks.length === 0) {
+    Logger.log('No tasks found in cache');
+    return [];
+  }
+
+  // Filter tasks by vendor name: check task name AND linked board relations (Buyers/Affiliates columns)
+  const searchTerm = vendor.toLowerCase();
+  const matchingItems = allTasks.filter(task => {
+    // Match on task name
+    if (task.nameLower.includes(searchTerm)) return true;
+
+    // Match on linked items in any board relation column (Buyers, Affiliates, etc.)
+    const colVals = task.columnValues || {};
+    for (const colId of Object.keys(colVals)) {
+      const col = colVals[colId];
+      if (col && col.linked_items && col.linked_items.length > 0) {
+        for (const linked of col.linked_items) {
+          if (linked.name && linked.name.toLowerCase().includes(searchTerm)) return true;
+        }
+      }
+    }
+
+    return false;
+  });
+
+  Logger.log(`Found ${matchingItems.length} tasks matching vendor (from ${allTasks.length} cached tasks)`);
+
+  if (matchingItems.length === 0) {
+    return [];
+  }
+
+  const tasks = [];
+
+  // Group priority for sorting (DESC = higher number first)
+  const groupPriority = {
+    'your-blockers-group-id': 4,           // Blockers - always at the top
+    'topics': 3,                    // Ongoing Projects
+    'group_title': 2,              // Completed Projects
+    'group_mkqb5pzw': 1,           // Upcoming/Paused Projects
+    'group_mkqf4yzy': 0            // Task Templates
+  };
+
+  // Explicit project order (from Large-Scale Projects board structure)
+  const projectPriority = {
+    'Home Services': 1,
+    'ACA': 2,
+    'Vertical Activation': 3,
+    'Monthly Returns': 4,
+    'CPL/Zip Optimizations': 5,
+    'Accounting/Invoices': 6,
+    'System Admin': 7,
+    'URL Whitelist': 8,
+    'Outbound Communication': 9,
+    'Pre-Onboarding': 10,
+    'Appointments': 11,
+    'Onboarding - Buyer': 12,
+    'Onboarding - Affiliate': 13,
+    'Onboarding - Vertical': 14,
+    'Templates': 15,
+    'Morning Meeting': 16,
+    'Week of 07/28/25': 17
+  };
+
+  const tz = 'America/Los_Angeles';
+
+  for (const item of matchingItems) {
+    const itemName = item.name;
+    const groupId = item.groupId;
+    const groupTitle = item.groupTitle;
+    const colVals = item.columnValues || {};
+
+    // Extract values from cached column data
+    let status = '';
+    let statusColumnId = 'status';
+    let projectName = '';
+    let tempInd = null;
+    let taskDate = '';
+    let lastUpdated = '';
+
+    // Status column - check common status column IDs
+    for (const colId of ['status', 'status4', 'status_1']) {
+      if (colVals[colId]?.text) {
+        status = colVals[colId].text;
+        statusColumnId = colId;
+        break;
+      }
+    }
+
+    // Project column (board relation)
+    const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+    if (projectCol) {
+      if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+        projectName = projectCol.linked_items.map(li => li.name).join(', ');
+      } else if (projectCol.text) {
+        projectName = projectCol.text;
+      }
+    }
+
+    // temp_ind column
+    const tempIndCol = colVals['numeric_mkt9pbj0'];
+    if (tempIndCol?.text && tempIndCol.text.trim()) {
+      tempInd = parseFloat(tempIndCol.text);
+    }
+
+    // Date column (timeline)
+    const dateCol = colVals['timerange_mkqfmzyf'];
+    if (dateCol?.text && dateCol.text.trim()) {
+      const dateParts = dateCol.text.split(' - ');
+      taskDate = dateParts.length > 1 ? dateParts[1].trim() : dateParts[0].trim();
+    }
+
+    // Last Updated column
+    const lastUpdatedCol = colVals['pulse_updated_mkyyesw'];
+    if (lastUpdatedCol?.text && lastUpdatedCol.text.trim()) {
+      lastUpdated = lastUpdatedCol.text.split(' ')[0];
+    }
+
+    const createdDate = new Date(item.createdAt);
+    const createdFormatted = Utilities.formatDate(createdDate, tz, 'yyyy-MM-dd HH:mm');
+
+    // Task-level vertical, modality, and notes (from Tasks board columns)
+    const taskVertical = item.vertical || '';
+    const taskModality = item.modality || '';
+    const taskNotes = item.notes || '';
+
+    tasks.push({
+      itemId: item.id,
+      statusColumnId: statusColumnId,
+      subject: itemName,
+      status: status || 'No Status',
+      taskDate: taskDate,
+      lastUpdated: lastUpdated,
+      created: createdFormatted,
+      project: projectName || `Group: ${groupTitle}`,
+      groupTitle: groupTitle,
+      isDone: (status.toLowerCase() === 'done' || status.toLowerCase() === 'abandoned'),
+      vertical: taskVertical,
+      modality: taskModality,
+      notes: taskNotes,
+
+      // Sorting fields
+      groupId: groupId,
+      isBlocker: groupId === 'your-blockers-group-id',
+      groupPriority: groupPriority[groupId] || -1,
+      projectName: projectName,
+      projectPriority: projectPriority[projectName] || 999,
+      tempInd: tempInd,
+      tempIndSort: (tempInd === null) ? 999999 : tempInd
+    });
+
+    Logger.log(`Task: ${itemName} | Group: ${groupTitle} | Project: ${projectName} | Vertical: ${taskVertical} | Modality: ${taskModality} | temp_ind: ${tempInd}`);
+  }
+
+  // Sort by: Done status (not done first)
+  // For NOT DONE: Group (DESC) -> Project (explicit order) -> temp_ind (ASC, blanks last) -> Created Date (DESC)
+  // For DONE: Created Date (DESC) only
+  tasks.sort((a, b) => {
+    // 0. Done status (not done before done)
+    if (a.isDone !== b.isDone) {
+      return a.isDone ? 1 : -1;
+    }
+
+    // If BOTH are done, sort only by Created Date DESC
+    if (a.isDone && b.isDone) {
+      const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
+      const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
+      return dateB - dateA;
+    }
+
+    // For not-done tasks, use full sorting logic:
+    // 1. Group priority (DESC - higher numbers first)
+    if (a.groupPriority !== b.groupPriority) {
+      return b.groupPriority - a.groupPriority;
+    }
+
+    // 2. Project (explicit order from Large-Scale Projects)
+    if (a.projectPriority !== b.projectPriority) {
+      return a.projectPriority - b.projectPriority;
+    }
+
+    // 3. temp_ind (ASC - low to high, blanks at end)
+    if (a.tempIndSort !== b.tempIndSort) {
+      return a.tempIndSort - b.tempIndSort;
+    }
+
+    // 4. Created Date (ASC - oldest first)
+    const dateA = a.created ? new Date(a.created.replace(' ', 'T')) : new Date(0);
+    const dateB = b.created ? new Date(b.created.replace(' ', 'T')) : new Date(0);
+    if (dateA.getTime() !== dateB.getTime()) return dateA - dateB;
+
+    // 5. Task Name (ASC - alphabetical)
+    return String(a.subject || '').localeCompare(String(b.subject || ''));
+  });
+
+  return tasks.slice(0, 30);
+}
+
+/**
+ * Get ALL calendar events for batch processing (with caching)
+ * Fetches all events from owned calendars once and caches for the session
+ * @returns {array} All calendar events with metadata
+ */
+function getAllCalendarEvents_() {
+  // Check in-memory cache first (survives within single execution even when too large for script cache)
+  if (_calendarEventsCache) {
+    Logger.log(`Calendar batch: loaded ${_calendarEventsCache.length} events from in-memory cache`);
+    return _calendarEventsCache;
+  }
+
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 'calendar_all_events';
+
+  // Check script-level cache first
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    try {
+      const events = JSON.parse(cached);
+      Logger.log(`Calendar batch: loaded ${events.length} events from cache`);
+      _calendarEventsCache = events;
+      return events;
+    } catch (e) {
+      // Cache corrupted, continue to fetch
+    }
+  }
+
+  Logger.log('Calendar batch: fetching all events from calendars...');
+
+  const now = new Date();
+  const pastDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
+  const futureDate = new Date(now.getTime() + (60 * 24 * 60 * 60 * 1000)); // 60 days ahead
+
+  const calendars = CalendarApp.getAllCalendars();
+  const allEvents = [];
+
+  // Only search calendars owned by the user
+  const ownedCalendars = calendars.filter(cal => {
+    try {
+      return cal.isOwnedByMe();
+    } catch (e) {
+      return false;
+    }
+  });
+
+  Logger.log(`Calendar batch: searching ${ownedCalendars.length} owned calendars`);
+
+  for (const calendar of ownedCalendars) {
+    try {
+      const events = calendar.getEvents(pastDate, futureDate);
+
+      for (const event of events) {
+        const title = event.getTitle() || '';
+        const description = event.getDescription() || '';
+        const location = event.getLocation() || '';
+        const startTime = event.getStartTime();
+        const endTime = event.getEndTime();
+        const isAllDay = event.isAllDayEvent();
+
+        // Get attendee emails
+        let attendeeEmails = [];
+        try {
+          const guests = event.getGuestList();
+          attendeeEmails = guests.map(g => g.getEmail().toLowerCase());
+        } catch (e) {
+          // Some events may not allow guest list access
+        }
+
+        allEvents.push({
+          id: event.getId(),
+          title: title,
+          description: description,
+          location: location,
+          startTime: startTime,
+          endTime: endTime,
+          isAllDay: isAllDay,
+          attendeeEmails: attendeeEmails,
+          searchText: (title + ' ' + description + ' ' + location + ' ' + attendeeEmails.join(' ')).toLowerCase(),
+          calendarName: calendar.getName(),
+          calendarId: calendar.getId()
+        });
+      }
+    } catch (e) {
+      Logger.log(`Error fetching events from calendar: ${e.message}`);
+    }
+  }
+
+  Logger.log(`Calendar batch: fetched ${allEvents.length} events total`);
+
+  // Cache for 30 minutes
+  try {
+    const jsonStr = JSON.stringify(allEvents);
+    if (jsonStr.length < 90000) {
+      cache.put(cacheKey, jsonStr, 1800);
+    } else {
+      Logger.log(`Calendar batch: ${allEvents.length} events too large for cache (${Math.round(jsonStr.length/1024)}KB)`);
+    }
+  } catch (e) {
+    Logger.log(`Calendar batch cache error: ${e.message}`);
+  }
+
+  _calendarEventsCache = allEvents;
+  return allEvents;
+}
+
+/**
+ * Filter calendar events for a specific vendor (local matching)
+ * @param {array} allEvents - All calendar events (from getAllCalendarEvents_)
+ * @param {string} vendor - Vendor name to search for
+ * @param {array} contactEmails - Contact emails to search for
+ * @returns {array} Matching events formatted for display
+ */
+function filterCalendarEventsForVendor_(allEvents, vendor, contactEmails) {
+  if (!allEvents || allEvents.length === 0 || !vendor) {
+    return [];
+  }
+
+  const tz = 'America/Los_Angeles';
+  const now = new Date();
+  const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+
+  // Build search terms
+  const searchTerms = [vendor.toLowerCase()];
+
+  // Without parentheses
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
+  if (withoutParens !== vendor.toLowerCase()) {
+    searchTerms.push(withoutParens);
+  }
+
+  // Without common suffixes
+  const withoutSuffix = vendor.replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.?)$/i, '').trim().toLowerCase();
+  if (withoutSuffix !== vendor.toLowerCase() && !searchTerms.includes(withoutSuffix)) {
+    searchTerms.push(withoutSuffix);
+  }
+
+  // Check if multi-word vendor (affects matching strictness)
+  const words = vendor.split(/[\s\-\(\)]+/).filter(w => w.length > 0);
+  const isMultiWord = words.length >= 2;
+  const commonWords = ['solar', 'energy', 'home', 'power', 'green', 'sun', 'electric', 'services', 'solutions', 'group', 'pro', 'usa', 'national'];
+
+  // Email search terms
+  const emailSearchTerms = (contactEmails || [])
+    .filter(e => e && e.includes('@'))
+    .map(e => e.toLowerCase().trim());
+
+  const matches = [];
+  const seenIds = new Set();
+
+  for (const event of allEvents) {
+    if (seenIds.has(event.id)) continue;
+
+    let isMatch = false;
+    let matchedTerm = '';
+    let matchedIn = '';
+
+    // Check vendor name against searchText
+    for (const term of searchTerms) {
+      if (event.searchText.includes(term)) {
+        // For multi-word vendors, skip single common word matches
+        if (isMultiWord) {
+          const termWords = term.split(/\s+/);
+          if (termWords.length < 2 && commonWords.includes(term)) {
+            continue;
+          }
+        }
+        isMatch = true;
+        matchedTerm = term;
+        matchedIn = event.title.toLowerCase().includes(term) ? 'title' :
+                   event.description.toLowerCase().includes(term) ? 'notes' :
+                   event.location.toLowerCase().includes(term) ? 'location' : 'attendees';
+        break;
+      }
+    }
+
+    // Check contact emails against attendees
+    if (!isMatch && emailSearchTerms.length > 0 && event.attendeeEmails.length > 0) {
+      for (const email of emailSearchTerms) {
+        if (event.attendeeEmails.some(ae => ae.includes(email))) {
+          isMatch = true;
+          matchedTerm = email;
+          matchedIn = 'contact email';
+          break;
+        }
+      }
+    }
+
+    if (isMatch) {
+      const startTime = event.startTime;
+      const startDateStr = Utilities.formatDate(startTime, tz, 'yyyy-MM-dd');
+      const isPast = startDateStr < todayStr;
+
+      matches.push({
+        id: event.id,
+        title: event.title,
+        startTime: startTime,
+        endTime: event.endTime,
+        isAllDay: event.isAllDay,
+        location: event.location,
+        isPast: isPast,
+        matchedIn: matchedIn,
+        matchedTerm: matchedTerm,
+        formattedDate: event.isAllDay
+          ? Utilities.formatDate(startTime, tz, 'EEE, MMM d')
+          : Utilities.formatDate(startTime, tz, 'EEE, MMM d @ h:mm a'),
+        calendarName: event.calendarName,
+        calendarId: event.calendarId
+      });
+      seenIds.add(event.id);
+    }
+  }
+
+  // Sort: future meetings first (by date ASC), then past meetings (by date DESC)
+  matches.sort((a, b) => {
+    if (a.isPast !== b.isPast) return a.isPast ? 1 : -1;
+    if (a.isPast) return b.startTime - a.startTime;
+    return a.startTime - b.startTime;
+  });
+
+  return matches;
+}
+
+/**
+ * Clear the Calendar batch cache
+ */
+function clearCalendarBatchCache() {
+  const cache = CacheService.getScriptCache();
+  cache.remove('calendar_all_events');
+  Logger.log('Calendar batch cache cleared');
+}
+
+/**
+ * Get upcoming calendar meetings for a vendor
+ * Searches Google Calendar for events containing the vendor name
+ * Searches in: title, description/notes, location, and attendee emails
+ * Returns meetings from 30 days ago to 60 days in the future
+ */
+function getUpcomingMeetingsForVendor_(vendor, contactEmails) {
+  Logger.log(`=== CALENDAR SEARCH ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  if (contactEmails && contactEmails.length > 0) {
+    Logger.log(`Contact emails: ${contactEmails.join(', ')}`);
+  }
+
+  try {
+    const now = new Date();
+    // Force Pacific timezone for consistent date comparison
+    const tz = 'America/Los_Angeles';
+    const todayStr = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
+    Logger.log(`Today's date (${tz}): ${todayStr}`);
+    Logger.log(`Current time UTC: ${now.toISOString()}`);
+
+    // Fast path: use batch calendar events from in-memory cache (avoids CalendarApp API calls)
+    if (_calendarEventsCache) {
+      Logger.log(`Using batch calendar events from in-memory cache (${_calendarEventsCache.length} events)`);
+      const filtered = filterCalendarEventsForVendor_(_calendarEventsCache, vendor, contactEmails);
+      // Adapt output format to match this function's expected return shape
+      const meetings = filtered.map(m => {
+        const eventStr = Utilities.formatDate(m.startTime, tz, 'yyyy-MM-dd');
+        const isPast = m.startTime < now;
+        const isToday = (eventStr === todayStr);
+        let status = '';
+        if (isPast) {
+          status = '✓ Past';
+        } else if (isToday) {
+          status = '🔴 Today';
+        } else {
+          const eventDate = new Date(eventStr + 'T00:00:00');
+          const todayDate = new Date(todayStr + 'T00:00:00');
+          const daysUntil = Math.round((eventDate - todayDate) / (24 * 60 * 60 * 1000));
+          status = `📅 In ${daysUntil} day${daysUntil !== 1 ? 's' : ''}`;
+        }
+        const startHH = Utilities.formatDate(m.startTime, tz, 'HH');
+        const startMM = Utilities.formatDate(m.startTime, tz, 'mm');
+        const endHH = Utilities.formatDate(m.endTime, tz, 'HH');
+        const endMM = Utilities.formatDate(m.endTime, tz, 'mm');
+        const timeFormatted = m.isAllDay ? 'All Day' : `${startHH}:${startMM} - ${endHH}:${endMM}`;
+        const eventIdBase = (m.id || '').split('@')[0];
+        const calId = m.calendarId || m.calendarName || '';
+        return {
+          title: m.title,
+          date: eventStr,
+          time: timeFormatted,
+          status: status,
+          isPast: isPast,
+          isToday: isToday,
+          startTime: m.startTime,
+          matchSource: m.matchedIn || 'unknown',
+          link: calId ? `https://calendar.google.com/calendar/event?eid=${Utilities.base64Encode(eventIdBase + ' ' + calId)}` : ''
+        };
+      });
+      // Apply same dedup/sort logic
+      meetings.sort((a, b) => {
+        if (a.isToday && !b.isToday) return -1;
+        if (!a.isToday && b.isToday) return 1;
+        if (!a.isPast && b.isPast) return -1;
+        if (a.isPast && !b.isPast) return 1;
+        return a.startTime - b.startTime;
+      });
+      const seenTitles = new Set();
+      const uniqueMeetings = meetings.filter(m => {
+        if (m.isPast && m.title.toLowerCase().includes('checkup')) return false;
+        const normalizedTitle = m.title.replace(/\s*-?\s*Day\s*\d+\s*$/i, '').replace(/\s*-?\s*Day\s*\d+\s*-/i, ' - ').trim();
+        if (seenTitles.has(normalizedTitle)) return false;
+        seenTitles.add(normalizedTitle);
+        return true;
+      });
+      Logger.log(`Found ${uniqueMeetings.length} unique meetings for ${vendor} (${meetings.length} total) [batch fast path]`);
+      return { meetings: uniqueMeetings, totalCount: meetings.length };
+    }
+
+    const pastDate = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000)); // 30 days ago
+    const futureDate = new Date(now.getTime() + (60 * 24 * 60 * 60 * 1000)); // 60 days ahead
+
+    const calendars = CalendarApp.getAllCalendars();
+    const meetings = [];
+    
+    // Only search calendars owned by the user (not shared calendars)
+    const ownedCalendars = calendars.filter(cal => {
+      try {
+        // Primary calendar or calendars where user is owner
+        return cal.isOwnedByMe();
+      } catch (e) {
+        return false;
+      }
+    });
+    
+    Logger.log(`Searching ${ownedCalendars.length} owned calendars (filtered from ${calendars.length} total)`);
+    
+    // Search terms - vendor name and variations
+    const searchTerms = [vendor.toLowerCase()];
+    
+    // Also try without parentheses
+    const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim().toLowerCase();
+    if (withoutParens !== vendor.toLowerCase()) {
+      searchTerms.push(withoutParens);
+    }
+    
+    // Also try first word only (company name) - but only if vendor is a single word and 4+ chars
+    const words = vendor.split(/[\s\-\(\)]+/).filter(w => w.length > 0);
+    if (words.length === 1) {
+      const firstWord = words[0].toLowerCase();
+      if (firstWord.length >= 4 && !searchTerms.includes(firstWord)) {
+        searchTerms.push(firstWord);
+      }
+    }
+    
+    // Also try without common suffixes like LLC, Inc, Corp
+    const withoutSuffix = vendor.replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.?)$/i, '').trim().toLowerCase();
+    if (withoutSuffix !== vendor.toLowerCase() && !searchTerms.includes(withoutSuffix)) {
+      searchTerms.push(withoutSuffix);
+    }
+    
+    // Add contact emails as search terms (for matching attendees)
+    const emailSearchTerms = [];
+    if (contactEmails && contactEmails.length > 0) {
+      for (const email of contactEmails) {
+        if (email && email.includes('@')) {
+          const emailLower = email.toLowerCase().trim();
+          if (!emailSearchTerms.includes(emailLower)) {
+            emailSearchTerms.push(emailLower);
+          }
+        }
+      }
+    }
+    
+    // For multi-word vendor names, require at least 2 consecutive words to match
+    // This prevents "Acme Solar Co" from matching just "Solar"
+    const isMultiWord = words.length >= 2;
+    
+    Logger.log(`Search terms: ${searchTerms.join(', ')} (multi-word: ${isMultiWord})`);
+    if (emailSearchTerms.length > 0) {
+      Logger.log(`Email search terms: ${emailSearchTerms.join(', ')}`);
+    }
+    
+    for (const calendar of ownedCalendars) {
+      try {
+        const events = calendar.getEvents(pastDate, futureDate);
+        
+        for (const event of events) {
+          const title = event.getTitle() || '';
+          const description = event.getDescription() || '';
+          const location = event.getLocation() || '';
+          
+          // Get attendee emails to search
+          let attendeeEmails = '';
+          try {
+            const guests = event.getGuestList();
+            attendeeEmails = guests.map(g => g.getEmail()).join(' ');
+          } catch (e) {
+            // Some events may not allow guest list access
+          }
+          
+          // Combine all searchable text: title, description/notes, location, attendee emails
+          const searchText = (title + ' ' + description + ' ' + location + ' ' + attendeeEmails).toLowerCase();
+          
+          // Check if any search term matches
+          let isMatch = false;
+          let matchedTerm = '';
+          let matchedIn = '';
+          
+          // First check vendor name search terms against all searchable text
+          for (const term of searchTerms) {
+            if (searchText.includes(term)) {
+              // For multi-word vendors, require at least 2 words from vendor name to match
+              // Skip single-word matches like just "solar" for "Acme Solar Co"
+              if (isMultiWord) {
+                const termWords = term.split(/\s+/);
+                if (termWords.length < 2) {
+                  // Single word term - skip unless it's a unique identifier (not common words)
+                  const commonWords = ['solar', 'energy', 'home', 'power', 'green', 'sun', 'electric', 'services', 'solutions', 'group', 'pro', 'usa', 'national'];
+                  if (commonWords.includes(term)) {
+                    continue; // Skip common single words for multi-word vendors
+                  }
+                }
+              }
+              isMatch = true;
+              matchedTerm = term;
+              matchedIn = title.toLowerCase().includes(term) ? 'title' : 
+                         description.toLowerCase().includes(term) ? 'notes' :
+                         location.toLowerCase().includes(term) ? 'location' : 'attendees';
+              break;
+            }
+          }
+          
+          // If no match yet, check contact emails against attendee emails
+          if (!isMatch && emailSearchTerms.length > 0 && attendeeEmails) {
+            const attendeeEmailsLower = attendeeEmails.toLowerCase();
+            for (const email of emailSearchTerms) {
+              if (attendeeEmailsLower.includes(email)) {
+                isMatch = true;
+                matchedTerm = email;
+                matchedIn = 'contact email';
+                break;
+              }
+            }
+          }
+          
+          if (isMatch) {
+            const startTime = event.getStartTime();
+            const endTime = event.getEndTime();
+            const isAllDay = event.isAllDayEvent();
+            
+            // Determine if past, today, or future using script timezone
+            const eventStr = Utilities.formatDate(startTime, tz, 'yyyy-MM-dd');
+            
+            const isPast = startTime < now;
+            const isToday = (eventStr === todayStr);
+            
+            Logger.log(`Event: ${event.getTitle()} | Date: ${eventStr} | Today: ${todayStr} | isToday: ${isToday}`);
+            
+            // Determine status
+            let status = '';
+            if (isPast) {
+              status = '✓ Past';
+            } else if (isToday) {
+              status = '🔴 Today';
+            } else {
+              // Calculate days until using date strings to avoid timezone issues
+              const eventDate = new Date(eventStr + 'T00:00:00');
+              const todayDate = new Date(todayStr + 'T00:00:00');
+              const daysUntil = Math.round((eventDate - todayDate) / (24 * 60 * 60 * 1000));
+              status = `📅 In ${daysUntil} day${daysUntil !== 1 ? 's' : ''}`;
+            }
+            
+            // Note where the match was found (use matchedIn from earlier detection)
+            const matchSource = matchedIn || 'unknown';
+            
+            // Format times in Pacific timezone (use tz already defined above)
+            const startHH = Utilities.formatDate(startTime, tz, 'HH');
+            const startMM = Utilities.formatDate(startTime, tz, 'mm');
+            const endHH = Utilities.formatDate(endTime, tz, 'HH');
+            const endMM = Utilities.formatDate(endTime, tz, 'mm');
+            const timeFormatted = isAllDay ? 'All Day' : `${startHH}:${startMM} - ${endHH}:${endMM}`;
+            
+            meetings.push({
+              title: title,
+              date: Utilities.formatDate(startTime, tz, 'yyyy-MM-dd'),
+              time: timeFormatted,
+              status: status,
+              isPast: isPast,
+              isToday: isToday,
+              startTime: startTime,
+              matchSource: matchSource,
+              link: `https://calendar.google.com/calendar/event?eid=${Utilities.base64Encode(event.getId().split('@')[0] + ' ' + calendar.getId())}`
+            });
+            
+            Logger.log(`Found meeting: ${title} on ${Utilities.formatDate(startTime, tz, 'yyyy-MM-dd HH:mm')} (matched in ${matchSource})`);
+          }
+        }
+      } catch (calError) {
+        Logger.log(`Error searching calendar ${calendar.getName()}: ${calError.message}`);
+      }
+    }
+    
+    // Sort by date (upcoming first, then past)
+    meetings.sort((a, b) => {
+      // Today first
+      if (a.isToday && !b.isToday) return -1;
+      if (!a.isToday && b.isToday) return 1;
+      
+      // Future before past
+      if (!a.isPast && b.isPast) return -1;
+      if (a.isPast && !b.isPast) return 1;
+      
+      // Within same category, sort by date
+      return a.startTime - b.startTime;
+    });
+    
+    // Remove duplicates - only keep the FIRST instance of each meeting title
+    // Also filter out past "checkup" meetings
+    // For "Day ##" pattern meetings, dedupe based on title without the day number
+    const seenTitles = new Set();
+    const uniqueMeetings = meetings.filter(m => {
+      // Skip past events with "checkup" in the name
+      if (m.isPast && m.title.toLowerCase().includes('checkup')) {
+        return false;
+      }
+      
+      // Normalize title for deduplication:
+      // Remove "Day ##" or "Day #" patterns (e.g., "Acme Solar Co - FL (zips) - $51 Checkup - Day 3" -> "Acme Solar Co - FL (zips) - $51 Checkup")
+      const normalizedTitle = m.title
+        .replace(/\s*-?\s*Day\s*\d+\s*$/i, '')  // Remove " - Day 3" or " Day 14" at end
+        .replace(/\s*-?\s*Day\s*\d+\s*-/i, ' - ')  // Remove "Day 3 -" in middle
+        .trim();
+      
+      if (seenTitles.has(normalizedTitle)) return false;
+      seenTitles.add(normalizedTitle);
+      return true;
+    });
+    
+    // Return both unique meetings and total count for "more" link
+    Logger.log(`Found ${uniqueMeetings.length} unique meetings for ${vendor} (${meetings.length} total)`);
+    return { meetings: uniqueMeetings, totalCount: meetings.length };
+    
+  } catch (e) {
+    Logger.log(`Error fetching calendar meetings: ${e.message}`);
+    return { meetings: [], totalCount: 0 };
+  }
+}
+
+/************************************************************
+ * AIRTABLE CONTRACTS FUNCTIONS
+ * Polls Airtable API to get Contract records linked to vendors
+ ************************************************************/
+
+/**
+ * Fuzzy match vendor names (handles variations)
+ */
+function isFuzzyMatch_(name1, name2) {
+  if (!name1 || !name2) return false;
+  
+  // Normalize both names
+  const n1 = name1.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const n2 = name2.toLowerCase().replace(/[^a-z0-9]/g, '');
+  
+  // Exact match after normalization
+  if (n1 === n2) return true;
+  
+  // One contains the other
+  if (n1.includes(n2) || n2.includes(n1)) return true;
+  
+  // Check if significant portion matches (at least 50% of shorter string in longer)
+  const shorter = n1.length < n2.length ? n1 : n2;
+  const longer = n1.length < n2.length ? n2 : n1;
+  
+  if (longer.includes(shorter) && shorter.length >= longer.length * 0.5) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Get all contracts from Airtable (with pagination)
+ * Fetches from both Contracts 2025 and Contracts 2024 tables
+ */
+function getAllContracts_(useCache) {
+  // Check cache first if requested
+  if (useCache !== false) {
+    const cached = getCachedData_('airtable', 'all_contracts');
+    if (cached) {
+      return cached;
+    }
+  }
+  
+  const allRecords = [];
+  
+  // Fetch from all contract tables
+  const tables = [
+    { name: 'Contracts 2026', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2026, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2026 },
+    { name: 'Contracts 2025', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2025 },
+    { name: 'Contracts 2024', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2024, viewId: BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2024 }
+  ];
+  
+  for (const table of tables) {
+    let offset = null;
+    
+    do {
+      let url = `${BS_CFG.AIRTABLE_API_BASE_URL}/${BS_CFG.AIRTABLE_BASE_ID}/${table.tableId}?maxRecords=100`;
+      
+      if (offset) {
+        url += `&offset=${offset}`;
+      }
+      
+      const options = {
+        method: 'get',
+        headers: {
+          'Authorization': `Bearer ${BS_CFG.AIRTABLE_API_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        muteHttpExceptions: true
+      };
+      
+      try {
+        const response = UrlFetchApp.fetch(url, options);
+        const responseCode = response.getResponseCode();
+        
+        if (responseCode !== 200) {
+          Logger.log(`Airtable API error for ${table.name}: ${response.getContentText()}`);
+          break;
+        }
+        
+        const data = JSON.parse(response.getContentText());
+        
+        if (data.records) {
+          // Add table info to each record for URL construction
+          data.records.forEach(record => {
+            record._tableId = table.tableId;
+            record._viewId = table.viewId;
+            record._tableName = table.name;
+          });
+          allRecords.push(...data.records);
+        }
+        
+        offset = data.offset || null;
+        
+        // Respect rate limits (5 requests/second)
+        if (offset) {
+          Utilities.sleep(250);
+        }
+      } catch (e) {
+        Logger.log(`Error fetching Airtable contracts from ${table.name}: ${e.message}`);
+        break;
+      }
+      
+    } while (offset);
+  }
+  
+  Logger.log(`📄 Retrieved ${allRecords.length} total contracts from Airtable (2024 + 2025)`);
+  
+  // Cache the results
+  setCachedData_('airtable', 'all_contracts', allRecords);
+  
+  return allRecords;
+}
+
+/**
+ * Get contracts for a specific vendor using fuzzy matching
+ * Searches both Vendor Name field AND Notes field for matches
+ */
+function getContractsForVendor_(vendorName) {
+  if (!vendorName) {
+    Logger.log('⚠️ No vendor name provided');
+    return [];
+  }
+  
+  // Get all contracts and filter locally for fuzzy matching
+  const allContracts = getAllContracts_();
+  
+  Logger.log(`📋 Filtering ${allContracts.length} total contracts for vendor: ${vendorName}`);
+  
+  const matches = allContracts.filter(record => {
+    const contractVendor = record.fields[BS_CFG.AIRTABLE_VENDOR_FIELD] || '';
+    const contractNotes = record.fields[BS_CFG.AIRTABLE_NOTES_FIELD] || '';
+    
+    // Handle Submitted By - could be a user/collaborator field (object with email/name) or linked record
+    let submittedBy = '';
+    const submittedByRaw = record.fields[BS_CFG.AIRTABLE_SUBMITTED_BY_FIELD];
+    if (submittedByRaw) {
+      if (typeof submittedByRaw === 'string') {
+        submittedBy = submittedByRaw;
+      } else if (submittedByRaw.name) {
+        // Collaborator field format: {id, email, name}
+        submittedBy = submittedByRaw.name;
+      } else if (submittedByRaw.email) {
+        submittedBy = submittedByRaw.email;
+      } else if (Array.isArray(submittedByRaw)) {
+        // Could be array of collaborators
+        submittedBy = submittedByRaw.map(s => s.name || s.email || String(s)).join(', ');
+      } else {
+        submittedBy = JSON.stringify(submittedByRaw);
+        Logger.log(`📋 Unexpected Submitted By format: ${submittedBy}`);
+      }
+    }
+    
+    const vertical = record.fields[BS_CFG.AIRTABLE_VERTICAL_FIELD] || '';
+    
+    // First check if this contract matches the vendor name at all
+    let vendorMatches = false;
+    
+    if (isFuzzyMatch_(vendorName, contractVendor)) {
+      vendorMatches = true;
+    } else if (contractNotes && contractNotes.toLowerCase().includes(vendorName.toLowerCase())) {
+      vendorMatches = true;
+    } else {
+      // Try simplified name matching
+      const vendorSimple = vendorName.toLowerCase()
+        .replace(/\s*\([^)]*\)/g, '')
+        .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Corporation|Company|Co\.?)$/i, '')
+        .trim();
+      if (vendorSimple.length >= 4 && contractNotes.toLowerCase().includes(vendorSimple)) {
+        vendorMatches = true;
+      }
+    }
+    
+    // If vendor doesn't match, skip early
+    if (!vendorMatches) {
+      return false;
+    }
+    
+    // Log potential match for debugging
+    Logger.log(`📋 Potential match: "${contractVendor}" | Submitted By: "${submittedBy}" | Vertical: "${vertical}"`);
+    
+    // Filter by Submitted By (Andy Worford OR Aden Ritz)
+    const submitterMatch = BS_CFG.AIRTABLE_ALLOWED_SUBMITTERS.some(
+      allowed => submittedBy.toLowerCase().includes(allowed.toLowerCase())
+    );
+    if (!submitterMatch) {
+      Logger.log(`   ❌ Filtered out: Submitted By "${submittedBy}" not in allowed list`);
+      return false;
+    }
+    
+    // Filter by Vertical (Home Services OR Solar)
+    const verticalMatch = BS_CFG.AIRTABLE_ALLOWED_VERTICALS.some(
+      allowed => vertical.toLowerCase().includes(allowed.toLowerCase())
+    );
+    if (!verticalMatch) {
+      Logger.log(`   ❌ Filtered out: Vertical "${vertical}" not in allowed list`);
+      return false;
+    }
+    
+    Logger.log(`   ✅ Match included!`);
+    return true;
+  });
+  
+  Logger.log(`📋 Found ${matches.length} contract(s) for vendor: ${vendorName}`);
+  return matches;
+}
+
+/**
+ * Format contracts for display in A(I)DEN
+ */
+function formatContractsForDisplay_(contracts) {
+  if (!contracts || contracts.length === 0) {
+    return [];
+  }
+  
+  const formatted = contracts.map(record => {
+    const fields = record.fields;
+    // Use table/view IDs stored on the record, or fall back to 2025 defaults
+    const tableId = record._tableId || BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025;
+    const viewId = record._viewId || BS_CFG.AIRTABLE_CONTRACTS_VIEW_ID_2025;
+    const tableName = record._tableName || 'Contracts 2025';
+    
+    // Trim notes to remove trailing newlines/whitespace, and cap length
+    const rawNotes = fields[BS_CFG.AIRTABLE_NOTES_FIELD] || '';
+    let cleanNotes = rawNotes.trim();
+    if (cleanNotes.length > BS_CFG.MAX_NOTES_LENGTH) {
+      cleanNotes = cleanNotes.substring(0, BS_CFG.MAX_NOTES_LENGTH) + '...';
+    }
+    
+    // Get created date and format it
+    // Try both "Created Date" and "Created" as field names
+    const createdDateRaw = fields[BS_CFG.AIRTABLE_CREATED_DATE_FIELD] || fields['Created'] || fields['Created Time'] || '';
+    let createdDateFormatted = '';
+    if (createdDateRaw) {
+      try {
+        const date = new Date(createdDateRaw);
+        if (!isNaN(date.getTime())) {
+          const tz = 'America/Los_Angeles';
+          createdDateFormatted = Utilities.formatDate(date, tz, 'yyyy-MM-dd HH:mm');
+        }
+      } catch (e) {
+        createdDateFormatted = createdDateRaw;
+      }
+    }
+    
+    // Combine status with created date
+    const baseStatus = fields[BS_CFG.AIRTABLE_STATUS_FIELD] || '';
+    const statusWithDate = createdDateFormatted ? `${baseStatus} - ${createdDateFormatted}` : baseStatus;
+    
+    // Log first contract's available fields for debugging
+    if (contracts.indexOf(record) === 0) {
+      Logger.log(`📋 Contract fields available: ${Object.keys(fields).join(', ')}`);
+      Logger.log(`📋 Created date raw value: "${createdDateRaw}" (field: ${BS_CFG.AIRTABLE_CREATED_DATE_FIELD})`);
+      Logger.log(`📋 Status with date: "${statusWithDate}"`);
+    }
+    
+    return {
+      id: record.id,
+      vendorName: fields[BS_CFG.AIRTABLE_VENDOR_FIELD] || '',
+      status: statusWithDate,
+      contractType: fields[BS_CFG.AIRTABLE_CONTRACT_TYPE_FIELD] || '',
+      notes: cleanNotes,
+      tableName: tableName,
+      createdDate: createdDateRaw,  // Keep raw for sorting
+      // Direct link to this record in Airtable using table ID and view ID
+      airtableUrl: `https://airtable.com/${BS_CFG.AIRTABLE_BASE_ID}/${tableId}/${viewId}/${record.id}`
+    };
+  });
+  
+  // Sort: "Other" type goes last, then by created date DESC
+  formatted.sort((a, b) => {
+    const typeA = (a.contractType || '').toLowerCase();
+    const typeB = (b.contractType || '').toLowerCase();
+    
+    // "Other" type always goes last
+    if (typeA === 'other' && typeB !== 'other') return 1;
+    if (typeA !== 'other' && typeB === 'other') return -1;
+    
+    // Same type priority, sort by created date DESC (newest first)
+    const dateA = a.createdDate || '';
+    const dateB = b.createdDate || '';
+    return dateB.localeCompare(dateA);
+  });
+  
+  return formatted;
+}
+
+/**
+ * Get contracts for vendor and format for A(I)DEN display
+ * This is the main function to call from A(I)DEN
+ */
+function getVendorContracts_(vendorName) {
+  try {
+    const contracts = getContractsForVendor_(vendorName);
+    const formatted = formatContractsForDisplay_(contracts);
+    
+    return {
+      vendorName: vendorName,
+      contractCount: formatted.length,
+      contracts: formatted,
+      hasContracts: formatted.length > 0
+    };
+  } catch (e) {
+    Logger.log(`Error fetching vendor contracts: ${e.message}`);
+    return {
+      vendorName: vendorName,
+      contractCount: 0,
+      contracts: [],
+      hasContracts: false
+    };
+  }
+}
+
+/**
+ * Test Airtable connection - run this to verify credentials
+ */
+function testAirtableConnection() {
+  const tables = [
+    { name: 'Contracts 2026', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2026 },
+    { name: 'Contracts 2025', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2025 },
+    { name: 'Contracts 2024', tableId: BS_CFG.AIRTABLE_CONTRACTS_TABLE_ID_2024 }
+  ];
+
+  let allSuccess = true;
+  
+  for (const table of tables) {
+    try {
+      const url = `${BS_CFG.AIRTABLE_API_BASE_URL}/${BS_CFG.AIRTABLE_BASE_ID}/${table.tableId}?maxRecords=1`;
+      
+      const options = {
+        method: 'get',
+        headers: {
+          'Authorization': `Bearer ${BS_CFG.AIRTABLE_API_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        muteHttpExceptions: true
+      };
+      
+      const response = UrlFetchApp.fetch(url, options);
+      const responseCode = response.getResponseCode();
+      const responseText = response.getContentText();
+      
+      if (responseCode === 200) {
+        const data = JSON.parse(responseText);
+        Logger.log(`✅ ${table.name} connection successful!`);
+        Logger.log(`   Found ${data.records.length} record(s) in test query`);
+      } else {
+        Logger.log(`❌ ${table.name} connection failed with status ${responseCode}`);
+        Logger.log(`   Response: ${responseText}`);
+        allSuccess = false;
+      }
+    } catch (error) {
+      Logger.log(`❌ Error connecting to ${table.name}: ${error.message}`);
+      allSuccess = false;
+    }
+  }
+  
+  return allSuccess;
+}
+
+/************************************************************
+ * GOOGLE DRIVE FOLDER FUNCTIONS
+ * Searches for vendor folder in Google Drive Vendors folder
+ ************************************************************/
+
+/**
+ * Get all vendor folders from Google Drive parent folder (batched)
+ * Fetches once and caches for session - much faster than searching per vendor
+ * @returns {array} Array of { id, name, nameLower, url }
+ */
+function getAllGDriveVendorFolders_() {
+  // Check session cache first
+  const cached = getCachedData_('gdrive_folders', 'all');
+  if (cached && cached.length > 0) {
+    Logger.log(`Google Drive folders loaded from cache: ${cached.length} folders`);
+    return cached;
+  }
+
+  Logger.log('Fetching all Google Drive vendor folders (batch operation)...');
+  const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
+  Logger.log(`Parent folder ID: ${parentFolderId}`);
+  const folders = [];
+
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const parentFolder = DriveApp.getFolderById(parentFolderId);
+      const folderIterator = parentFolder.getFolders();
+
+      while (folderIterator.hasNext()) {
+        const folder = folderIterator.next();
+        folders.push({
+          id: folder.getId(),
+          name: folder.getName(),
+          nameLower: folder.getName().toLowerCase(),
+          url: folder.getUrl()
+        });
+      }
+
+      Logger.log(`Fetched ${folders.length} vendor folders from Google Drive`);
+
+      // Cache for future lookups (within same session)
+      setCachedData_('gdrive_folders', 'all', folders);
+
+      return folders;
+    } catch (e) {
+      const msg = e.message || '';
+      const isAccessError = /permission|access denied|not found|no item|unable to access/i.test(msg);
+
+      if (isAccessError) {
+        // Permission or missing folder - retrying won't help
+        Logger.log(`Google Drive access error (not retrying): ${msg}`);
+        Logger.log(`Check that folder ID "${parentFolderId}" exists and is accessible`);
+        return { folders: [], error: `Access error: ${msg} (folder ID: ${parentFolderId})` };
+      }
+
+      Logger.log(`Error fetching Google Drive folders (attempt ${attempt}/${maxRetries}): ${msg}`);
+      if (attempt < maxRetries) {
+        Logger.log(`Retrying in ${attempt * 2} seconds...`);
+        Utilities.sleep(attempt * 2000);
+        folders.length = 0; // Clear any partial results
+      } else {
+        Logger.log('All retries exhausted for Google Drive folders');
+        return { folders: [], error: msg };
+      }
+    }
+  }
+}
+
+/**
+ * Get files from vendor's Google Drive folder
+ * Uses batched folder list for fast local matching, then fetches files
+ * Only returns files at the first level (not in subfolders)
+ *
+ * @param {string} vendorName - The vendor name to search for
+ * @returns {array} Array of file objects with name, type, modified, url
+ */
+function getGDriveFilesForVendor_(vendorName) {
+  if (!vendorName || vendorName.trim() === '') {
+    Logger.log('No vendor name provided for Google Drive search');
+    return [];
+  }
+
+  Logger.log(`=== GOOGLE DRIVE SEARCH ===`);
+  Logger.log(`Vendor: ${vendorName}`);
+
+  try {
+    const cleanVendorName = vendorName.trim().toLowerCase();
+
+    // Remove common suffixes for alternate search
+    const nameWithoutSuffix = cleanVendorName
+      .replace(/,?\s*(llc|inc\.?|corp\.?|corporation|company|co\.|l\.?l\.?c\.?)$/i, '')
+      .trim();
+
+    // Get all vendor folders from cache (batch operation)
+    const allFoldersResult = getAllGDriveVendorFolders_();
+
+    // Check if it's the error format from exhausted retries
+    if (allFoldersResult && allFoldersResult.error) {
+      Logger.log(`Google Drive API error: ${allFoldersResult.error}`);
+      return { files: [], folderFound: false, folderUrl: null, error: allFoldersResult.error };
+    }
+
+    const allFolders = Array.isArray(allFoldersResult) ? allFoldersResult : (allFoldersResult.folders || []);
+
+    // Match locally - no API calls needed!
+    let vendorFolder = null;
+    let vendorFolderUrl = null;
+
+    for (const folder of allFolders) {
+      // Check if folder contains the vendor name OR vendor contains the folder name (case-insensitive)
+      if (folder.nameLower.includes(cleanVendorName) || cleanVendorName.includes(folder.nameLower)) {
+        vendorFolder = DriveApp.getFolderById(folder.id);
+        vendorFolderUrl = folder.url;
+        Logger.log(`Match found: "${folder.name}" (vendor: "${vendorName}")`);
+        break;
+      }
+
+      // Also try without suffix
+      if (nameWithoutSuffix !== cleanVendorName &&
+          (folder.nameLower.includes(nameWithoutSuffix) || nameWithoutSuffix.includes(folder.nameLower))) {
+        vendorFolder = DriveApp.getFolderById(folder.id);
+        vendorFolderUrl = folder.url;
+        Logger.log(`Match found (without suffix): "${folder.name}" (vendor: "${vendorName}")`);
+        break;
+      }
+    }
+
+    if (!vendorFolder) {
+      Logger.log('No matching vendor folder found in Google Drive');
+      return { files: [], folderFound: false, folderUrl: null };
+    }
+
+    // Get files at the first level only (no subfolders)
+    // Use cached URL instead of calling getUrl() again
+    const files = [];
+    const folderUrl = vendorFolderUrl;
+    const fileIterator = vendorFolder.getFiles();
+    
+    while (fileIterator.hasNext()) {
+      const file = fileIterator.next();
+      
+      try {
+        const mimeType = file.getMimeType() || '';
+        
+        // Skip shortcuts (they appear as application/vnd.google-apps.shortcut)
+        if (mimeType.includes('shortcut')) {
+          Logger.log(`Skipping shortcut: ${file.getName()}`);
+          continue;
+        }
+        
+        // Determine file type from mime type
+        let fileType = 'File';
+        if (mimeType.includes('pdf')) fileType = 'PDF';
+        else if (mimeType.includes('spreadsheet') || mimeType.includes('excel')) fileType = 'Sheet';
+        else if (mimeType.includes('document') || mimeType.includes('word')) fileType = 'Doc';
+        else if (mimeType.includes('presentation') || mimeType.includes('powerpoint')) fileType = 'Slides';
+        else if (mimeType.includes('image')) fileType = 'Image';
+        else if (mimeType.includes('folder')) continue; // Skip folders
+        
+        const modDate = file.getLastUpdated();
+        const tz = Session.getScriptTimeZone();
+        
+        files.push({
+          name: file.getName(),
+          type: fileType,
+          modified: modDate ? Utilities.formatDate(modDate, tz, 'yyyy-MM-dd') : '',
+          url: file.getUrl(),
+          folderUrl: folderUrl
+        });
+      } catch (e) {
+        // Log error but continue with other files
+        Logger.log(`Error processing file ${file.getName()}: ${e.message}`);
+        files.push({
+          name: file.getName(),
+          type: '',
+          modified: '',
+          url: file.getUrl() || '',
+          folderUrl: folderUrl
+        });
+      }
+    }
+    
+    // Sort by modified date (newest first)
+    files.sort((a, b) => b.modified.localeCompare(a.modified));
+    
+    Logger.log(`Found ${files.length} files in vendor folder`);
+    return { files: files, folderFound: true, folderUrl: folderUrl };
+    
+  } catch (e) {
+    Logger.log(`Error searching Google Drive: ${e.message}`);
+    return { files: [], folderFound: false, folderUrl: null };
+  }
+}
+
+/************************************************************
+ * CRYSTAL BALL - Vendor Email Analysis
+ * Analyzes outstanding items and snoozed emails for a vendor
+ ************************************************************/
+
+/**
+ * Get Crystal Ball analysis for a vendor
+ * Analyzes emails in 00.received and snoozed emails to determine what's outstanding
+ * Runs realtime (no caching) - data changes frequently and we want latest insight
+ *
+ * @param {string} vendor - The vendor name
+ * @param {number} listRow - The row number in the list sheet
+ * @returns {object} - { items: [], snoozed: [], summary: string, error: string }
+ */
+function getCrystalBallData_(vendor, listRow, options) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'List sheet not found' };
+  }
+
+  // Extract additional context from options
+  const blockerTasks = (options && options.blockerTasks) || [];
+  const allTasks = (options && options.tasks) || [];
+  const contactData = (options && options.contactData) || {};
+  const mondayNotes = (options && options.notes) || '';
+
+  try {
+    // Get the Gmail link to extract the vendor label
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) {
+      return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'No Gmail link found' };
+    }
+
+    const gmailLinkStr = gmailLinkAll.toString();
+
+    // Extract vendor label (zzzvendors-*) from URL
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      return { items: [], snoozed: [], summary: '', suggestedActions: [], error: 'Could not extract vendor label' };
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+    Logger.log(`[Crystal Ball] Analyzing vendor: ${vendor}, label: ${vendorLabel}`);
+
+    // Search 1: Threads in 00.received with this vendor's label
+    const receivedQuery = `label:00.received label:${vendorLabel}`;
+    const receivedThreads = GmailApp.search(receivedQuery, 0, 30);
+    Logger.log(`[Crystal Ball] Found ${receivedThreads.length} threads in 00.received`);
+
+    // Search 2: Snoozed threads for this vendor
+    const snoozedQuery = `is:snoozed label:${vendorLabel}`;
+    const snoozedThreads = GmailApp.search(snoozedQuery, 0, 20);
+    Logger.log(`[Crystal Ball] Found ${snoozedThreads.length} snoozed threads`);
+
+    // Crystal Ball always runs fresh (realtime) - no checksum caching
+    // Data changes frequently and we want the latest insight when viewing a vendor
+    Logger.log(`[Crystal Ball] Running realtime analysis (no caching)`);
+
+    // Process received threads
+    const receivedItems = [];
+    for (const thread of receivedThreads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const labels = thread.getLabels().map(l => l.getName());
+
+      // Determine status based on labels
+      let status = 'inbox';
+      if (labels.some(l => l.includes('02.waiting/customer'))) status = 'waiting-customer';
+      else if (labels.some(l => l.includes('02.waiting/me'))) status = 'waiting-me';
+      else if (labels.some(l => l.includes('02.waiting/phonexa'))) status = 'waiting-phonexa';
+      else if (labels.some(l => l.includes('01.accounting'))) status = 'accounting';
+
+      // Get last sender (skip system emails)
+      let lastFrom = lastMessage.getFrom();
+      let lastSenderEmail = '';
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const sender = messages[i].getFrom();
+        if (!isSystemOrBounceEmail_(sender)) {
+          lastFrom = sender;
+          // Extract email from "Name <email>" format
+          const emailMatch = sender.match(/<([^>]+)>/) || [null, sender];
+          lastSenderEmail = (emailMatch[1] || sender).toLowerCase();
+          break;
+        }
+      }
+
+      // Determine if the last sender is from our team
+      const ourDomains = ['yourdomain.com', 'yourpartner.com', 'yourcrmplatform.com'];
+      const lastSenderIsUs = ourDomains.some(d => lastSenderEmail.includes(d));
+
+      receivedItems.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        lastFrom: lastFrom,
+        lastSenderIsUs: lastSenderIsUs,
+        status: status,
+        labels: labels.filter(l => l.startsWith('02.') || l.startsWith('01.')).join(', '),
+        snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
+      });
+    }
+
+    // Process snoozed threads
+    const snoozedItems = [];
+    for (const thread of snoozedThreads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+
+      snoozedItems.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        snippet: lastMessage.getPlainBody().substring(0, 200).replace(/\n/g, ' ')
+      });
+    }
+
+    // Build blocker context for Claude
+    const blockerContext = blockerTasks.length > 0
+      ? blockerTasks.map((b, i) => `${i+1}. "${b.subject}" (Status: ${b.status}${b.notes ? ', Notes: ' + b.notes : ''})`).join('\n')
+      : 'None';
+
+    // Build open tasks context (non-blocker, non-done tasks)
+    const openTasks = allTasks.filter(t => !t.isDone && !t.isBlocker);
+    const openTaskContext = openTasks.length > 0
+      ? openTasks.map((t, i) => `${i+1}. "${t.subject}" (Status: ${t.status}, Project: ${t.project})`).join('\n')
+      : 'None';
+
+    // Build recently completed tasks context (for awareness of what's already done)
+    const completedTasks = allTasks.filter(t => t.isDone);
+    const completedTaskContext = completedTasks.length > 0
+      ? completedTasks.slice(0, 10).map((t, i) => `${i+1}. "${t.subject}" (${t.status}${t.created ? ', Completed around: ' + t.created : ''})`).join('\n')
+      : 'None';
+
+    // If no emails AND no blockers AND no open tasks, return early
+    if (receivedItems.length === 0 && snoozedItems.length === 0 && blockerTasks.length === 0 && openTasks.length === 0) {
+      return {
+        items: [],
+        snoozed: [],
+        summary: 'No outstanding items found.',
+        suggestedActions: [],
+        error: null
+      };
+    }
+
+    // Build context for Claude analysis - clearly indicate who sent the last message
+    const emailContext = receivedItems.map((e, i) => {
+      const ballInCourt = e.lastSenderIsUs ? '⚪ BALL IN THEIR COURT (we sent last)' : '🔴 BALL IN OUR COURT (they sent last)';
+      return `${i+1}. [${e.status.toUpperCase()}] "${e.subject}" (${e.date})\n   Last message from: ${e.lastFrom}\n   ${ballInCourt}\n   Labels: ${e.labels || 'none'}\n   Preview: ${e.snippet}...`;
+    }).join('\n\n');
+
+    const snoozedContext = snoozedItems.map((e, i) =>
+      `${i+1}. "${e.subject}" (${e.date})\n   Preview: ${e.snippet}...`
+    ).join('\n\n');
+
+    // Load user standing instructions and dismissed actions
+    const standingInstructions = getCrystalBallInstructions_();
+    const dismissedActions = getDismissedCrystalBallActions_(vendor);
+
+    const standingCtx = standingInstructions.length > 0
+      ? '\n\nUSER STANDING INSTRUCTIONS (always follow these):\n' + standingInstructions.map((s, i) => `${i+1}. ${s}`).join('\n')
+      : '';
+
+    const dismissedCtx = dismissedActions.length > 0
+      ? '\n\nDISMISSED ACTIONS (user said these are NOT relevant - do NOT re-suggest):\n' + dismissedActions.map((d, i) => `${i+1}. "${d.description}" - Reason: ${d.reason}`).join('\n')
+      : '';
+
+    // Call Claude for analysis with full vendor context
+    // Prompt optimized for speed: concise instructions, structured data, minimal examples
+    const prompt = `Analyze vendor "${vendor}" - what's OUTSTANDING and what are next actions?
+
+CONTEXT: OUR TEAM = @yourdomain.com/@yourpartner.com/@yourcrmplatform.com. VENDOR = ${vendor}.
+- We sent last → waiting on vendor (🟡). They sent last + 01.priority/1 label → urgent (🔴). They sent last, no priority label → 🟡.
+
+VENDOR: Status=${contactData.liveStatus || '?'} | Verticals=${contactData.liveVerticals || 'none'} | Modalities=${contactData.liveModalities || 'none'}
+Notes: ${(mondayNotes || 'none').substring(0, 300)}
+
+BLOCKERS: ${blockerContext}
+OPEN TASKS: ${openTaskContext}
+COMPLETED (don't re-suggest): ${completedTaskContext}
+INBOX EMAILS: ${emailContext || 'None'}
+SNOOZED: ${snoozedContext || 'None'}${standingCtx}${dismissedCtx}
+
+Cross-reference emails with blockers/tasks. Check if blockers appear resolved by emails or completed tasks.
+
+FORMAT:
+**Blockers**
+For each blocker: resolved or active? Evidence?
+
+**Summary**
+Brief situation + most important next step.
+
+Then on new lines:
+SUGGESTED_ACTION: <what to do> | <us or vendor> | <related blocker/task>`;
+
+    const apiKey = getClaudeApiKey_();
+    if (!apiKey) {
+      // No API key - return raw data without analysis
+      return {
+        items: receivedItems,
+        snoozed: snoozedItems,
+        summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed`,
+        suggestedActions: [],
+        error: null
+      };
+    }
+
+    // Time budget check: skip Claude API call if script has been running too long
+    // Apps Script has a 6-minute (360s) execution limit; reserve 60s for remaining work
+    const scriptProps = PropertiesService.getScriptProperties();
+    const loadStartMs = Number(scriptProps.getProperty('_loadStartMs') || '0');
+    if (loadStartMs > 0) {
+      const elapsedSec = (Date.now() - loadStartMs) / 1000;
+      if (elapsedSec > 240) {
+        Logger.log(`[Crystal Ball] Skipping Claude API - time budget exceeded (${Math.round(elapsedSec)}s elapsed, limit 240s)`);
+        return {
+          items: receivedItems,
+          snoozed: snoozedItems,
+          summary: `${receivedItems.length} active emails, ${snoozedItems.length} snoozed (AI analysis skipped - time budget)`,
+          suggestedActions: [],
+          error: null
+        };
+      }
+    }
+
+    const claudeResult = callClaudeAPI_(prompt, apiKey, {
+      model: BS_CFG.CRYSTAL_BALL_MODEL,
+      maxTokens: BS_CFG.CRYSTAL_BALL_MAX_TOKENS
+    });
+
+    if (claudeResult.error) {
+      Logger.log(`[Crystal Ball] Claude API error: ${claudeResult.error}`);
+      return {
+        items: receivedItems,
+        snoozed: snoozedItems,
+        summary: `${receivedItems.length} active, ${snoozedItems.length} snoozed (analysis failed)`,
+        suggestedActions: [],
+        error: claudeResult.error
+      };
+    }
+
+    Logger.log(`[Crystal Ball] Analysis complete`);
+
+    // Parse suggested actions from Claude's response
+    const suggestedActions = [];
+    const summaryLines = [];
+    const responseLines = claudeResult.content.split('\n');
+    for (const line of responseLines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('SUGGESTED_ACTION:')) {
+        const parts = trimmed.substring('SUGGESTED_ACTION:'.length).split('|').map(p => p.trim());
+        if (parts.length >= 2) {
+          suggestedActions.push({
+            description: parts[0],
+            who: parts[1] || 'us',
+            relatedItem: parts[2] || ''
+          });
+        }
+      } else {
+        summaryLines.push(line);
+      }
+    }
+
+    // Clean up trailing blank lines from summary
+    while (summaryLines.length > 0 && summaryLines[summaryLines.length - 1].trim() === '') {
+      summaryLines.pop();
+    }
+
+    return {
+      items: receivedItems,
+      snoozed: snoozedItems,
+      summary: summaryLines.join('\n'),
+      suggestedActions: suggestedActions,
+      error: null
+    };
+
+  } catch (e) {
+    Logger.log(`[Crystal Ball] Error: ${e.message}`);
+    return { items: [], snoozed: [], summary: '', suggestedActions: [], error: e.message };
+  }
+}
+
+/**
+ * Get Crystal Ball standing instructions from Settings sheet.
+ * These are user-provided rules that shape how Crystal Ball interprets data
+ * (e.g., "Snoozed items are intentionally deferred", "Returns are handled ad hoc").
+ *
+ * Settings sheet format (Crystal Ball Instructions section):
+ * Row: "Crystal Ball Instructions" | (empty)
+ * Row: "Instruction"              | (empty)
+ * Row: "Snoozed items are intentionally deferred - don't flag as urgent or suggest follow-up" | (empty)
+ * Row: "Returns processing is handled ad hoc - don't suggest scheduling reminders" | (empty)
+ */
+function getCrystalBallInstructions_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return [];
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const instructions = [];
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'crystal ball instructions') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const cell = String(data[i][startCol] || '').trim();
+
+    // Skip header row
+    if (cell.toLowerCase() === 'instruction') {
+      continue;
+    }
+
+    // Exit on empty row
+    if (cell === '') {
+      break;
+    }
+
+    instructions.push(cell);
+  }
+
+  return instructions;
+}
+
+/**
+ * Get dismissed Crystal Ball actions for a vendor.
+ * Stored in BS_Cache sheet under key "CB_DISMISSED_<vendor>".
+ * Returns array of { description, reason, dismissedAt }.
+ */
+function getDismissedCrystalBallActions_(vendor) {
+  const ss = SpreadsheetApp.getActive();
+  const cacheSh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
+  if (!cacheSh) return [];
+
+  const cacheKey = 'CB_DISMISSED_' + vendor.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const data = cacheSh.getDataRange().getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0] || '') === cacheKey) {
+      try {
+        return JSON.parse(data[i][1]);
+      } catch (e) {
+        return [];
+      }
+    }
+  }
+  return [];
+}
+
+/**
+ * Save dismissed Crystal Ball actions for a vendor.
+ */
+function saveDismissedCrystalBallActions_(vendor, dismissed) {
+  const ss = SpreadsheetApp.getActive();
+  let cacheSh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
+  if (!cacheSh) return;
+
+  const cacheKey = 'CB_DISMISSED_' + vendor.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  const data = cacheSh.getDataRange().getValues();
+
+  for (let i = 0; i < data.length; i++) {
+    if (String(data[i][0] || '') === cacheKey) {
+      cacheSh.getRange(i + 1, 2).setValue(JSON.stringify(dismissed));
+      return;
+    }
+  }
+
+  // New entry
+  const newRow = cacheSh.getLastRow() + 1;
+  cacheSh.getRange(newRow, 1, 1, 2).setValues([[cacheKey, JSON.stringify(dismissed)]]);
+}
+
+/**
+ * Dismiss a Crystal Ball suggested action with a reason.
+ * Menu-driven: scans the A(I)DEN sheet for suggested actions, presents a numbered list,
+ * and prompts for a reason. The dismissal is stored so Crystal Ball won't re-suggest it.
+ */
+function dismissCrystalBallAction() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  if (!bsSh) return;
+
+  // Get current vendor
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return;
+  const currentIndex = getCurrentVendorIndex_();
+  const vendor = String(listSh.getRange(currentIndex + 1, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  if (!vendor) { ui.alert('No vendor loaded.'); return; }
+
+  // Scan for suggested actions in the sheet (look for rows with action icons after SUGGESTED ACTIONS header)
+  const dataRange = bsSh.getDataRange();
+  const values = dataRange.getValues();
+  const actions = [];
+  let inActionSection = false;
+
+  for (let i = 0; i < values.length; i++) {
+    const cellF = String(values[i][5] || '').trim(); // Column F (0-indexed = 5)
+    if (cellF === '⚡ SUGGESTED ACTIONS') {
+      inActionSection = true;
+      continue;
+    }
+    if (inActionSection) {
+      if (cellF.startsWith('👤') || cellF.startsWith('👈')) {
+        actions.push({ row: i + 1, text: cellF.replace(/^[👤👈]\s*/, '') });
+      } else {
+        break; // End of action section
+      }
+    }
+  }
+
+  if (actions.length === 0) {
+    ui.alert('No suggested actions found for this vendor.\n\nLoad a vendor first, then try again.');
+    return;
+  }
+
+  // Present numbered list
+  const listText = actions.map((a, i) => `${i + 1}. ${a.text}`).join('\n');
+  const pickResponse = ui.prompt(
+    '🔮 Dismiss Suggested Action',
+    `Which action to dismiss? Enter the number:\n\n${listText}`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (pickResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const pickNum = parseInt(pickResponse.getResponseText().trim(), 10);
+  if (isNaN(pickNum) || pickNum < 1 || pickNum > actions.length) {
+    ui.alert(`Invalid selection. Enter a number between 1 and ${actions.length}.`);
+    return;
+  }
+
+  const chosen = actions[pickNum - 1];
+
+  // Ask for reason
+  const reasonResponse = ui.prompt(
+    '💬 Why dismiss this?',
+    `"${chosen.text}"\n\nProvide context so Crystal Ball understands (e.g., "handled ad hoc", "snoozed = not due yet"):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (reasonResponse.getSelectedButton() !== ui.Button.OK) return;
+
+  const reason = reasonResponse.getResponseText().trim();
+  if (!reason) {
+    ui.alert('Please provide a reason so Crystal Ball can learn from it.');
+    return;
+  }
+
+  // Store dismissal
+  const dismissed = getDismissedCrystalBallActions_(vendor);
+  dismissed.push({
+    description: chosen.text,
+    reason: reason,
+    dismissedAt: new Date().toISOString().split('T')[0]
+  });
+  saveDismissedCrystalBallActions_(vendor, dismissed);
+
+  // Visual feedback - strike through the action
+  bsSh.getRange(chosen.row, 6, 1, 4).merge()
+    .setValue('✅ Dismissed: ' + chosen.text)
+    .setFontColor('#999999')
+    .setFontStyle('italic');
+
+  ss.toast(`Action dismissed. Crystal Ball will factor in: "${reason}"`, '💬 Noted', 3);
+}
+
+/**
+ * Clear all dismissed Crystal Ball actions for the current vendor.
+ * Use this to reset if your workflow changes.
+ */
+function clearDismissedCrystalBallActions() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return;
+  const currentIndex = getCurrentVendorIndex_();
+  const vendor = String(listSh.getRange(currentIndex + 1, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  if (!vendor) { ui.alert('No vendor loaded.'); return; }
+
+  const dismissed = getDismissedCrystalBallActions_(vendor);
+  if (dismissed.length === 0) {
+    ui.alert(`No dismissed actions for ${vendor}.`);
+    return;
+  }
+
+  const confirm = ui.alert(
+    'Clear Dismissed Actions',
+    `Clear ${dismissed.length} dismissed action(s) for ${vendor}?\n\nCrystal Ball will start suggesting these again.`,
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  saveDismissedCrystalBallActions_(vendor, []);
+  ss.toast(`Cleared all dismissed actions for ${vendor}.`, '🔮 Reset', 3);
+}
+
+/**
+ * Ask a question about a vendor and search their emails for the answer
+ * Uses Claude to analyze all emails with the vendor's zzzVendors label
+ */
+function askAboutVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  if (!vendor) {
+    ui.alert('No vendor currently loaded. Please navigate to a vendor first.');
+    return;
+  }
+
+  // Prompt for the question
+  const response = ui.prompt(
+    `❓ Ask About ${vendor}`,
+    'Enter your question (e.g., "What verticals do they want?", "What was their last pricing request?"):',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const question = response.getResponseText().trim();
+  if (!question) {
+    ui.alert('Please enter a question.');
+    return;
+  }
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  ss.toast('Gathering vendor context and searching emails...', '🔍 Searching', 15);
+
+  // Gather vendor profile data for context
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+
+  // Get contacts and vendor details from monday.com
+  let contactData = { contacts: [], liveVerticals: '', otherVerticals: '', liveModalities: '', states: '' };
+  try {
+    contactData = getVendorContacts_(vendor, listRow);
+  } catch (e) { /* skip if fails */ }
+
+  // Get AI instructions and goals for context alignment
+  const aiInstructions = getAiInstructions_();
+  const goalsContext = getGoalsContext_();
+
+  // Get all emails from vendor label
+  const emails = getAllEmailsFromVendorLabel_(listRow, 100); // Get more emails for context
+
+  if (emails.length === 0) {
+    ui.alert('No emails found for this vendor.');
+    return;
+  }
+
+  Logger.log(`[Ask About Vendor] Found ${emails.length} emails for ${vendor}`);
+
+  // Build email context with full thread content for deeper understanding
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    const dateStr = e.date || 'Unknown date';
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    // Get full thread content (multiple messages) for better context
+    let content = '';
+    try {
+      const thread = GmailApp.getThreadById(e.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        // Include up to last 5 messages in thread for conversation context
+        const recentMsgs = msgs.slice(-5);
+        content = recentMsgs.map(m => {
+          const from = m.getFrom();
+          const date = m.getDate().toISOString().split('T')[0];
+          const body = m.getPlainBody().substring(0, 1000).replace(/\n{3,}/g, '\n\n').trim();
+          return `[${date}] ${from}:\n${body}`;
+        }).join('\n---\n');
+      }
+    } catch (err) {
+      // Fall back to snippet
+      content = (e.snippet || '').replace(/\n+/g, ' ').trim();
+    }
+
+    return `=== Email Thread ${i+1} ===
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
+Messages in thread: ${e.messageCount || 1}
+Labels: ${labelsStr}
+Content:
+${content}`;
+  }).join('\n\n');
+
+  // Build vendor profile context
+  let vendorProfile = `## Vendor Profile
+Name: ${vendor}
+Type: ${source}
+Status: ${status}`;
+// TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
+
+  if (contactData.liveVerticals) vendorProfile += `\nLive Verticals: ${contactData.liveVerticals}`;
+  if (contactData.otherVerticals) vendorProfile += `\nOther Verticals: ${contactData.otherVerticals}`;
+  if (contactData.liveModalities) vendorProfile += `\nLive Modalities: ${contactData.liveModalities}`;
+  if (contactData.states) vendorProfile += `\nStates: ${contactData.states}`;
+  if (notes) vendorProfile += `\nNotes: ${notes}`;
+  if (contactData.contacts.length > 0) {
+    vendorProfile += `\n\nContacts: ${contactData.contacts.slice(0, 5).map(c => `${c.name} (${c.contactType}) ${c.email || ''}`).join(', ')}`;
+  }
+
+  // Build system prompt for better role context
+  const systemPrompt = `You are A(I)DEN, an AI assistant for the Director of Business Development at your company. The company delivers exclusive homeowner leads in real-time with TCPA consent, primarily in Home Services and Solar verticals.
+
+Your job is to answer questions about vendors by analyzing their emails, profile data, and relationship context. Be specific, cite relevant emails (mention subject line or date), and provide actionable context. If you can't find a clear answer, say so and explain what related information you did find.
+${aiInstructions}`;
+
+  // Build the user prompt
+  const prompt = `${vendorProfile}
+${goalsContext}
+
+## USER'S QUESTION
+${question}
+
+## Emails from ${vendor} (most recent first, ${Math.min(emails.length, 50)} of ${emails.length} total):
+
+${emailContext}
+
+Answer the question above based on all available context - vendor profile, emails, and any relevant background. Keep your answer concise but complete.`;
+
+  const result = callClaudeAPI_(prompt, apiKey, { system: systemPrompt, maxTokens: 2500 });
+
+  if (result.error) {
+    ui.alert(`Error: ${result.error}`);
+    return;
+  }
+
+  // Store the question for "Search More" functionality
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('BS_ASK_VENDOR_QUESTION', question);
+  props.setProperty('BS_ASK_VENDOR_OFFSET', '100'); // Next search starts at 100
+
+  // Show answer in a dialog with "Search Older Emails" button
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      .question { background: #e8f0fe; padding: 10px; border-radius: 5px; margin-bottom: 15px; font-weight: bold; }
+      .answer { background: #f8f9fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; }
+      .meta { color: #666; font-size: 12px; margin-top: 15px; }
+      .btn { padding: 10px 20px; margin-top: 15px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; }
+      .btn-secondary { background: #6c757d; color: white; }
+      .btn-secondary:hover { background: #5a6268; }
+      .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
+      #loading { display: none; color: #666; margin-top: 10px; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
+    </style>
+    <h2>❓ Answer for ${escapeHtml_(vendor)}</h2>
+    <div class="question">Q: ${escapeHtml_(question)}</div>
+    <div class="answer" id="answerBox">${escapeHtml_(result.content)}</div>
+    <div class="meta" id="metaBox">Searched emails 1-${Math.min(emails.length, 50)} of ${emails.length} retrieved</div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+    <button class="btn btn-secondary" id="searchMoreBtn" onclick="searchMore()">🔍 Search Older Emails (101-200)</button>
+    <div id="loading">⏳ Searching older emails...</div>
+
+    <script>
+      function copyContent() {
+        var el = document.getElementById('answerBox');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
+      function searchMore() {
+        document.getElementById('searchMoreBtn').disabled = true;
+        document.getElementById('loading').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('loading').style.display = 'none';
+            if (result.error) {
+              alert('Error: ' + result.error);
+              document.getElementById('searchMoreBtn').disabled = false;
+            } else {
+              document.getElementById('answerBox').textContent = result.answer;
+              document.getElementById('metaBox').textContent = result.meta;
+              if (result.hasMore) {
+                document.getElementById('searchMoreBtn').textContent = '🔍 Search Even Older Emails (' + result.nextRange + ')';
+                document.getElementById('searchMoreBtn').disabled = false;
+              } else {
+                document.getElementById('searchMoreBtn').textContent = '✓ No more emails to search';
+                document.getElementById('searchMoreBtn').disabled = true;
+              }
+            }
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('loading').style.display = 'none';
+            alert('Error: ' + error.message);
+            document.getElementById('searchMoreBtn').disabled = false;
+          })
+          .askAboutVendorContinue();
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(550);
+
+  ui.showModalDialog(htmlOutput, `❓ Ask About ${vendor}`);
+
+  Logger.log(`[Ask About Vendor] Answered question for ${vendor}: "${question}"`);
+}
+
+/**
+ * Continue searching older emails for Ask About Vendor
+ * Called from the dialog when user clicks "Search Older Emails"
+ */
+function askAboutVendorContinue() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  const props = PropertiesService.getScriptProperties();
+  const question = props.getProperty('BS_ASK_VENDOR_QUESTION');
+  const offset = parseInt(props.getProperty('BS_ASK_VENDOR_OFFSET') || '100', 10);
+
+  if (!question) {
+    return { error: 'No active question. Please start a new search.' };
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  // Get emails with offset
+  const emails = getAllEmailsFromVendorLabelWithOffset_(listRow, 100, offset);
+
+  if (emails.length === 0) {
+    return {
+      error: null,
+      answer: 'No more emails found in this range.',
+      meta: `Searched emails ${offset + 1}-${offset + 100} (none found)`,
+      hasMore: false,
+      nextRange: ''
+    };
+  }
+
+  Logger.log(`[Ask About Vendor Continue] Found ${emails.length} emails at offset ${offset} for ${vendor}`);
+
+  // Build email context with full thread content
+  const emailContext = emails.slice(0, 50).map((e, i) => {
+    const dateStr = e.date || 'Unknown date';
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || 'none');
+
+    // Get full thread content for better context
+    let content = '';
+    try {
+      const thread = GmailApp.getThreadById(e.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const recentMsgs = msgs.slice(-5);
+        content = recentMsgs.map(m => {
+          const from = m.getFrom();
+          const date = m.getDate().toISOString().split('T')[0];
+          const body = m.getPlainBody().substring(0, 1000).replace(/\n{3,}/g, '\n\n').trim();
+          return `[${date}] ${from}:\n${body}`;
+        }).join('\n---\n');
+      }
+    } catch (err) {
+      content = (e.snippet || '').replace(/\n+/g, ' ').trim();
+    }
+
+    return `=== Email Thread ${offset + i + 1} ===
+Subject: ${e.subject}
+Date: ${dateStr}
+From: ${e.from || 'Unknown'}
+To: ${e.to || 'Unknown'}
+Messages in thread: ${e.messageCount || 1}
+Labels: ${labelsStr}
+Content:
+${content}`;
+  }).join('\n\n');
+
+  const aiInstructions = getAiInstructions_();
+
+  const systemPrompt = `You are A(I)DEN, an AI assistant for the Director of Business Development at your company. The company delivers exclusive homeowner leads in real-time with TCPA consent, primarily in Home Services and Solar verticals.
+
+Your job is to answer questions about vendors by analyzing their emails. Be specific, cite relevant emails (mention subject line or date), and provide actionable context.
+${aiInstructions}`;
+
+  const prompt = `USER'S QUESTION: ${question}
+
+Here are OLDER emails from vendor "${vendor}" (emails ${offset + 1}-${offset + emails.length}):
+
+${emailContext}
+
+Based on these emails, please answer the user's question. If you can't find a clear answer, say so and explain what related information you did find.`;
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) return { error: 'No Claude API key configured.' };
+  const result = callClaudeAPI_(prompt, apiKey, { system: systemPrompt, maxTokens: 2500 });
+
+  if (result.error) {
+    return { error: result.error };
+  }
+
+  // Update offset for next search
+  const newOffset = offset + 100;
+  props.setProperty('BS_ASK_VENDOR_OFFSET', newOffset.toString());
+
+  const hasMore = emails.length >= 50; // If we got a full batch, there might be more
+  const nextRange = `${newOffset + 1}-${newOffset + 100}`;
+
+  return {
+    error: null,
+    answer: result.content,
+    meta: `Searched emails ${offset + 1}-${offset + Math.min(emails.length, 50)}`,
+    hasMore: hasMore,
+    nextRange: nextRange
+  };
+}
+
+/**
+ * Get emails from vendor label with offset for pagination
+ */
+function getAllEmailsFromVendorLabelWithOffset_(listRow, maxThreads, offset) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return [];
+
+  try {
+    const gmailLinkAll = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    if (!gmailLinkAll) return [];
+
+    const gmailLinkStr = gmailLinkAll.toString();
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) return [];
+
+    const vendorLabel = vendorLabelMatch[1];
+    const searchQuery = `label:${vendorLabel}`;
+
+    // Search with offset
+    const threads = GmailApp.search(searchQuery, offset, maxThreads);
+
+    Logger.log(`Found ${threads.length} threads at offset ${offset}`);
+
+    const emails = [];
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+      const labels = thread.getLabels().map(l => l.getName());
+
+      emails.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        date: lastMessage.getDate().toISOString().split('T')[0],
+        from: lastMessage.getFrom(),
+        to: lastMessage.getTo(),
+        snippet: lastMessage.getPlainBody().substring(0, 1500),
+        messageCount: messages.length,
+        labels: labels,
+        lastMessageDate: lastMessage.getDate()
+      });
+    }
+
+    emails.sort((a, b) => b.lastMessageDate - a.lastMessageDate);
+    return emails;
+
+  } catch (e) {
+    Logger.log(`ERROR in getAllEmailsFromVendorLabelWithOffset_: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get all items from a Monday.com board (batched)
+ * Fetches once and caches for session - much faster than searching per vendor
+ * @param {string} boardId - The board ID to fetch from
+ * @param {string} apiToken - The API token
+ * @returns {array} Array of { id, name, nameLower }
+ */
+function getAllMondayBoardItems_(boardId, apiToken) {
+  const cacheKey = `board_${boardId}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_items', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com items loaded from cache for board ${boardId}: ${cached.length} items`);
+    return cached;
+  }
+
+  Logger.log(`Fetching all items from Monday.com board ${boardId} (batch operation)...`);
+
+  const query = `
+    query {
+      boards (ids: [${boardId}]) {
+        items_page (limit: 500) {
+          items { id name }
+        }
+      }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: query }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result.data?.boards?.[0]?.items_page?.items) {
+      const items = result.data.boards[0].items_page.items.map(item => ({
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase()
+      }));
+
+      Logger.log(`Fetched ${items.length} items from Monday.com board ${boardId}`);
+
+      // Cache for future lookups
+      setCachedData_('monday_items', cacheKey, items);
+
+      return items;
+    }
+
+    return [];
+  } catch (e) {
+    Logger.log(`Error fetching Monday.com items: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Get all tasks from the Tasks board with full details (cached)
+ * This is much faster than querying per-vendor since it's one API call per session
+ *
+ * Filters:
+ * - Group: "Ongoing Projects" OR "Completed Projects"
+ *
+ * Uses cursor-based pagination to fetch beyond 500 item limit
+ * @returns {array} Array of task objects with full details
+ */
+function getAllMondayTasks_() {
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+
+  // Check session cache first
+  const cached = getCachedData_('monday_tasks', cacheKey);
+  if (cached && cached.length > 0) {
+    Logger.log(`Monday.com tasks loaded from cache: ${cached.length} tasks`);
+    return cached;
+  }
+
+  Logger.log(`Fetching all tasks from Monday.com Tasks board (batch operation with pagination)...`);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Groups to include (no project filter - include all projects)
+  const VALID_GROUPS = ['blockers', 'ongoing projects', 'completed projects', 'upcoming/paused projects'];
+
+  // First query to get initial page (includes columns for dynamic column ID discovery)
+  const initialQuery = `
+    query {
+      boards (ids: [${boardId}]) {
+        columns {
+          id
+          title
+        }
+        items_page (limit: 500) {
+          cursor
+          items {
+            id
+            name
+            group {
+              id
+              title
+            }
+            column_values {
+              id
+              text
+              type
+              ... on BoardRelationValue {
+                linked_items {
+                  id
+                  name
+                }
+              }
+            }
+            created_at
+            updated_at
+          }
+        }
+      }
+    }
+  `;
+
+  // Query for subsequent pages using cursor
+  const nextPageQuery = (cursor) => `
+    query {
+      next_items_page (limit: 500, cursor: "${cursor}") {
+        cursor
+        items {
+          id
+          name
+          group {
+            id
+            title
+          }
+          column_values {
+            id
+            text
+            type
+            ... on BoardRelationValue {
+              linked_items {
+                id
+                name
+              }
+            }
+          }
+          created_at
+          updated_at
+        }
+      }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      muteHttpExceptions: true
+    };
+
+    let allItems = [];
+    let cursor = null;
+    let pageNum = 1;
+
+    // First page
+    options.payload = JSON.stringify({ query: initialQuery });
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`API Error fetching tasks: ${result.errors[0].message}`);
+      return [];
+    }
+
+    if (!result.data?.boards?.[0]?.items_page?.items) {
+      Logger.log('No tasks found in Tasks board');
+      return [];
+    }
+
+    allItems = result.data.boards[0].items_page.items;
+    cursor = result.data.boards[0].items_page.cursor;
+
+    // Discover Vertical and Modality column IDs from board columns
+    const boardColumns = result.data.boards[0].columns || [];
+    let verticalColumnId = null;
+    let modalityColumnId = null;
+    let notesColumnId = null;
+    for (const col of boardColumns) {
+      const titleLower = (col.title || '').toLowerCase();
+      if (titleLower === 'vertical') verticalColumnId = col.id;
+      else if (titleLower === 'modality') modalityColumnId = col.id;
+      else if (titleLower === 'notes') notesColumnId = col.id;
+    }
+    Logger.log(`Tasks board column discovery - Vertical: ${verticalColumnId || '(not found)'}, Modality: ${modalityColumnId || '(not found)'}, Notes: ${notesColumnId || '(not found)'}`);
+
+    Logger.log(`Page ${pageNum}: Fetched ${allItems.length} tasks, cursor: ${cursor ? 'yes' : 'no'}`);
+
+    // Fetch additional pages if cursor exists
+    while (cursor) {
+      pageNum++;
+      options.payload = JSON.stringify({ query: nextPageQuery(cursor) });
+      const nextResponse = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+      const nextResult = JSON.parse(nextResponse.getContentText());
+
+      if (nextResult.errors && nextResult.errors.length > 0) {
+        Logger.log(`API Error on page ${pageNum}: ${nextResult.errors[0].message}`);
+        break;
+      }
+
+      if (!nextResult.data?.next_items_page?.items) {
+        Logger.log(`No more items on page ${pageNum}`);
+        break;
+      }
+
+      const pageItems = nextResult.data.next_items_page.items;
+      allItems = allItems.concat(pageItems);
+      cursor = nextResult.data.next_items_page.cursor;
+      Logger.log(`Page ${pageNum}: Fetched ${pageItems.length} tasks (total: ${allItems.length}), cursor: ${cursor ? 'yes' : 'no'}`);
+
+      // Safety limit to prevent infinite loops
+      if (pageNum >= 20) {
+        Logger.log('Reached page limit (20), stopping pagination');
+        break;
+      }
+    }
+
+    Logger.log(`Total fetched from Monday.com: ${allItems.length} tasks across ${pageNum} page(s)`);
+
+    // Process items into a more usable format AND filter by group/project
+    const tasks = [];
+    let filteredOutCount = 0;
+
+    for (const item of allItems) {
+      const colVals = {};
+      for (const col of (item.column_values || [])) {
+        colVals[col.id] = col;
+      }
+
+      // Get project from board_relation column (use correct column ID from config)
+      let project = '';
+      const projectCol = colVals[BS_CFG.TASKS_PROJECT_COLUMN];
+      if (projectCol) {
+        if (projectCol.linked_items && projectCol.linked_items.length > 0) {
+          project = projectCol.linked_items[0].name || '';
+        } else if (projectCol.text) {
+          project = projectCol.text;
+        }
+      }
+
+      const groupTitle = item.group?.title || '';
+
+      // Filter: Only include tasks from valid groups
+      const groupLower = groupTitle.toLowerCase();
+
+      if (!VALID_GROUPS.includes(groupLower)) {
+        filteredOutCount++;
+        continue;
+      }
+
+      // Extract task-level vertical and modality from discovered column IDs
+      const taskVertical = verticalColumnId && colVals[verticalColumnId]?.text ? colVals[verticalColumnId].text : '';
+      const taskModality = modalityColumnId && colVals[modalityColumnId]?.text ? colVals[modalityColumnId].text : '';
+      const taskNotes = notesColumnId && colVals[notesColumnId]?.text ? colVals[notesColumnId].text : '';
+
+      tasks.push({
+        id: item.id,
+        name: item.name,
+        nameLower: String(item.name || '').toLowerCase(),
+        groupId: item.group?.id || '',
+        groupTitle: groupTitle,
+        status: colVals['status']?.text || '',
+        project: project,
+        vertical: taskVertical,
+        modality: taskModality,
+        notes: taskNotes,
+        tempInd: colVals['numbers']?.text || colVals['temp_ind']?.text || null,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+        columnValues: colVals
+      });
+    }
+
+    Logger.log(`After filtering: ${tasks.length} tasks (filtered out ${filteredOutCount} from other groups)`);
+    Logger.log(`Valid groups: ${VALID_GROUPS.join(', ')}`);
+
+    // Cache for future lookups (1 hour cache)
+    setCachedData_('monday_tasks', cacheKey, tasks);
+
+    return tasks;
+  } catch (e) {
+    Logger.log(`Error fetching Monday.com tasks: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * Find a monday.com item ID by searching for a vendor name
+ * Uses batched item list for fast local matching
+ */
+function findMondayItemIdByVendor_(vendor, boardId, apiToken) {
+  Logger.log(`=== SEARCHING FOR VENDOR ===`);
+  Logger.log(`Search term: "${vendor}"`);
+  Logger.log(`Board ID: ${boardId}`);
+
+  const searchTerm = vendor.toLowerCase();
+  const withoutParens = vendor.replace(/\s*\([^)]*\)/g, '').trim();
+  const searchTermNoParens = withoutParens.toLowerCase();
+
+  // Get all items from cache (batch operation)
+  const allItems = getAllMondayBoardItems_(boardId, apiToken);
+
+  // Match locally - no API calls needed!
+  // Try exact match first
+  for (const item of allItems) {
+    if (item.nameLower === searchTerm || item.nameLower === searchTermNoParens) {
+      Logger.log(`✓ EXACT MATCH: "${item.name}" (ID: ${item.id})`);
+      return item.id;
+    }
+  }
+
+  // Try contains match
+  for (const item of allItems) {
+    if (item.nameLower.includes(searchTerm) || searchTerm.includes(item.nameLower) ||
+        item.nameLower.includes(searchTermNoParens) || searchTermNoParens.includes(item.nameLower)) {
+      Logger.log(`✓ CONTAINS MATCH: "${item.name}" (ID: ${item.id})`);
+      return item.id;
+    }
+  }
+
+  Logger.log(`No match found for "${vendor}" in board ${boardId}`);
+  return null;
+}
+
+/**
+ * Navigation: Go to next vendor
+ */
+function battleStationNext() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  
+  if (!currentIndex) {
+    loadVendorData(1, { loadMode: 'fast' });
+    return;
+  }
+
+  const totalVendors = listSh.getLastRow() - 1;
+
+  // Wrap around to first vendor if at the end
+  if (currentIndex >= totalVendors) {
+    const listRow = currentIndex + 1;
+    const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+    listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
+    ss.toast(`Marked "${vendor}" as reviewed. Wrapping to vendor #1...`, '🔄 Wrap Around', 2);
+    loadVendorData(1);
+    return;
+  }
+  
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+  listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
+  
+  ss.toast(`Marked "${vendor}" as reviewed`, '▶️ Next', 2);
+  loadVendorData(currentIndex + 1, { loadMode: 'fast' });
+}
+
+/**
+ * Navigation: Go to previous vendor
+ */
+function battleStationPrevious() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex) {
+    loadVendorData(1, { loadMode: 'fast' });
+    return;
+  }
+
+  if (currentIndex <= 1) {
+    SpreadsheetApp.getActive().toast('Already at the first vendor!', '⚠️ Start of List', 3);
+    return;
+  }
+
+  loadVendorData(currentIndex - 1, { loadMode: 'fast' });
+}
+
+/**
+ * Navigation: Restart from the first vendor in the list
+ */
+function battleStationRestartFromTop() {
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  ss.toast('Restarting from the top...', '⏮️ Restart', 2);
+  loadVendorData(1);
+}
+
+/**
+ * Refresh current vendor data
+ */
+function battleStationRefresh() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+  
+  const currentIndex = getCurrentVendorIndex_();
+  loadVendorData(currentIndex || 1);
+}
+
+/**
+ * Quick Refresh - Email only, uses cached data for Airtable/Box
+ * Much faster than full refresh when you've only changed emails
+ */
+/**
+ * Quick Refresh - Email only, just refreshes the EMAILS section without redrawing everything
+ * Much faster than full refresh
+ */
+function battleStationQuickRefresh() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  // Check for pending archive threads (from Email Responses) and archive if I sent the reply
+  const didArchive = checkAndArchivePendingThreads_();
+  if (didArchive) {
+    // Threads were archived - need to wait for Gmail to update, then refresh
+    ss.toast('Archived sent emails, waiting for Gmail to update...', '📬 Auto-Archive', 2);
+    Utilities.sleep(2000);
+    // Do a Quick Refresh Until Changed to catch the archive
+    battleStationQuickRefreshUntilChanged();
+    return;
+  }
+
+  ss.toast('Refreshing emails only...', '⚡ Quick Refresh', 2);
+  
+  // Get current vendor info
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  
+  // Find the EMAILS section in the sheet
+  const dataRange = bsSh.getDataRange();
+  const values = dataRange.getValues();
+  
+  let emailsHeaderRow = -1;
+  let emailsEndRow = -1;
+  
+  // Find emails section start
+  for (let row = 0; row < values.length; row++) {
+    const cellValue = String(values[row][0] || '');
+    if (cellValue.includes('📧 EMAILS')) {
+      emailsHeaderRow = row + 1; // 1-indexed
+    } else if (emailsHeaderRow > 0 && (cellValue.includes('📋 MONDAY.COM TASKS') || cellValue.includes('📋 MONDAY'))) {
+      // Found the next section (TASKS comes after EMAILS)
+      emailsEndRow = row; // 0-indexed, so this is the row before TASKS header (1-indexed)
+      break;
+    }
+  }
+  
+  if (emailsHeaderRow < 0) {
+    ss.toast('Could not find EMAILS section', '❌ Error', 3);
+    return;
+  }
+  
+  // If we didn't find the end, assume it goes to current row count
+  if (emailsEndRow < 0) {
+    emailsEndRow = values.length;
+  }
+  
+  // Fetch fresh emails
+  const emails = getEmailsForVendor_(vendor, listRow);
+  
+  // Calculate how many rows we need vs how many we have
+  const emailRowsNeeded = emails.length > 0 ? Math.min(emails.length, 20) + 2 : 2; // +2 for header row and column headers (or "no emails" row)
+  if (emails.length > 20) emailRowsNeeded + 1; // +1 for "and X more" row
+  
+  const availableRows = emailsEndRow - emailsHeaderRow;
+  
+  // Clear existing email content (keep header row formatting)
+  const clearStartRow = emailsHeaderRow + 1; // Row after "📧 EMAILS" header
+  const clearEndRow = emailsEndRow;
+  
+  if (clearEndRow > clearStartRow) {
+    bsSh.getRange(clearStartRow, 1, clearEndRow - clearStartRow, 4)
+      .clearContent()
+      .clearFormat()
+      .setBackground('#ffffff')
+      .setFontWeight('normal')
+      .setFontStyle('normal');
+    
+    // Unmerge any merged cells in the range
+    for (let r = clearStartRow; r < clearEndRow; r++) {
+      try {
+        bsSh.getRange(r, 1, 1, 4).breakApart();
+      } catch (e) {
+        // Ignore if not merged
+      }
+    }
+  }
+  
+  // Update the header with new count
+  bsSh.getRange(emailsHeaderRow, 1, 1, 4).breakApart();
+  bsSh.getRange(emailsHeaderRow, 1, 1, 4).merge()
+    .setValue(`📧 EMAILS (${emails.length})  |  🔵 Snoozed  🔴 Overdue  🟠 Phonexa  🟢 Accounting  🟡 Waiting`)
+    .setBackground('#f8f9fa')
+    .setFontWeight('bold')
+    .setFontSize(10)
+    .setFontColor('#1a73e8')
+    .setHorizontalAlignment('left')
+    .setVerticalAlignment('middle');
+  
+  let currentRow = emailsHeaderRow + 1;
+  
+  if (emails.length === 0) {
+    bsSh.getRange(currentRow, 1, 1, 4).merge()
+      .setValue('No emails found')
+      .setFontStyle('italic')
+      .setBackground('#fafafa')
+      .setHorizontalAlignment('center')
+      .setVerticalAlignment('middle');
+    currentRow++;
+  } else {
+    // Email headers
+    bsSh.getRange(currentRow, 1).setValue('Subject').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 2).setValue('Date').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 3).setValue('Last').setFontWeight('bold').setBackground('#f3f3f3');
+    bsSh.getRange(currentRow, 4).setValue('Labels').setFontWeight('bold').setBackground('#f3f3f3');
+    currentRow++;
+
+    for (const email of emails.slice(0, 20)) {
+      bsSh.getRange(currentRow, 1).setValue(email.subject);
+      const emailDateCell2 = bsSh.getRange(currentRow, 2);
+      emailDateCell2.setNumberFormat('@'); // Set format BEFORE value to prevent auto-parsing
+      emailDateCell2.setValue(email.date);
+      bsSh.getRange(currentRow, 3).setValue(email.lastFrom);
+      bsSh.getRange(currentRow, 4).setValue(email.labels);
+
+      if (email.link) {
+        bsSh.getRange(currentRow, 1)
+          .setFormula(`=HYPERLINK("${email.link}", "${email.subject.replace(/"/g, '""')}")`);
+      }
+      
+      // Check if this email is overdue
+      const isOverdue = isEmailOverdue_(email);
+      
+      // Check if email has priority label
+      const hasPriority = email.labels.includes('01.priority/1');
+      
+      // Color priority: Snoozed > OVERDUE > Phonexa > Accounting > Waiting/Customer > Active
+      if (email.isSnoozed) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_SNOOZED);
+      } else if (isOverdue) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_OVERDUE);
+        bsSh.getRange(currentRow, 1, 1, 4).setFontWeight('bold');
+      } else if (email.labels.includes('02.waiting/phonexa')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_PHONEXA);
+      } else if (email.labels.includes('04.accounting-invoices')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#d9ead3');
+      } else if (email.labels.includes('02.waiting/customer')) {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground(BS_CFG.COLOR_WAITING);
+      } else {
+        bsSh.getRange(currentRow, 1, 1, 4).setBackground('#ffffff');
+      }
+      
+      // If missing 01.priority/1, make text grey to indicate lower importance
+      if (!hasPriority) {
+        bsSh.getRange(currentRow, 1, 1, 4).setFontColor('#999999');
+      }
+      
+      currentRow++;
+    }
+    
+    if (emails.length > 20) {
+      bsSh.getRange(currentRow, 1, 1, 4).merge()
+        .setValue(`... and ${emails.length - 20} more emails (showing first 20)`)
+        .setFontStyle('italic')
+        .setHorizontalAlignment('center');
+      currentRow++;
+    }
+  }
+  
+  // Update checksum for emails
+  const newEmailChecksum = generateEmailChecksum_(emails);
+
+  // Also update vendor label checksum to prevent false "new vendor emails" detection after snooze
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+  const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+  updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum);
+
+  ss.toast('Emails refreshed!', '⚡ Done', 2);
+}
+
+/**
+ * Quick Refresh Until Changed - repeatedly refreshes emails until a change is detected
+ * Useful when you've made email changes and are waiting for them to take effect
+ */
+function battleStationQuickRefreshUntilChanged() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  // Get current email checksum before refreshing
+  const storedData = getStoredChecksum_(vendor);
+  // Convert to string for consistent comparison (spreadsheet reads numbers as strings)
+  const oldChecksum = storedData && storedData.emailChecksum != null ? String(storedData.emailChecksum) : null;
+
+  const maxAttempts = 20;  // Max attempts to prevent infinite loop
+  const delaySeconds = 3;  // Seconds between attempts
+
+  Logger.log(`Quick Refresh Until Changed - Starting for ${vendor}`);
+  Logger.log(`Old checksum: ${oldChecksum} (type: ${typeof oldChecksum})`);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    ss.toast(`Checking for email changes... (attempt ${attempt}/${maxAttempts})`, '🔁 Waiting', delaySeconds + 1);
+
+    // Fetch fresh emails
+    const emails = getEmailsForVendor_(vendor, listRow);
+    const newChecksum = String(generateEmailChecksum_(emails));
+
+    Logger.log(`Attempt ${attempt}: newChecksum = ${newChecksum} (type: ${typeof newChecksum})`);
+
+    if (newChecksum !== oldChecksum) {
+      // Change detected! Do a full quick refresh to update the display
+      Logger.log(`Change detected! Old: ${oldChecksum}, New: ${newChecksum}`);
+      ss.toast('Change detected! Refreshing display...', '✅ Found', 2);
+      battleStationQuickRefresh();
+      return;
+    }
+
+    // No change yet, wait before next attempt
+    if (attempt < maxAttempts) {
+      Utilities.sleep(delaySeconds * 1000);
+    }
+  }
+
+  ss.toast(`No changes detected after ${maxAttempts} attempts`, '⏱️ Timeout', 3);
+}
+
+/**
+ * Update the email checksum (and optionally vendor label checksum) for a vendor
+ * @param {string} vendor - Vendor name
+ * @param {string} newEmailChecksum - New email checksum
+ * @param {string} [newVendorLabelChecksum] - Optional new vendor label checksum
+ */
+function updateEmailChecksum_(vendor, newEmailChecksum, newVendorLabelChecksum) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    // Use case-insensitive comparison to match storeChecksum_ and getStoredChecksum_
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 3).setValue(newEmailChecksum); // Column C = EmailChecksum
+      sh.getRange(i + 1, 5).setValue(new Date()); // Column E = Last Viewed
+
+      // Also update vendor label checksum if provided (Column I = 9)
+      if (newVendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(newVendorLabelChecksum);
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}, vendorLabel: ${newVendorLabelChecksum}`);
+      } else {
+        Logger.log(`Updated email checksum for ${vendor}: ${newEmailChecksum}`);
+      }
+      return;
+    }
+  }
+
+  // Vendor not found - this shouldn't happen but handle it
+  Logger.log(`Warning: Could not find ${vendor} in checksums sheet to update email checksum`);
+}
+
+/**
+ * Hard Refresh - Clear cache and reload everything fresh
+ */
+function battleStationHardRefresh() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+  
+  // Clear the cache
+  clearBSCache_();
+  ss.toast('Cache cleared, refreshing...', '🔄 Hard Refresh', 2);
+
+  const currentIndex = getCurrentVendorIndex_();
+  loadVendorData(currentIndex || 1, { useCache: false });
+}
+
+/**
+ * Hardest Refresh - clears ALL caches including batch caches (monday.com tasks, calendar events, etc.)
+ * Use when you need completely fresh data from all external sources
+ */
+function battleStationHardestRefresh() {
+  // Track start time for time budget (Hardest Refresh runs cache clears THEN loadVendorData)
+  PropertiesService.getScriptProperties().setProperty('_loadStartMs', String(Date.now()));
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN not found. Run setupBattleStation() first.');
+    return;
+  }
+
+  ss.toast('Clearing ALL caches...', '💥 Hardest Refresh', 2);
+
+  // Clear the BS Cache sheet (box, gdrive, airtable, monday_items, monday_tasks, etc.)
+  clearBSCache_();
+
+  // Clear the Script Cache (calendar events)
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Hardest Refresh: All caches cleared (BS Cache sheet + Script Cache)');
+
+  // Re-fetch batch data to repopulate caches
+  ss.toast('Refetching monday.com tasks...', '💥 Hardest Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Hardest Refresh: Refetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refetching calendar events...', '💥 Hardest Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Hardest Refresh: Refetched ${events.length} calendar events`);
+
+  ss.toast('All caches refreshed, loading vendor...', '💥 Hardest Refresh', 2);
+
+  const currentIndex = getCurrentVendorIndex_();
+  loadVendorData(currentIndex || 1, { useCache: false });
+}
+
+/**
+ * Get or create the cache sheet
+ */
+function getBSCacheSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
+  
+  if (!sh) {
+    sh = ss.insertSheet(BS_CFG.CACHE_SHEET);
+    // Set up headers: Type, Key, Data (JSON), LastUpdated
+    sh.getRange(1, 1, 1, 4).setValues([['Type', 'Key', 'Data', 'LastUpdated']]);
+    sh.hideSheet();
+  }
+  
+  return sh;
+}
+
+/**
+ * Clear the BS cache
+ */
+function clearBSCache_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(BS_CFG.CACHE_SHEET);
+
+  if (sh) {
+    sh.clear();
+    sh.getRange(1, 1, 1, 4).setValues([['Type', 'Key', 'Data', 'LastUpdated']]);
+  }
+
+  Logger.log('BS Cache cleared');
+}
+
+/**
+ * Refresh batch caches (monday.com tasks, calendar events)
+ * Called when buildList runs to ensure fresh data for vendor review
+ */
+function refreshBatchCaches_() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Clear specific cache types for batch data
+  clearCacheByType_('monday_tasks');
+  clearCacheByType_('monday_items');
+  clearCacheByType_('airtable');
+  clearCacheByType_('gdrive_folders');
+
+  // Clear Script Cache for calendar events
+  const scriptCache = CacheService.getScriptCache();
+  scriptCache.remove('calendar_all_events');
+
+  Logger.log('Batch caches cleared, refetching...');
+
+  // Refetch batch data to populate caches
+  ss.toast('Refreshing monday.com tasks...', '🔄 Cache Refresh', -1);
+  const tasks = getAllMondayTasks_();
+  Logger.log(`Batch refresh: Fetched ${tasks.length} monday.com tasks`);
+
+  ss.toast('Refreshing calendar events...', '🔄 Cache Refresh', -1);
+  const events = getAllCalendarEvents_();
+  Logger.log(`Batch refresh: Fetched ${events.length} calendar events`);
+
+  ss.toast('Caches refreshed!', '🔄 Done', 2);
+}
+
+/**
+ * Clear cache entries by type
+ */
+function clearCacheByType_(type) {
+  const sh = getBSCacheSheet_();
+  const data = sh.getDataRange().getValues();
+
+  // Find rows to delete (in reverse order to avoid index shifting)
+  const rowsToDelete = [];
+  for (let i = data.length - 1; i > 0; i--) {
+    if (data[i][0] === type) {
+      rowsToDelete.push(i + 1); // Sheet rows are 1-indexed
+    }
+  }
+
+  // Delete rows
+  for (const row of rowsToDelete) {
+    sh.deleteRow(row);
+  }
+
+  if (rowsToDelete.length > 0) {
+    Logger.log(`Cleared ${rowsToDelete.length} cache entries of type: ${type}`);
+  }
+}
+
+/**
+ * Get cached data if fresh enough
+ * Returns null if cache is stale or doesn't exist
+ */
+function getCachedData_(type, key) {
+  const sh = getBSCacheSheet_();
+  const data = sh.getDataRange().getValues();
+  
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === type && data[i][1] === key) {
+      const lastUpdated = new Date(data[i][3]);
+      const ageHours = (new Date() - lastUpdated) / (1000 * 60 * 60);
+      
+      if (ageHours < BS_CFG.CACHE_MAX_AGE_HOURS) {
+        try {
+          Logger.log(`Cache HIT: ${type}/${key} (${Math.round(ageHours * 10) / 10}h old)`);
+          return JSON.parse(data[i][2]);
+        } catch (e) {
+          Logger.log(`Cache parse error: ${e.message}`);
+          return null;
+        }
+      } else {
+        Logger.log(`Cache STALE: ${type}/${key} (${Math.round(ageHours * 10) / 10}h old)`);
+        return null;
+      }
+    }
+  }
+  
+  Logger.log(`Cache MISS: ${type}/${key}`);
+  return null;
+}
+
+/**
+ * Store data in cache
+ */
+function setCachedData_(type, key, data) {
+  const sh = getBSCacheSheet_();
+  const existingData = sh.getDataRange().getValues();
+  
+  // Look for existing row to update
+  for (let i = 1; i < existingData.length; i++) {
+    if (existingData[i][0] === type && existingData[i][1] === key) {
+      sh.getRange(i + 1, 3, 1, 2).setValues([[JSON.stringify(data), new Date()]]);
+      Logger.log(`Cache UPDATE: ${type}/${key}`);
+      return;
+    }
+  }
+  
+  // Add new row
+  sh.appendRow([type, key, JSON.stringify(data), new Date()]);
+  Logger.log(`Cache SET: ${type}/${key}`);
+}
+
+/**
+ * Cache original notes when loading a vendor (for auto-save on transition)
+ */
+function cacheOriginalNotes_(notes) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('aiden_original_notes', notes || '');
+}
+
+/**
+ * Get cached original notes
+ */
+function getOriginalNotes_() {
+  const props = PropertiesService.getScriptProperties();
+  return props.getProperty('aiden_original_notes') || '';
+}
+
+/**
+ * Check if notes changed and auto-save to monday.com if so
+ * Called before transitioning to another vendor
+ */
+function checkAndAutoSaveNotes_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!bsSh || !listSh) return;
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) return;
+
+  // Find the notes row - look for 📝 NOTES header
+  let notesRow = -1;
+  for (let i = 5; i < 50; i++) {
+    const label = String(bsSh.getRange(i, 1).getValue() || '');
+    if (label.indexOf('📝 NOTES') !== -1) {
+      notesRow = i + 1;  // Notes content is in the row after the header
+      break;
+    }
+  }
+
+  if (notesRow === -1) return;
+
+  const currentNotes = String(bsSh.getRange(notesRow, 1).getValue() || '').trim();
+  const originalNotes = getOriginalNotes_();
+
+  // Skip if notes haven't changed or are empty/placeholder
+  if (currentNotes === originalNotes) return;
+  if (!currentNotes || currentNotes === '(no notes)') return;
+  if (currentNotes.startsWith('=HYPERLINK')) return;  // It's a formula, not user content
+
+  // Notes changed - auto-save to monday.com
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+  if (!vendor) return;
+
+  Logger.log(`Auto-saving notes for ${vendor} (changed from "${originalNotes.substring(0, 50)}..." to "${currentNotes.substring(0, 50)}...")`);
+  ss.toast(`Auto-saving notes for ${vendor}...`, '💾 Auto-Save', 2);
+
+  try {
+    // Update List sheet
+    listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(currentNotes);
+
+    // Update monday.com
+    const result = updateMondayComNotesForVendor_(vendor, currentNotes, listRow);
+
+    if (result.success) {
+      // Update cache so we don't try to save again
+      cacheOriginalNotes_(currentNotes);
+      ss.toast(`Notes auto-saved for ${vendor}`, '✅ Saved', 2);
+    } else {
+      Logger.log(`Auto-save failed: ${result.error}`);
+    }
+  } catch (e) {
+    Logger.log(`Auto-save error: ${e.message}`);
+  }
+}
+
+/**
+ * Update monday.com notes for current vendor - NO DIALOGS
+ */
+function battleStationUpdateMondayNotes() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!bsSh || !listSh) {
+    ss.toast('Required sheets not found', '❌ Error', 3);
+    return;
+  }
+  
+  const currentIndex = getCurrentVendorIndex_();
+  
+  if (!currentIndex || isNaN(currentIndex)) {
+    ss.toast('Could not determine current vendor', '❌ Error', 3);
+    return;
+  }
+  
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  
+  if (!vendor) {
+    ss.toast('Could not determine vendor name', '❌ Error', 3);
+    return;
+  }
+  
+  // Find the notes row - look for 📝 NOTES header
+  let notesRow = -1;
+  for (let i = 5; i < 50; i++) {
+    const label = String(bsSh.getRange(i, 1).getValue() || '');
+    if (label.indexOf('📝 NOTES') !== -1) {
+      notesRow = i + 1;  // Notes content is in the row after the header
+      break;
+    }
+  }
+  
+  if (notesRow === -1) {
+    ss.toast('Could not find notes field', '❌ Error', 3);
+    return;
+  }
+  
+  const notes = String(bsSh.getRange(notesRow, 1).getValue() || '').trim();
+  
+  if (!notes || notes === '(no notes)') {
+    ss.toast('No notes to sync - edit the notes field first', '⚠️ Empty', 3);
+    return;
+  }
+  
+  ss.toast(`Updating ${vendor}...`, '⚡ Syncing', 3);
+  
+  try {
+    listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(notes);
+    
+    const result = updateMondayComNotesForVendor_(vendor, notes, listRow);
+
+    if (result.success) {
+      // Update cached original notes so auto-save won't trigger again
+      cacheOriginalNotes_(notes);
+      ss.toast(`Notes updated for ${vendor}`, '✅ Success', 3);
+      battleStationRefresh();
+    } else {
+      ss.toast(`Failed: ${result.error}`, '❌ Error', 5);
+    }
+  } catch (e) {
+    ss.toast(`Error: ${e.message}`, '❌ Error', 5);
+  }
+}
+
+/**
+ * Helper function to update monday.com notes via API
+ */
+function updateMondayComNotesForVendor_(vendor, notes, listRow) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!listRow) {
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex) return { success: false, error: 'Could not determine vendor index' };
+    listRow = currentIndex + 1;
+  }
+  
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+  
+  let boardId, notesColumnId;
+  if (source.toLowerCase().includes('buyer')) {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    notesColumnId = BS_CFG.BUYERS_NOTES_COLUMN;
+  } else if (source.toLowerCase().includes('affiliate')) {
+    boardId = BS_CFG.AFFILIATES_BOARD_ID;
+    notesColumnId = BS_CFG.AFFILIATES_NOTES_COLUMN;
+  } else {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    notesColumnId = BS_CFG.BUYERS_NOTES_COLUMN;
+  }
+  
+  const itemId = findMondayItemIdByVendor_(vendor, boardId, apiToken);
+  
+  if (!itemId) {
+    return { success: false, error: `Could not find monday.com item for vendor: ${vendor}` };
+  }
+  
+  const valueJson = JSON.stringify(notes);
+  const escapedValue = valueJson.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  
+  const mutation = `
+    mutation {
+      change_column_value (
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_id: "${notesColumnId}",
+        value: "${escapedValue}"
+      ) { id }
+    }
+  `;
+  
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: mutation }),
+      muteHttpExceptions: true
+    };
+    
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+    
+    if (result.errors && result.errors.length > 0) {
+      return { success: false, error: result.errors[0].message };
+    }
+    
+    if (result.data?.change_column_value?.id) {
+      return { success: true, itemId: result.data.change_column_value.id };
+    }
+    
+    return { success: false, error: 'Unexpected API response' };
+    
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Mark current vendor as reviewed
+ */
+function battleStationMarkReviewed() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+  
+  const currentIndex = getCurrentVendorIndex_();
+  
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+  
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+  
+  listSh.getRange(listRow, BS_CFG.L_PROCESSED + 1).setValue(true);
+  
+  battleStationRefresh();
+  ss.toast('Marked as reviewed!', '✅ ' + vendor, 3);
+}
+
+/**
+ * Open Gmail search for current vendor - just the zzzVendors label
+ */
+function battleStationOpenGmail() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+
+  if (!gmailLink || gmailLink.toString().indexOf('#search') === -1) {
+    SpreadsheetApp.getUi().alert('No valid Gmail search link found.');
+    return;
+  }
+
+  // Extract just the zzzvendors label from the full link
+  const linkStr = gmailLink.toString();
+  const match = linkStr.match(/label%3Azzzvendors-[a-z0-9.-]+/i);
+
+  let simpleLink;
+  if (match) {
+    // Build simplified URL with just the zzzvendors label
+    simpleLink = `https://mail.google.com/mail/u/0/#search/${match[0]}`;
+  } else {
+    // Fallback to original link if pattern not found
+    simpleLink = gmailLink;
+  }
+
+  const html = `<html><body><script>window.open('${simpleLink}', '_blank');google.script.host.close();</script></body></html>`;
+  const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
+  SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
+}
+
+/**
+ * Open Gmail search using the full URL from column F (with 00.received filter)
+ */
+function battleStationOpenGmailReceived() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+
+  if (!gmailLink || gmailLink.toString().indexOf('#search') === -1) {
+    SpreadsheetApp.getUi().alert('No valid Gmail search link found.');
+    return;
+  }
+
+  const html = `<html><body><script>window.open('${gmailLink}', '_blank');google.script.host.close();</script></body></html>`;
+  const ui = HtmlService.createHtmlOutput(html).setWidth(200).setHeight(100);
+  SpreadsheetApp.getUi().showModalDialog(ui, 'Opening Gmail...');
+}
+
+/**
+ * Create Gmail draft to vendor contacts
+ */
+function battleStationEmailContacts() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+  
+  const currentIndex = getCurrentVendorIndex_();
+  
+  if (!currentIndex || isNaN(currentIndex)) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+  
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  
+  ss.toast('Finding contacts...', '📧 Creating Draft', 2);
+  
+  const contactData = getVendorContacts_(vendor, listRow);
+  
+  if (contactData.contacts.length === 0) {
+    SpreadsheetApp.getUi().alert('No contacts found for this vendor.');
+    return;
+  }
+  
+  const recipients = contactData.contacts.map(c => c.email).filter(e => e).join(', ');
+  
+  if (!recipients) {
+    SpreadsheetApp.getUi().alert('No email addresses found for contacts.');
+    return;
+  }
+  
+  try {
+    const subject = `Re: ${vendor}`;
+    const body = `Hi,\n\n`;
+
+    // Get Gmail signature from settings
+    let signature = '';
+    try {
+      const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Create draft with HTML body including signature
+    const bodyHtml = body.replace(/\n/g, '<br>');
+    let fullBodyHtml = bodyHtml;
+    if (signature) {
+      fullBodyHtml += '<br><br>' + signature;
+    }
+
+    GmailApp.createDraft(recipients, subject, '', { htmlBody: fullBodyHtml });
+
+    ss.toast('Draft created!', '✅ Success', 3);
+    SpreadsheetApp.getUi().alert(`✓ Draft created!\n\nTo: ${recipients}\nSubject: ${subject}\n\nCheck your Gmail drafts.`);
+
+  } catch (e) {
+    SpreadsheetApp.getUi().alert(`Error creating draft: ${e.message}`);
+  }
+}
+
+/**
+ * Open Email Contacts dialog with Claude AI assistance for composing emails
+ * Allows contact selection, AI-assisted message composition, and direct Gmail draft creation
+ */
+function battleStationEmailContactsDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+
+  if (!currentIndex || isNaN(currentIndex)) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+  ss.toast('Loading contacts...', '📧 Email Contacts', 2);
+
+  const contactData = getVendorContacts_(vendor, listRow);
+
+  if (contactData.contacts.length === 0) {
+    SpreadsheetApp.getUi().alert('No contacts found for this vendor.');
+    return;
+  }
+
+  // Pass data to the dialog via template
+  const html = HtmlService.createHtmlOutput(getEmailContactsDialogHtml_(vendor, contactData))
+    .setWidth(800)
+    .setHeight(700);
+  SpreadsheetApp.getUi().showModalDialog(html, `Email Contacts: ${vendor}`);
+}
+
+/**
+ * Get contacts data for the dialog (called from HTML)
+ */
+function getEmailContactsData() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return { error: 'Required sheets not found.' };
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) return { error: 'Could not determine current vendor index.' };
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const contactData = getVendorContacts_(vendor, listRow);
+
+  return {
+    vendor: vendor,
+    contacts: contactData.contacts,
+    notes: contactData.notes
+  };
+}
+
+/**
+ * Generate email copy with Claude AI
+ * @param {string} vendor - Vendor name
+ * @param {string} purpose - Email purpose/context
+ * @param {string} tone - Desired tone
+ * @param {string} additionalContext - Any additional context
+ * @returns {object} Result with generated email content
+ */
+function generateEmailWithClaude(vendor, purpose, tone, additionalContext) {
+  const claudeApiKey = getClaudeApiKey_();
+
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    return { error: 'Claude API key not configured.' };
+  }
+
+  const prompt = `You are a professional email writer for a lead generation company.
+Write a concise, professional email for the following scenario:
+
+VENDOR: ${vendor}
+PURPOSE: ${purpose}
+TONE: ${tone}
+${additionalContext ? `ADDITIONAL CONTEXT: ${additionalContext}` : ''}
+
+Guidelines:
+- Keep the email brief and to the point (2-4 short paragraphs max)
+- Be professional but personable
+- Use clear, actionable language
+- Don't use excessive pleasantries or filler words
+- End with a clear call to action if appropriate
+- No signature block (it will be added automatically from Gmail)
+
+Return ONLY the email body (no subject line). Start with an appropriate greeting.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, claudeApiKey);
+
+    if (response.error) {
+      return { error: response.error };
+    }
+
+    return { content: response.content };
+
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Create Gmail draft and return draft URL for direct navigation
+ * Automatically appends Gmail signature from user's settings
+ * @param {string} recipients - Comma-separated email addresses
+ * @param {string} subject - Email subject
+ * @param {string} body - Email body
+ * @returns {object} Result with draft URL or error
+ */
+function createEmailDraftAndGetUrl(recipients, subject, body) {
+  try {
+    // Get Gmail signature from settings
+    let signature = '';
+    const myEmail = Session.getActiveUser().getEmail();
+    try {
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail.toLowerCase()) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Convert body to HTML (preserve line breaks)
+    const bodyHtml = body.replace(/\n/g, '<br>');
+
+    // Build full HTML body with signature
+    let fullBodyHtml = bodyHtml;
+    if (signature) {
+      fullBodyHtml += '<br><br>' + signature;
+    }
+
+    // Create draft with HTML body and BCC to sales@yourdomain.com
+    const draft = GmailApp.createDraft(recipients, subject, '', {
+      htmlBody: fullBodyHtml,
+      bcc: 'sales@yourdomain.com'
+    });
+    const draftId = draft.getId();
+
+    // Get the message ID via Gmail API for proper direct link
+    const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+    const messageId = gmailDraft.message.id;
+
+    // Gmail draft URL format - use message ID for direct compose link
+    const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${messageId}`;
+
+    return {
+      success: true,
+      draftId: draftId,
+      draftUrl: draftUrl,
+      recipients: recipients,
+      subject: subject
+    };
+
+  } catch (e) {
+    return {
+      success: false,
+      error: e.message
+    };
+  }
+}
+
+/**
+ * Generate HTML for the Email Contacts dialog
+ */
+function getEmailContactsDialogHtml_(vendor, contactData) {
+  // Sort contacts: Active first, then by type
+  const sortedContacts = contactData.contacts.sort((a, b) => {
+    // Active contacts first
+    if (a.status === 'Active' && b.status !== 'Active') return -1;
+    if (b.status === 'Active' && a.status !== 'Active') return 1;
+    // Then by contact type
+    const typeOrder = ['Primary', 'Technical', 'Contracts', 'Accounting', ''];
+    const aTypeIndex = typeOrder.indexOf(a.contactType) >= 0 ? typeOrder.indexOf(a.contactType) : 99;
+    const bTypeIndex = typeOrder.indexOf(b.contactType) >= 0 ? typeOrder.indexOf(b.contactType) : 99;
+    return aTypeIndex - bTypeIndex;
+  });
+
+  // Build contacts HTML
+  const contactsHtml = sortedContacts.map((c, i) => {
+    const statusClass = c.status === 'Active' ? 'active' : 'inactive';
+    const hasEmail = c.email && c.email.trim();
+    return `
+      <div class="contact-item ${statusClass}">
+        <label class="contact-checkbox">
+          <input type="checkbox" name="contact" value="${i}" data-email="${c.email || ''}" ${hasEmail ? 'checked' : 'disabled'}>
+          <span class="checkmark"></span>
+        </label>
+        <div class="contact-info">
+          <div class="contact-name">${escapeHtml_(c.name)}</div>
+          <div class="contact-meta">
+            ${hasEmail ? `<span class="email">${escapeHtml_(c.email)}</span>` : '<span class="no-email">No email</span>'}
+            ${c.phone ? ` | <span class="phone">${escapeHtml_(c.phone)}</span>` : ''}
+          </div>
+        </div>
+        <div class="contact-badges">
+          ${c.contactType ? `<span class="badge type">${escapeHtml_(c.contactType)}</span>` : ''}
+          <span class="badge status ${statusClass}">${escapeHtml_(c.status || 'Unknown')}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * {
+      box-sizing: border-box;
+      font-family: 'Google Sans', Arial, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #f8f9fa;
+      font-size: 13px;
+    }
+
+    .header {
+      margin-bottom: 20px;
+    }
+
+    .header h2 {
+      color: #1a73e8;
+      margin: 0 0 5px 0;
+      font-size: 18px;
+    }
+
+    .header p {
+      color: #5f6368;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .section {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+
+    .section-title {
+      font-weight: 600;
+      color: #202124;
+      margin-bottom: 12px;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .contacts-list {
+      max-height: 180px;
+      overflow-y: auto;
+    }
+
+    .contact-item {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border-bottom: 1px solid #f1f3f4;
+      gap: 12px;
+    }
+
+    .contact-item:last-child {
+      border-bottom: none;
+    }
+
+    .contact-item.inactive {
+      opacity: 0.6;
+    }
+
+    .contact-checkbox {
+      position: relative;
+      cursor: pointer;
+    }
+
+    .contact-checkbox input {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+    }
+
+    .contact-checkbox input:disabled {
+      cursor: not-allowed;
+    }
+
+    .contact-info {
+      flex: 1;
+    }
+
+    .contact-name {
+      font-weight: 500;
+      color: #202124;
+    }
+
+    .contact-meta {
+      font-size: 12px;
+      color: #5f6368;
+      margin-top: 2px;
+    }
+
+    .contact-meta .no-email {
+      color: #d93025;
+      font-style: italic;
+    }
+
+    .contact-badges {
+      display: flex;
+      gap: 6px;
+    }
+
+    .badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .badge.type {
+      background: #e8f0fe;
+      color: #1a73e8;
+    }
+
+    .badge.status.active {
+      background: #e6f4ea;
+      color: #137333;
+    }
+
+    .badge.status.inactive {
+      background: #fce8e6;
+      color: #c5221f;
+    }
+
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-group label {
+      display: block;
+      font-weight: 500;
+      color: #202124;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .form-group input,
+    .form-group textarea,
+    .form-group select {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    .form-group textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+
+    .form-group input:focus,
+    .form-group textarea:focus,
+    .form-group select:focus {
+      outline: none;
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 2px rgba(26,115,232,0.2);
+    }
+
+    .form-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .form-row .form-group {
+      flex: 1;
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-primary {
+      background: #1a73e8;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #1557b0;
+    }
+
+    .btn-secondary {
+      background: #f1f3f4;
+      color: #202124;
+    }
+
+    .btn-secondary:hover {
+      background: #e8eaed;
+    }
+
+    .btn-success {
+      background: #137333;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background: #0d5626;
+    }
+
+    .btn:disabled {
+      background: #dadce0;
+      color: #9aa0a6;
+      cursor: not-allowed;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .email-preview {
+      background: #fafafa;
+      border: 1px solid #e8eaed;
+      border-radius: 4px;
+      padding: 12px;
+      min-height: 120px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .loading {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      color: #5f6368;
+      font-size: 13px;
+    }
+
+    .loading.show {
+      display: flex;
+    }
+
+    .spinner {
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid #1a73e8;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .error {
+      background: #fce8e6;
+      color: #c5221f;
+      padding: 10px 12px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+      font-size: 13px;
+    }
+
+    .error.show {
+      display: block;
+    }
+
+    .success {
+      background: #e6f4ea;
+      color: #137333;
+      padding: 12px;
+      border-radius: 4px;
+      margin-top: 10px;
+      display: none;
+    }
+
+    .success.show {
+      display: block;
+    }
+
+    .success a {
+      color: #137333;
+      font-weight: 500;
+    }
+
+    .quick-prompts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .quick-prompt {
+      padding: 4px 10px;
+      background: #e8f0fe;
+      color: #1a73e8;
+      border-radius: 16px;
+      font-size: 11px;
+      cursor: pointer;
+      border: none;
+      transition: background 0.2s;
+    }
+
+    .quick-prompt:hover {
+      background: #d0e1fd;
+    }
+
+    .recipients-display {
+      background: #f1f3f4;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #5f6368;
+      margin-bottom: 12px;
+    }
+
+    .recipients-display strong {
+      color: #202124;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Email Contacts</h2>
+    <p>Compose an email to ${escapeHtml_(vendor)} contacts with Claude AI assistance</p>
+  </div>
+
+  <!-- Step 1: Select Contacts -->
+  <div class="section">
+    <div class="section-title">1. Select Recipients</div>
+    <div class="contacts-list">
+      ${contactsHtml}
+    </div>
+  </div>
+
+  <!-- Step 2: Compose with AI -->
+  <div class="section">
+    <div class="section-title">2. Compose Email</div>
+
+    <div class="form-group">
+      <label>Subject</label>
+      <input type="text" id="subject" value="Re: ${escapeHtml_(vendor)}" placeholder="Email subject">
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>Purpose</label>
+        <select id="purpose">
+          <option value="Follow up on our previous conversation">Follow up</option>
+          <option value="Schedule a meeting or call">Schedule meeting</option>
+          <option value="Request information or documentation">Request info</option>
+          <option value="Send a status update">Status update</option>
+          <option value="Discuss pricing or contract terms">Pricing/Contract</option>
+          <option value="Introduce ourselves and explore partnership">Introduction</option>
+          <option value="Address an issue or concern">Address issue</option>
+          <option value="Custom (describe below)">Custom...</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Tone</label>
+        <select id="tone">
+          <option value="Professional and friendly">Professional & Friendly</option>
+          <option value="Formal and businesslike">Formal</option>
+          <option value="Casual and conversational">Casual</option>
+          <option value="Urgent and action-oriented">Urgent</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Additional Context <span style="font-weight: normal; color: #5f6368;">(optional)</span></label>
+      <textarea id="context" placeholder="Add any specific details, talking points, or context for the email..."></textarea>
+      <div class="quick-prompts">
+        <button class="quick-prompt" onclick="addContext('Mention our recent performance improvements')">Performance updates</button>
+        <button class="quick-prompt" onclick="addContext('Ask about their current lead volume needs')">Lead volume</button>
+        <button class="quick-prompt" onclick="addContext('Discuss expanding to new verticals')">New verticals</button>
+        <button class="quick-prompt" onclick="addContext('Follow up on pending invoice')">Invoice follow-up</button>
+      </div>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-primary" id="generateBtn" onclick="generateEmail()">
+        🤖 Generate with Claude
+      </button>
+      <div class="loading" id="generateLoading">
+        <div class="spinner"></div>
+        Generating email...
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 3: Review and Send -->
+  <div class="section">
+    <div class="section-title">3. Review & Send</div>
+
+    <div class="recipients-display" id="recipientsDisplay">
+      <strong>To:</strong> <span id="selectedRecipients">Select contacts above</span>
+    </div>
+
+    <div class="form-group">
+      <label>Email Body</label>
+      <textarea id="emailBody" rows="8" placeholder="Generated email will appear here. You can also write your own or edit the generated content."></textarea>
+    </div>
+
+    <div class="btn-group">
+      <button class="btn btn-success" id="createDraftBtn" onclick="createDraft()">
+        ✉️ Create Draft & Open Gmail
+      </button>
+      <div class="loading" id="draftLoading">
+        <div class="spinner"></div>
+        Creating draft...
+      </div>
+    </div>
+
+    <div class="error" id="error"></div>
+    <div class="success" id="success"></div>
+  </div>
+
+  <script>
+    const vendor = '${escapeHtml_(vendor).replace(/'/g, "\\'")}';
+
+    // Update recipients display when checkboxes change
+    document.querySelectorAll('input[name="contact"]').forEach(cb => {
+      cb.addEventListener('change', updateRecipients);
+    });
+
+    // Initial update
+    updateRecipients();
+
+    function updateRecipients() {
+      const checked = document.querySelectorAll('input[name="contact"]:checked');
+      const emails = Array.from(checked).map(cb => cb.dataset.email).filter(e => e);
+
+      if (emails.length > 0) {
+        document.getElementById('selectedRecipients').textContent = emails.join(', ');
+        document.getElementById('createDraftBtn').disabled = false;
+      } else {
+        document.getElementById('selectedRecipients').textContent = 'Select contacts above';
+        document.getElementById('createDraftBtn').disabled = true;
+      }
+    }
+
+    function addContext(text) {
+      const textarea = document.getElementById('context');
+      if (textarea.value) {
+        textarea.value += '\\n' + text;
+      } else {
+        textarea.value = text;
+      }
+    }
+
+    function generateEmail() {
+      const purpose = document.getElementById('purpose').value;
+      const tone = document.getElementById('tone').value;
+      const context = document.getElementById('context').value;
+
+      // Show loading
+      document.getElementById('generateBtn').disabled = true;
+      document.getElementById('generateLoading').classList.add('show');
+      document.getElementById('error').classList.remove('show');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('generateBtn').disabled = false;
+          document.getElementById('generateLoading').classList.remove('show');
+
+          if (result.error) {
+            showError(result.error);
+          } else {
+            document.getElementById('emailBody').value = result.content;
+          }
+        })
+        .withFailureHandler(function(error) {
+          document.getElementById('generateBtn').disabled = false;
+          document.getElementById('generateLoading').classList.remove('show');
+          showError(error.message || 'Failed to generate email');
+        })
+        .generateEmailWithClaude(vendor, purpose, tone, context);
+    }
+
+    function createDraft() {
+      const checked = document.querySelectorAll('input[name="contact"]:checked');
+      const recipients = Array.from(checked).map(cb => cb.dataset.email).filter(e => e).join(', ');
+
+      if (!recipients) {
+        showError('Please select at least one contact with an email address.');
+        return;
+      }
+
+      const subject = document.getElementById('subject').value.trim();
+      const body = document.getElementById('emailBody').value.trim();
+
+      if (!subject) {
+        showError('Please enter a subject.');
+        return;
+      }
+
+      if (!body) {
+        showError('Please enter an email body or generate one with Claude.');
+        return;
+      }
+
+      // Show loading
+      document.getElementById('createDraftBtn').disabled = true;
+      document.getElementById('draftLoading').classList.add('show');
+      document.getElementById('error').classList.remove('show');
+      document.getElementById('success').classList.remove('show');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          document.getElementById('createDraftBtn').disabled = false;
+          document.getElementById('draftLoading').classList.remove('show');
+
+          if (result.success) {
+            // Open Gmail draft in new window
+            window.open(result.draftUrl, '_blank');
+            // Close the dialog
+            google.script.host.close();
+          } else {
+            showError(result.error || 'Failed to create draft');
+          }
+        })
+        .withFailureHandler(function(error) {
+          document.getElementById('createDraftBtn').disabled = false;
+          document.getElementById('draftLoading').classList.remove('show');
+          showError(error.message || 'Failed to create draft');
+        })
+        .createEmailDraftAndGetUrl(recipients, subject, body);
+    }
+
+    function showError(message) {
+      const errorDiv = document.getElementById('error');
+      errorDiv.textContent = message;
+      errorDiv.classList.add('show');
+    }
+  </script>
+</body>
+</html>
+`;
+}
+
+/**
+ * HTML escape helper
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Analyze unsnoozed emails with Claude AI - Individual breakdown with inline links
+ */
+function battleStationAnalyzeEmails() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  
+  const claudeApiKey = getClaudeApiKey_();
+
+  if (!claudeApiKey) {
+    SpreadsheetApp.getUi().alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+  
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+  
+  const currentIndex = getCurrentVendorIndex_();
+  
+  if (!currentIndex || isNaN(currentIndex)) {
+    SpreadsheetApp.getUi().alert('Error: Could not determine current vendor index.');
+    return;
+  }
+  
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  
+  ss.toast('Fetching emails for analysis...', '🤖 Claude Analysis', 3);
+  
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozedEmails = emails.filter(e => !e.isSnoozed);
+  
+  if (unsnoozedEmails.length === 0) {
+    SpreadsheetApp.getUi().alert('No unsnoozed emails found for this vendor.');
+    return;
+  }
+  
+  ss.toast(`Analyzing ${unsnoozedEmails.length} emails with Claude...`, '🤖 Processing', 10);
+  
+  // Gather email content with metadata
+  const emailData = [];
+  
+  for (const email of unsnoozedEmails.slice(0, 10)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const messages = thread.getMessages();
+        let fullContent = '';
+        
+        for (const msg of messages.slice(-5)) {
+          fullContent += `\n--- From: ${msg.getFrom()} | Date: ${msg.getDate()} ---\n`;
+          fullContent += msg.getPlainBody().substring(0, 1500);
+        }
+        
+        emailData.push({
+          subject: email.subject,
+          date: email.date,
+          labels: email.labels,
+          link: email.link,
+          threadId: email.threadId,
+          messageCount: email.count,
+          content: fullContent
+        });
+      }
+    } catch (e) {
+      emailData.push({
+        subject: email.subject,
+        date: email.date,
+        labels: email.labels,
+        link: email.link,
+        threadId: email.threadId,
+        messageCount: email.count,
+        content: email.snippet || '(could not fetch content)'
+      });
+    }
+  }
+  
+  if (emailData.length === 0) {
+    SpreadsheetApp.getUi().alert('Could not fetch email content for analysis.');
+    return;
+  }
+  
+  // Build prompt - use numbered emails that we can match to links
+  const emailsText = emailData.map((e, i) => 
+    `\n\n=== EMAIL_${i + 1} ===
+Subject: ${e.subject}
+Date: ${e.date}
+Labels: ${e.labels}
+Messages in thread: ${e.messageCount}
+
+Content:
+${e.content}`
+  ).join('\n');
+  
+  const prompt = `You are analyzing email communications for a vendor relationship manager at a lead generation company.
+
+The vendor being analyzed is: ${vendor}
+
+Here are the recent unsnoozed emails (${emailData.length} threads):
+${emailsText}
+
+Please provide your analysis in this EXACT format (keep EMAIL_1, EMAIL_2 etc as markers - they will be replaced with links):
+
+## OVERALL SUMMARY
+[2-3 sentences about the overall relationship status]
+
+## EMAIL BREAKDOWN
+
+EMAIL_1
+**Status**: [Active / Waiting on them / Waiting on us / FYI / Urgent]
+**Summary**: [1-2 sentence summary]
+**Action**: [What to do, or "None"]
+
+EMAIL_2
+**Status**: [Status]
+**Summary**: [Summary]
+**Action**: [Action]
+
+[Continue for each email...]
+
+## PRIORITY ACTIONS
+[Numbered list of most important actions]
+
+Be concise. Use the exact EMAIL_1, EMAIL_2 markers so they can be linked.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, claudeApiKey);
+    
+    if (response.error) {
+      SpreadsheetApp.getUi().alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+    
+    // Format content and replace EMAIL_X markers with clickable links
+    let formattedContent = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    
+    // Replace EMAIL_X markers with linked subject lines
+    emailData.forEach((e, i) => {
+      const marker = `EMAIL_${i + 1}`;
+      const shortSubject = e.subject.length > 60 ? e.subject.substring(0, 60) + '...' : e.subject;
+      const linkedSubject = `<a href="${e.link}" target="_blank" class="email-link">📧 ${shortSubject}</a> <span class="date">(${e.date})</span>`;
+      formattedContent = formattedContent.replace(new RegExp(marker, 'g'), linkedSubject);
+    });
+    
+    // Apply formatting
+    formattedContent = formattedContent
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>')
+      .replace(/### (.*?)<br>/g, '<h4>$1</h4>');
+    
+    // Build email options for the dropdown
+    const emailOptions = emailData.map((e, i) => {
+      const shortSubject = e.subject.length > 50 ? e.subject.substring(0, 50) + '...' : e.subject;
+      return `<option value="${i}">${i + 1}. ${shortSubject} (${e.date})</option>`;
+    }).join('');
+
+    // Store analysis context for response generation
+    const analysisContext = {
+      vendor: vendor,
+      emailData: emailData.map(e => ({
+        threadId: e.threadId,
+        subject: e.subject,
+        date: e.date,
+        content: e.content
+      })),
+      analysisContent: response.content
+    };
+    PropertiesService.getUserProperties().setProperty('emailAnalysisContext', JSON.stringify(analysisContext));
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #4a86e8; margin-top: 0; margin-bottom: 10px; }
+        h3 { color: #4a86e8; margin-top: 20px; margin-bottom: 10px; border-bottom: 2px solid #4a86e8; padding-bottom: 5px; }
+        h4 { color: #666; margin-top: 12px; margin-bottom: 5px; }
+        .email-link {
+          color: #1a73e8;
+          text-decoration: none;
+          font-weight: bold;
+          font-size: 14px;
+          display: inline-block;
+          margin-top: 10px;
+          padding: 5px 10px;
+          background: #e8f0fe;
+          border-radius: 4px;
+        }
+        .email-link:hover { background: #d0e1fd; text-decoration: none; }
+        .date { color: #888; font-size: 11px; }
+        .content { background: #fafafa; padding: 15px; border-radius: 5px; max-height: 350px; overflow-y: auto; }
+        strong { color: #333; }
+        .write-response-section {
+          margin-top: 20px;
+          padding: 15px;
+          background: #e8f4e8;
+          border-radius: 8px;
+          border: 1px solid #c8e6c9;
+        }
+        .write-response-section h3 {
+          color: #2e7d32;
+          border-bottom-color: #2e7d32;
+          margin-top: 0;
+        }
+        .form-row { margin-bottom: 12px; }
+        .form-label { font-size: 12px; color: #555; margin-bottom: 4px; display: block; }
+        .form-select, .form-input {
+          width: 100%;
+          padding: 8px 10px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          font-size: 13px;
+          box-sizing: border-box;
+        }
+        .form-select:focus, .form-input:focus { border-color: #2e7d32; outline: none; }
+        .btn-write {
+          background: #2e7d32;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 4px;
+          font-size: 14px;
+          cursor: pointer;
+        }
+        .btn-write:hover { background: #1b5e20; }
+        .btn-write:disabled { background: #a5d6a7; cursor: not-allowed; }
+        .loading-msg { color: #666; font-style: italic; margin-top: 10px; display: none; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
+      </style>
+      <h2>🤖 Claude Analysis: ${vendor}</h2>
+      <p><em>Analyzed ${emailData.length} unsnoozed email threads</em></p>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div class="content" id="analysis-content">${formattedContent}</div>
+
+      <div class="write-response-section">
+        <h3>✍️ Write Response</h3>
+        <div class="form-row">
+          <label class="form-label">Select email to respond to:</label>
+          <select id="emailSelect" class="form-select">
+            ${emailOptions}
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Directions (optional):</label>
+          <input type="text" id="directions" class="form-input" placeholder="e.g., schedule a call, follow up on payment, ask about volume...">
+        </div>
+        <button id="writeBtn" class="btn-write" onclick="doWriteResponse()">Generate Response</button>
+        <div id="loadingMsg" class="loading-msg">Generating response...</div>
+      </div>
+
+      <script>
+        function copyContent() {
+          var el = document.getElementById('analysis-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+        function doWriteResponse() {
+          var emailIndex = document.getElementById('emailSelect').value;
+          var directions = document.getElementById('directions').value.trim();
+
+          document.getElementById('writeBtn').disabled = true;
+          document.getElementById('loadingMsg').style.display = 'block';
+
+          google.script.run
+            .withSuccessHandler(function() {
+              google.script.host.close();
+            })
+            .withFailureHandler(function(err) {
+              alert('Error: ' + (err.message || err));
+              document.getElementById('writeBtn').disabled = false;
+              document.getElementById('loadingMsg').style.display = 'none';
+            })
+            .generateResponseFromAnalysis(parseInt(emailIndex), directions);
+        }
+      </script>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(700);
+    SpreadsheetApp.getUi().showModalDialog(html, `Claude Analysis: ${vendor}`);
+    
+    ss.toast('Analysis complete!', '✅ Done', 3);
+    
+  } catch (e) {
+    SpreadsheetApp.getUi().alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Call Claude API via direct Anthropic API
+ */
+function callClaudeAPI_(prompt, apiKey, options) {
+  options = options || {};
+
+  // Direct Anthropic API
+  const url = 'https://api.anthropic.com/v1/messages';
+
+  // Build message content - supports optional image for multimodal requests
+  let userContent;
+  if (options.image) {
+    userContent = [
+      { type: 'image', source: { type: 'base64', media_type: options.image.mediaType, data: options.image.base64 } },
+      { type: 'text', text: prompt }
+    ];
+  } else {
+    userContent = prompt;
+  }
+
+  const payload = {
+    model: options.model || 'claude-sonnet-4-20250514',
+    max_tokens: options.maxTokens || 2000,
+    messages: [{ role: 'user', content: userContent }]
+  };
+  if (options.system) {
+    payload.system = options.system;
+  }
+
+  const fetchOptions = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, fetchOptions);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (responseCode !== 200) {
+      return { error: `API returned ${responseCode}: ${responseText}` };
+    }
+
+    const result = JSON.parse(responseText);
+
+    if (result.content && result.content.length > 0) {
+      return { content: result.content[0].text };
+    }
+
+    return { error: 'No content in response' };
+
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Generate email response from analysis context (no underscore - callable from client)
+ * Called from the analysis dialog when user clicks "Generate Response"
+ * Uses the stored analysis context to inform the response
+ */
+function generateResponseFromAnalysis(emailIndex, directions) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  // Get stored analysis context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailAnalysisContext');
+  if (!contextJson) {
+    throw new Error('No analysis context found. Please run the analysis again.');
+  }
+
+  const analysisContext = JSON.parse(contextJson);
+  const selectedEmail = analysisContext.emailData[emailIndex];
+
+  if (!selectedEmail) {
+    throw new Error('Selected email not found in analysis context.');
+  }
+
+  ss.toast('Generating response with analysis context...', '🤖 AI Working', 5);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(selectedEmail.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Get thread content and detect last sender
+  const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+  // Build enhanced directions that include the analysis context
+  const analysisNote = `CONTEXT FROM EMAIL ANALYSIS:
+The user just analyzed their emails for vendor "${analysisContext.vendor}". Here's what the analysis found:
+---
+${analysisContext.analysisContent}
+---
+
+The user selected email #${emailIndex + 1} (Subject: "${selectedEmail.subject}") to respond to.`;
+
+  const fullDirections = directions
+    ? `${analysisNote}\n\nUser's specific directions: ${directions}`
+    : analysisNote;
+
+  // Generate response using the existing email generator
+  const responseBody = generateEmailWithClaude_(
+    threadContent,
+    selectedEmail.subject,
+    'Analysis-Based Response',
+    fullDirections,
+    lastSenderIsMe
+  );
+
+  // Store context for edit/rerun capability (same pattern as other email responses)
+  const revisionContext = {
+    threadId: selectedEmail.threadId,
+    responseType: 'Analysis-Based Response',
+    originalDirections: fullDirections,
+    previousResponse: responseBody,
+    analysisContext: analysisContext  // Keep analysis context for revisions
+  };
+  PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+  // Clean up the analysis context
+  PropertiesService.getUserProperties().deleteProperty('emailAnalysisContext');
+
+  // Show the draft preview dialog with edit/rerun capability
+  showDraftPreviewDialog_(responseBody, selectedEmail.threadId);
+}
+
+/**
+ * Go to a specific vendor by index or name
+ */
+function battleStationGoTo() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) return;
+
+  const totalVendors = listSh.getLastRow() - 1;
+  const minRow = 2;  // Row 2 is first vendor (row 1 is header)
+  const maxRow = totalVendors + 1;
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.prompt(
+    'Go to Vendor',
+    `Enter row number (${minRow}-${maxRow}) or vendor name:`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() === ui.Button.OK) {
+    const input = response.getResponseText().trim();
+    const rowNum = parseInt(input);
+
+    // If it's a number, treat it as a row number (row 2 = first vendor)
+    if (!isNaN(rowNum) && rowNum >= minRow && rowNum <= maxRow) {
+      const vendorIndex = rowNum - 1;  // Convert row to index (row 2 = index 1)
+      loadVendorData(vendorIndex, { loadMode: 'fast' });
+      return;
+    }
+
+    // Otherwise, search by name
+    const searchTerm = input.toLowerCase();
+    const data = listSh.getDataRange().getValues();
+    const matches = [];
+
+    for (let i = 1; i < data.length; i++) {
+      const vendorName = String(data[i][0] || '').toLowerCase();
+      if (vendorName.includes(searchTerm)) {
+        matches.push({ index: i, row: i + 1, name: data[i][0] });
+      }
+    }
+
+    if (matches.length === 0) {
+      ui.alert(`No vendors found matching "${input}"`);
+    } else if (matches.length === 1) {
+      loadVendorData(matches[0].index, { loadMode: 'fast' });
+    } else {
+      // Multiple matches - show list with row numbers
+      let matchList = matches.slice(0, 15).map(m => `Row ${m.row}: ${m.name}`).join('\n');
+      if (matches.length > 15) {
+        matchList += `\n... and ${matches.length - 15} more`;
+      }
+
+      const pickResponse = ui.prompt(
+        `Found ${matches.length} matches`,
+        `${matchList}\n\nEnter the row number to go to:`,
+        ui.ButtonSet.OK_CANCEL
+      );
+
+      if (pickResponse.getSelectedButton() === ui.Button.OK) {
+        const pickRow = parseInt(pickResponse.getResponseText());
+        if (!isNaN(pickRow) && pickRow >= minRow && pickRow <= maxRow) {
+          loadVendorData(pickRow - 1, { loadMode: 'fast' });  // Convert row to index
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Generate a checksum for vendor data
+ * Based on: emails, tasks, notes, status, states, contracts, helpful links, meetings, box documents, gdrive files
+ */
+function generateVendorChecksum_(vendor, emails, tasks, notes, status, states, contracts, helpfulLinks, meetings, boxDocs, gDriveFiles) {
+  const data = {
+    vendor: vendor,
+    status: status || '',
+    notes: notes || '',
+    states: states || '',
+    emails: (emails || []).map(e => ({
+      subject: e.subject,
+      date: e.date,
+      labels: e.labels
+    })),
+    // Include overdue count so full checksum changes when emails become overdue
+    overdueEmailCount: (emails || []).filter(e => isEmailOverdue_(e)).length,
+    tasks: (tasks || []).map(t => ({
+      name: t.subject,
+      status: t.status,
+      created: t.created
+    })),
+    contracts: (contracts || []).map(c => ({
+      vendor: c.vendorName,
+      status: c.status,
+      type: c.contractType,
+      notes: c.notes
+    })),
+    helpfulLinks: (helpfulLinks || []).map(l => ({
+      name: l.name,
+      url: l.url,
+      notes: l.notes
+    })),
+    meetings: (Array.isArray(meetings) ? meetings : []).map(m => ({
+      title: m.title,
+      date: m.date,
+      time: m.time,
+      isPast: m.isPast  // Track if meeting moved from future to past
+    })),
+    boxDocs: (boxDocs || []).map(d => ({
+      name: d.name,
+      modified: d.modifiedAt
+    })),
+    gDriveFiles: (gDriveFiles || []).map(f => ({
+      name: f.name,
+      modified: f.modified
+    }))
+  };
+  
+  const jsonStr = JSON.stringify(data);
+  return hashString_(jsonStr);
+}
+
+/**
+ * Simple hash function used by all checksum generators
+ */
+function hashString_(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return hash.toString(16);
+}
+
+// Increment this when checksum format changes to avoid false positives
+const MODULE_CHECKSUMS_VERSION = 3;
+
+/**
+ * Generate sub-checksums for each module
+ * Returns an object with checksums for each data section
+ */
+function generateModuleChecksums_(vendor, emails, tasks, notes, status, states, contracts, helpfulLinks, meetings, boxDocs, gDriveFiles, contacts) {
+  // Track which specific emails are overdue (for showing "no longer overdue" details)
+  const overdueEmails = (emails || [])
+    .filter(e => isEmailOverdue_(e))
+    .map(e => ({ threadId: e.threadId, subject: e.subject }));
+
+  return {
+    _version: MODULE_CHECKSUMS_VERSION,  // Version for compatibility checking
+    emails: generateEmailChecksum_(emails),  // Use the overdue-aware email checksum
+    tasks: generateTasksChecksum_(tasks),
+    notes: hashString_(JSON.stringify(notes || '')),
+    status: hashString_(JSON.stringify(status || '')),
+    states: hashString_(JSON.stringify(states || '')),
+    contracts: hashString_(JSON.stringify((contracts || []).map(c => ({ vendor: c.vendorName, status: c.status, type: c.contractType })))),
+    helpfulLinks: hashString_(JSON.stringify((helpfulLinks || []).map(l => ({ name: l.name, url: l.url })))),
+    meetings: generateMeetingsChecksum_(meetings),
+    boxDocs: hashString_(JSON.stringify((boxDocs || []).map(d => ({ name: d.name, modified: d.modifiedAt })))),
+    gDriveFiles: hashString_(JSON.stringify((gDriveFiles || []).map(f => ({ name: f.name, modified: f.modified })))),
+    contacts: generateContactsChecksum_(contacts),
+    overdueEmails: overdueEmails  // Store specific overdue emails for comparison
+  };
+}
+
+/**
+ * Generate a sub-checksum for just emails (most volatile data)
+ * Prefixed with thread count for quick change detection
+ */
+function generateEmailChecksum_(emails) {
+  const count = (emails || []).length;
+
+  // Base checksum - same as before so existing checksums stay valid
+  const data = (emails || []).map(e => ({
+    subject: e.subject,
+    date: e.date,
+    labels: e.labels
+  }));
+  const baseChecksum = hashString_(JSON.stringify(data));
+
+  // Count overdue emails - append to checksum so it changes when overdue status changes
+  const overdueCount = (emails || []).filter(e => isEmailOverdue_(e)).length;
+
+  // Format: count:hash or count:hash_ODn
+  // Prefix with count allows fast count-based change detection
+  const hashPart = overdueCount > 0 ? `${baseChecksum}_OD${overdueCount}` : baseChecksum;
+  return `${count}:${hashPart}`;
+}
+
+/**
+ * Generate a secondary checksum for vendor-label-only Gmail search
+ * This catches emails that might not have label:00.received yet
+ * @param {string} gmailLink - The full Gmail search link (with 00.received)
+ * @returns {string|null} - Checksum or null if can't extract vendor label
+ */
+function generateVendorLabelChecksum_(gmailLink) {
+  if (!gmailLink) return null;
+
+  try {
+    const gmailLinkStr = gmailLink.toString();
+
+    // Extract the vendor label (zzzvendors-*) from the URL
+    // Include periods in vendor name (e.g., "inc." in "american-remodeling-enterprises-inc.")
+    const vendorLabelMatch = gmailLinkStr.match(/label[:%]3A(zzzvendors-[a-z0-9_.\-]+)/i);
+    if (!vendorLabelMatch) {
+      Logger.log('Could not extract vendor label from Gmail link');
+      return null;
+    }
+
+    const vendorLabel = vendorLabelMatch[1];
+
+    // Build simplified search query: just vendor label, no snoozed, no noInbox
+    const searchQuery = `label:${vendorLabel} -is:snoozed -label:03.noInbox`;
+    Logger.log(`Vendor label search query: ${searchQuery}`);
+
+    // Search Gmail - only check last 10 emails (most real-time emails are recent)
+    const threads = GmailApp.search(searchQuery, 0, 10);
+    Logger.log(`Vendor label search found ${threads.length} threads (limit 10)`);
+
+    // Generate simple checksum based on thread count and thread IDs
+    const threadData = threads.map(t => ({
+      id: t.getId(),
+      lastDate: t.getLastMessageDate().getTime()
+    }));
+
+    return hashString_(JSON.stringify(threadData));
+  } catch (e) {
+    Logger.log(`Error in generateVendorLabelChecksum_: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Check if an email is overdue:
+ * - Manual override: has 03.overdue/manual label (always overdue regardless of other conditions)
+ * - Auto: REQUIRES 01.priority/1 label + any waiting label + business hours threshold
+ *
+ * For waiting/customer: exponential backoff based on how many times we've followed up
+ *   - 1 follow-up = 16 hours, 2 = 32 hours, 3 = 48 hours, etc.
+ * For waiting/me or waiting/phonexa: 16 business hours (standard)
+ */
+function isEmailOverdue_(email) {
+  if (!email || !email.labels) return false;
+
+  // Snoozed emails are never overdue
+  if (email.isSnoozed) return false;
+
+  // Manual override - if marked manually as overdue, always return true
+  if (email.labels.includes(BS_CFG.MANUAL_OVERDUE_LABEL)) return true;
+
+  // Auto-detection requires priority label - non-priority emails are never auto-overdue
+  if (!email.labels.includes('01.priority/1')) return false;
+
+  // Parse the email date
+  const emailDate = parseEmailDate_(email.date);
+  if (!emailDate) return false;
+
+  const businessHours = getBusinessHoursElapsed_(emailDate);
+  const baseHours = BS_CFG.OVERDUE_BUSINESS_HOURS;  // 16
+
+  // Check for waiting/customer - exponential backoff based on consecutive follow-ups from us
+  if (email.labels.includes('02.waiting/customer')) {
+    // Count how many times we've pinged them (consecutive messages from me/Aden)
+    const consecutiveFollowUps = countConsecutiveRepliesFromUs_(email.threadId);
+    const threshold = baseHours * consecutiveFollowUps;  // 16, 32, 48, 64, etc.
+    return businessHours > threshold;
+  }
+
+  // Check for waiting/me or waiting/phonexa - standard 16 hour threshold
+  if (email.labels.includes('02.waiting/me') || email.labels.includes('02.waiting/phonexa')) {
+    return businessHours > baseHours;
+  }
+
+  return false;
+}
+
+/**
+ * Count consecutive messages from me or Aden at the end of a thread
+ * Used to calculate exponential backoff for overdue threshold
+ */
+function countConsecutiveRepliesFromUs_(threadId) {
+  if (!threadId) return 1;
+
+  try {
+    const thread = GmailApp.getThreadById(threadId);
+    if (!thread) return 1;
+
+    const messages = thread.getMessages();
+    if (!messages || messages.length === 0) return 1;
+
+    const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+    const adenEmail = 'team-member-2@yourdomain.com';
+
+    let consecutiveCount = 0;
+
+    // Count from the end backwards
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const sender = messages[i].getFrom().toLowerCase();
+      if (sender.includes(myEmail) || sender.includes(adenEmail)) {
+        consecutiveCount++;
+      } else {
+        break;  // Stop at first message not from us
+      }
+    }
+
+    return Math.max(1, consecutiveCount);  // At least 1
+  } catch (e) {
+    Logger.log(`Error counting consecutive replies for thread ${threadId}: ${e.message}`);
+    return 1;  // Default to 1 on error
+  }
+}
+
+/**
+ * Parse email date string to Date object
+ * Handles formats like "Dec 5, 2024 3:45 PM" or "Dec 5, 3:45 PM"
+ */
+function parseEmailDate_(dateStr) {
+  if (!dateStr) return null;
+  
+  try {
+    // Try direct parse first
+    let date = new Date(dateStr);
+    if (!isNaN(date.getTime())) return date;
+    
+    // If no year, assume current year
+    const currentYear = new Date().getFullYear();
+    date = new Date(dateStr + ' ' + currentYear);
+    if (!isNaN(date.getTime())) return date;
+    
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Calculate business hours elapsed since a given date
+ * Business hours: Monday-Friday, 9 AM - 5 PM Pacific
+ */
+function getBusinessHoursElapsed_(startDate) {
+  if (!startDate) return 0;
+  
+  const now = new Date();
+  const start = new Date(startDate);
+  
+  if (start >= now) return 0;
+  
+  let businessHours = 0;
+  let current = new Date(start);
+  
+  // Iterate hour by hour (simplified approach)
+  while (current < now) {
+    const day = current.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const hour = current.getHours();
+    
+    // Business hours: Monday-Friday (1-5), 9 AM - 5 PM (9-16)
+    if (day >= 1 && day <= 5 && hour >= 9 && hour < 17) {
+      businessHours++;
+    }
+    
+    current.setHours(current.getHours() + 1);
+    
+    // Safety limit - don't count more than 1000 hours
+    if (businessHours > 1000) break;
+  }
+  
+  return businessHours;
+}
+
+/**
+ * Get or create the Checksums sheet
+ */
+function getChecksumsSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(BS_CFG.CHECKSUMS_SHEET);
+
+  if (!sh) {
+    sh = ss.insertSheet(BS_CFG.CHECKSUMS_SHEET);
+    sh.getRange(1, 1, 1, 9).setValues([['Vendor', 'Checksum', 'EmailChecksum', 'ModuleChecksums', 'Last Viewed', 'Flagged', 'EmailData', 'SnoozedUntil', 'VendorLabelChecksum']]);
+    sh.getRange(1, 1, 1, 9).setFontWeight('bold');
+    sh.hideSheet();
+  } else {
+    // Check if we need to add columns (migration)
+    const headers = sh.getRange(1, 1, 1, 8).getValues()[0];
+    if (headers[3] !== 'ModuleChecksums') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 5) {
+        sh.insertColumnAfter(3);
+        sh.getRange(1, 4).setValue('ModuleChecksums').setFontWeight('bold');
+        sh.getRange(1, 5).setValue('Last Viewed').setFontWeight('bold');
+      }
+    }
+    // Add Flagged column if missing
+    if (headers[5] !== 'Flagged') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 6) {
+        sh.getRange(1, 6).setValue('Flagged').setFontWeight('bold');
+      }
+    }
+    // Add EmailData column if missing
+    if (headers[6] !== 'EmailData') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 7) {
+        sh.getRange(1, 7).setValue('EmailData').setFontWeight('bold');
+      }
+    }
+    // Add SnoozedUntil column if missing
+    if (headers[7] !== 'SnoozedUntil') {
+      const numCols = sh.getLastColumn();
+      if (numCols < 8) {
+        sh.getRange(1, 8).setValue('SnoozedUntil').setFontWeight('bold');
+      }
+    }
+    // Add VendorLabelChecksum column if missing (column 9)
+    const numCols = sh.getLastColumn();
+    if (numCols < 9) {
+      sh.getRange(1, 9).setValue('VendorLabelChecksum').setFontWeight('bold');
+    }
+  }
+
+  return sh;
+}
+
+/**
+ * Reset all module checksums to force a fresh baseline
+ * This clears only the ModuleChecksums column (4), preserving flags, snooze dates, etc.
+ * After running this, the first traversal will establish new baselines without false positives
+ */
+function resetAllModuleChecksums() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.alert(
+    'Reset Module Checksums',
+    'This will clear all stored module checksums. The next traversal will establish fresh baselines.\n\nFlags, snooze dates, and email data will be preserved.\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (result !== ui.Button.YES) {
+    ui.alert('Cancelled');
+    return;
+  }
+
+  const sh = getChecksumsSheet_();
+  const lastRow = sh.getLastRow();
+
+  if (lastRow > 1) {
+    // Clear column 4 (ModuleChecksums) for all data rows
+    sh.getRange(2, 4, lastRow - 1, 1).clearContent();
+  }
+
+  ui.alert('Done', `Cleared module checksums for ${lastRow - 1} vendors. Next traversal will establish fresh baselines.`, ui.ButtonSet.OK);
+}
+
+/**
+ * Check if a vendor is flagged for review
+ */
+function isVendorFlagged_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return data[i][5] === true || data[i][5] === 'TRUE' || data[i][5] === 'true';
+    }
+  }
+  return false;
+}
+
+/**
+ * Set or clear the flag for a vendor
+ */
+function setVendorFlag_(vendor, flagged) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 6).setValue(flagged);
+      return true;
+    }
+  }
+
+  // Vendor not in checksums yet - add a row
+  if (flagged) {
+    const lastRow = sh.getLastRow();
+    sh.getRange(lastRow + 1, 1).setValue(vendor);
+    sh.getRange(lastRow + 1, 6).setValue(true);
+  }
+  return true;
+}
+
+/**
+ * Toggle flag for the currently displayed vendor
+ */
+function battleStationToggleFlag() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    SpreadsheetApp.getUi().alert('A(I)DEN sheet not found.');
+    return;
+  }
+
+  // Get vendor name from row 2 (vendor name banner) - remove any icons (flag/snooze)
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*/, '').replace(/\s*💤\d+\/\d+\s*$/, '').trim();
+  if (!vendor) {
+    SpreadsheetApp.getUi().alert('No vendor currently displayed.');
+    return;
+  }
+
+  const currentlyFlagged = isVendorFlagged_(vendor);
+  setVendorFlag_(vendor, !currentlyFlagged);
+
+  // Update the display with or without flag icon
+  if (!currentlyFlagged) {
+    bsSh.getRange(2, 1).setValue(`${vendor} ⚑`);
+    ss.toast(`⚑ Flagged "${vendor}" - will stop here on next skip`, '⚑ Flagged', 3);
+  } else {
+    bsSh.getRange(2, 1).setValue(vendor);
+    ss.toast(`Unflagged "${vendor}"`, '⚑ Unflagged', 3);
+  }
+}
+
+/**
+ * Check if a vendor is snoozed (and snooze date hasn't passed)
+ * Returns true if snoozed and date is in the future
+ */
+function isVendorSnoozed_(vendor) {
+  const snoozeDate = getVendorSnoozeDate_(vendor);
+  if (!snoozeDate) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return snoozeDate > today;
+}
+
+/**
+ * Get the snooze date for a vendor
+ * Returns Date object or null if not snoozed
+ */
+function getVendorSnoozeDate_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      const snoozeVal = data[i][7];
+      if (snoozeVal instanceof Date) {
+        return snoozeVal;
+      }
+      if (snoozeVal) {
+        const parsed = new Date(snoozeVal);
+        if (!isNaN(parsed.getTime())) {
+          return parsed;
+        }
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Set or clear the snooze date for a vendor
+ */
+function setVendorSnooze_(vendor, snoozeDate) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      sh.getRange(i + 1, 8).setValue(snoozeDate || '');
+      return true;
+    }
+  }
+
+  // Vendor not in checksums yet - add a row
+  if (snoozeDate) {
+    const lastRow = sh.getLastRow();
+    sh.getRange(lastRow + 1, 1).setValue(vendor);
+    sh.getRange(lastRow + 1, 8).setValue(snoozeDate);
+  }
+  return true;
+}
+
+/**
+ * Snooze the currently displayed vendor until a specified date
+ */
+function battleStationSnoozeVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('A(I)DEN sheet not found.');
+    return;
+  }
+
+  // Get vendor name from row 2 (vendor name banner) - remove any icons
+  const rawValue = String(bsSh.getRange(2, 1).getValue() || '').trim();
+  const vendor = rawValue.replace(/\s*⚑\s*$/, '').replace(/\s*💤.*$/, '').trim();
+  if (!vendor) {
+    ui.alert('No vendor currently displayed.');
+    return;
+  }
+
+  // Check if already snoozed
+  const currentSnooze = getVendorSnoozeDate_(vendor);
+  if (currentSnooze && currentSnooze > new Date()) {
+    const response = ui.alert(
+      'Already Snoozed',
+      `"${vendor}" is snoozed until ${currentSnooze.toLocaleDateString()}.\n\nDo you want to clear the snooze?`,
+      ui.ButtonSet.YES_NO
+    );
+    if (response === ui.Button.YES) {
+      setVendorSnooze_(vendor, null);
+      // Update display
+      const newDisplay = rawValue.replace(/\s*💤.*$/, '').trim();
+      bsSh.getRange(2, 1).setValue(newDisplay);
+      ss.toast(`Snooze cleared for "${vendor}"`, '⏰ Unsnooze', 3);
+    }
+    return;
+  }
+
+  // Prompt for snooze date
+  const response = ui.prompt(
+    'Snooze Vendor',
+    `Enter snooze date for "${vendor}" (YYYY-MM-DD):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+
+  const dateStr = response.getResponseText().trim();
+
+  // Parse date parts to avoid timezone issues (YYYY-MM-DD interpreted as UTC)
+  const dateParts = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (!dateParts) {
+    ui.alert('Invalid date format. Please use YYYY-MM-DD.');
+    return;
+  }
+
+  const snoozeDate = new Date(
+    parseInt(dateParts[1], 10),      // year
+    parseInt(dateParts[2], 10) - 1,  // month (0-indexed)
+    parseInt(dateParts[3], 10)       // day
+  );
+
+  if (isNaN(snoozeDate.getTime())) {
+    ui.alert('Invalid date format. Please use YYYY-MM-DD.');
+    return;
+  }
+
+  // Set snooze to end of day
+  snoozeDate.setHours(23, 59, 59, 999);
+
+  if (snoozeDate <= new Date()) {
+    ui.alert('Snooze date must be in the future.');
+    return;
+  }
+
+  setVendorSnooze_(vendor, snoozeDate);
+
+  // Update display with snooze indicator
+  const displayDate = snoozeDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const baseDisplay = rawValue.replace(/\s*💤.*$/, '').trim();
+  bsSh.getRange(2, 1).setValue(`${baseDisplay} 💤${displayDate}`);
+
+  ss.toast(`Snoozed "${vendor}" until ${displayDate}`, '💤 Snoozed', 3);
+}
+
+/**
+ * Mark the highlighted email as manually overdue
+ * Works on the email row that is currently selected in the sheet
+ */
+function markEmailAsOverdue() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+    ss.toast(`Marking email as overdue...`, '🔴 Overdue', 2);
+
+    // Get or create the label
+    let label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+    if (!label) {
+      label = GmailApp.createLabel(BS_CFG.MANUAL_OVERDUE_LABEL);
+      Logger.log(`Created label: ${BS_CFG.MANUAL_OVERDUE_LABEL}`);
+    }
+
+    emailData.thread.addLabel(label);
+    ss.toast(`Marked as overdue: "${emailData.subject}"`, '🔴 Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Clear manual overdue label from the highlighted email
+ * Works on the email row that is currently selected in the sheet
+ */
+function clearOverdueFromEmail() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+    ss.toast(`Clearing overdue...`, '✅ Clear', 2);
+
+    const label = GmailApp.getUserLabelByName(BS_CFG.MANUAL_OVERDUE_LABEL);
+    if (!label) {
+      throw new Error('Manual overdue label not found');
+    }
+
+    emailData.thread.removeLabel(label);
+    ss.toast(`Cleared overdue: "${emailData.subject}"`, '✅ Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Send highlighted email to Aden for investigation
+ * Shows dialog for context, then sends email with Gmail search link
+ */
+function sendToAden() {
+  const ss = SpreadsheetApp.getActive();
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    // Get sender email from the thread
+    const messages = emailData.thread.getMessages();
+    const lastMessage = messages[messages.length - 1];
+    const senderEmail = lastMessage.getFrom();
+
+    // Extract just the email address from "Name <email>" format
+    const emailMatch = senderEmail.match(/<([^>]+)>/) || [null, senderEmail];
+    const senderEmailClean = emailMatch[1] || senderEmail;
+
+    // Build the dialog HTML
+    const escapedSubject = emailData.subject.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+    const escapedSender = senderEmailClean.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .info { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; }
+    .info-label { font-weight: bold; color: #5f6368; }
+    .info-value { color: #202124; margin-left: 5px; }
+    .context-label { font-weight: bold; margin-bottom: 8px; display: block; }
+    textarea {
+      width: 100%;
+      height: 100px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+      resize: vertical;
+    }
+    .buttons { margin-top: 15px; display: flex; gap: 10px; }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-send { background: #34a853; color: white; }
+    .btn-send:hover { background: #2d8e47; }
+    .btn-cancel { background: #f1f3f4; color: #5f6368; }
+    .btn-cancel:hover { background: #e8eaed; }
+    .loading { color: #5f6368; font-style: italic; display: none; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="info">
+    <div><span class="info-label">Subject:</span><span class="info-value">${escapedSubject}</span></div>
+    <div><span class="info-label">From:</span><span class="info-value">${escapedSender}</span></div>
+  </div>
+
+  <label class="context-label">Context for Aden:</label>
+  <textarea id="context" placeholder="Add any context or notes about what needs to be investigated..."></textarea>
+
+  <div class="buttons">
+    <button class="btn btn-send" onclick="doSend()">Send to Aden</button>
+    <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div id="loading" class="loading">Sending...</div>
+
+  <script>
+    function doSend() {
+      var context = document.getElementById('context').value;
+      document.querySelector('.btn-send').disabled = true;
+      document.querySelector('.btn-cancel').disabled = true;
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.querySelector('.btn-send').disabled = false;
+          document.querySelector('.btn-cancel').disabled = false;
+          document.getElementById('loading').style.display = 'none';
+        })
+        .sendToAdenExecute('${escapedSubject}', '${escapedSender}', context);
+    }
+
+    // Focus on textarea when dialog opens
+    document.getElementById('context').focus();
+  </script>
+</body>
+</html>`;
+
+    const htmlOutput = HtmlService.createHtmlOutput(html)
+      .setWidth(500)
+      .setHeight(320);
+
+    SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📤 Send to Aden');
+
+  } catch (e) {
+    SpreadsheetApp.getUi().alert('Error', e.message, SpreadsheetApp.getUi().ButtonSet.OK);
+  }
+}
+
+/**
+ * Execute sending email to Aden (called from dialog)
+ */
+function sendToAdenExecute(subject, senderEmail, context) {
+  const recipient = 'team-member-2@yourdomain.com';
+  const emailSubject = `SUBJECT: ${subject} - PLEASE INVESTIGATE/REACH-OUT/RESOLVE`;
+
+  // Build Gmail search URL: subject + from sender
+  const searchQuery = `subject:(${subject}) from:(${senderEmail})`;
+  const encodedQuery = encodeURIComponent(searchQuery);
+  const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/${encodedQuery}`;
+
+  // Build email body
+  let body = `Hi Aden,\n\n`;
+  body += `Please investigate/reach-out/resolve the following email:\n\n`;
+  body += `Subject: ${subject}\n`;
+  body += `From: ${senderEmail}\n\n`;
+  body += `Gmail Search Link:\n${gmailSearchUrl}\n\n`;
+
+  if (context && context.trim()) {
+    body += `Context:\n${context.trim()}\n\n`;
+  }
+
+  body += `Thanks,\nAndy`;
+
+  // Send the email
+  GmailApp.sendEmail(recipient, emailSubject, body);
+
+  SpreadsheetApp.getActive().toast(`Sent to Aden: "${subject}"`, '📤 Sent', 3);
+}
+
+/**
+ * Throw any email/provider to Aden for research - not tied to a selected email.
+ * Shows a dialog where you type a vendor name or email address + context.
+ */
+function throwToAden() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Try to pre-populate vendor name from current view
+  let currentVendor = '';
+  try {
+    const idx = getCurrentVendorIndex_();
+    if (idx) {
+      const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+      currentVendor = String(listSh.getRange(idx + 1, BS_CFG.L_VENDOR + 1).getValue() || '');
+    }
+  } catch (e) { /* ignore */ }
+
+  const escapedVendor = currentVendor.replace(/'/g, "\\'").replace(/"/g, "&quot;");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    label { font-weight: bold; display: block; margin-bottom: 6px; color: #5f6368; }
+    input, textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+      margin-bottom: 14px;
+    }
+    textarea { height: 100px; resize: vertical; }
+    .buttons { display: flex; gap: 10px; }
+    .btn {
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-send { background: #34a853; color: white; }
+    .btn-send:hover { background: #2d8e47; }
+    .btn-cancel { background: #f1f3f4; color: #5f6368; }
+    .btn-cancel:hover { background: #e8eaed; }
+    .loading { color: #5f6368; font-style: italic; display: none; margin-top: 10px; }
+    .hint { font-size: 11px; color: #9aa0a6; margin-top: -10px; margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <label>Vendor / Provider Name</label>
+  <input type="text" id="vendor" value="${escapedVendor}" placeholder="e.g. Acme Corp" />
+
+  <label>Email Address (optional)</label>
+  <input type="email" id="email" placeholder="e.g. john@acme.com" />
+  <div class="hint">If provided, Aden will get a Gmail search link for this sender</div>
+
+  <label>What should Aden do?</label>
+  <textarea id="context" placeholder="e.g. Research this provider, reach out about overdue payment, follow up on contract..."></textarea>
+
+  <div class="buttons">
+    <button class="btn btn-send" onclick="doSend()">Send to Aden</button>
+    <button class="btn btn-cancel" onclick="google.script.host.close()">Cancel</button>
+  </div>
+
+  <div id="loading" class="loading">Sending...</div>
+
+  <script>
+    function doSend() {
+      var vendor = document.getElementById('vendor').value.trim();
+      var email = document.getElementById('email').value.trim();
+      var context = document.getElementById('context').value.trim();
+
+      if (!vendor && !email) {
+        alert('Please enter a vendor name or email address.');
+        return;
+      }
+
+      document.querySelector('.btn-send').disabled = true;
+      document.querySelector('.btn-cancel').disabled = true;
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.querySelector('.btn-send').disabled = false;
+          document.querySelector('.btn-cancel').disabled = false;
+          document.getElementById('loading').style.display = 'none';
+        })
+        .throwToAdenExecute(vendor, email, context);
+    }
+
+    document.getElementById('${escapedVendor ? 'context' : 'vendor'}').focus();
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(500)
+    .setHeight(420);
+
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '📤 Throw to Aden');
+}
+
+/**
+ * Execute throwing vendor/email to Aden (called from throwToAden dialog)
+ */
+function throwToAdenExecute(vendor, email, context) {
+  const recipient = 'team-member-2@yourdomain.com';
+  const label = vendor || email;
+  const emailSubject = `RE: ${label} - PLEASE INVESTIGATE/REACH-OUT/RESOLVE`;
+
+  let body = `Hi Aden,\n\n`;
+  body += `Please investigate/reach-out/resolve the following:\n\n`;
+
+  if (vendor) {
+    body += `Vendor/Provider: ${vendor}\n`;
+  }
+
+  if (email) {
+    body += `Contact Email: ${email}\n`;
+    const searchQuery = `from:(${email})`;
+    const encodedQuery = encodeURIComponent(searchQuery);
+    const gmailSearchUrl = `https://mail.google.com/mail/u/0/#search/${encodedQuery}`;
+    body += `Gmail Search Link:\n${gmailSearchUrl}\n`;
+  }
+
+  if (context && context.trim()) {
+    body += `\nContext / Instructions:\n${context.trim()}\n`;
+  }
+
+  body += `\nThanks,\nAndy`;
+
+  GmailApp.sendEmail(recipient, emailSubject, body);
+
+  SpreadsheetApp.getActive().toast(`Thrown to Aden: "${label}"`, '📤 Sent', 3);
+}
+
+/**
+ * Archive the currently selected email thread
+ */
+function archiveSelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    emailData.thread.moveToArchive();
+    ss.toast(`Archived: "${emailData.subject}"`, '📥 Archived', 3);
+
+    // Trigger a quick refresh to update the email list
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Bury selected email - removes all labels except zzzVendors sublabels
+ * Effectively removes the email from all processing labels (00.received, priority, snooze, etc.)
+ * while keeping it findable under the vendor's label
+ */
+function burySelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast(`Burying: "${emailData.subject}"...`, '⚰️ Bury', 2);
+
+    const thread = emailData.thread;
+    const labels = thread.getLabels();
+    let removedCount = 0;
+
+    for (const label of labels) {
+      const name = label.getName();
+      // Keep zzzVendors sublabels, remove everything else
+      if (!name.toLowerCase().startsWith('zzzvendors/')) {
+        thread.removeLabel(label);
+        removedCount++;
+        Logger.log(`[Bury] Removed label: ${name}`);
+      } else {
+        Logger.log(`[Bury] Kept label: ${name}`);
+      }
+    }
+
+    // Also archive to remove from Inbox
+    thread.moveToArchive();
+
+    ss.toast(`Buried "${emailData.subject}" - removed ${removedCount} label${removedCount !== 1 ? 's' : ''} + archived`, '⚰️ Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Remove the 01.priority/1 label from the selected email
+ */
+function unprioritizeSelectedEmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    const emailData = getSelectedEmailThread_();
+
+    if (!emailData || !emailData.thread) {
+      ui.alert('Error', 'Could not find selected email thread.', ui.ButtonSet.OK);
+      return;
+    }
+
+    const thread = emailData.thread;
+    const labels = thread.getLabels();
+    const priorityLabel = labels.find(l => l.getName() === '01.priority/1');
+
+    if (!priorityLabel) {
+      ss.toast(`"${emailData.subject}" doesn't have the 01.priority/1 label`, '⬇️ Unprioritize', 3);
+      return;
+    }
+
+    thread.removeLabel(priorityLabel);
+    ss.toast(`Removed priority from "${emailData.subject}"`, '⬇️ Done', 3);
+
+    Utilities.sleep(500);
+    battleStationQuickRefreshUntilChanged();
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Get Box file blacklist from Settings sheet
+ * Returns object like { "ANGI": ["fileId1", "fileId2"], "Vendor2": ["fileId3"] }
+ * 
+ * Settings sheet format (Box Blacklist section - can start in any column):
+ * Row: "Box Blacklist" | (empty) | (empty) | (empty)
+ * Row: "Vendor Name" | "File ID" | "File Name (for reference)" | "Reason"
+ * Row: "ANGI" | "123456789" | "inbound1_IO.docx" | "False positive - ANGI in content"
+ */
+function getBoxBlacklist_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+  
+  if (!settingsSh) {
+    return {};
+  }
+  
+  const data = settingsSh.getDataRange().getValues();
+  const blacklist = {};
+  let inBlacklistSection = false;
+  let startCol = -1;  // Track which column the blacklist starts in
+  
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Box Blacklist" header in any column
+    if (!inBlacklistSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'box blacklist') {
+          inBlacklistSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+    
+    // Now we're in the blacklist section, use startCol for data
+    const vendorCell = String(data[i][startCol] || '').trim();
+    const fileIdCell = String(data[i][startCol + 1] || '').trim();
+    
+    // Skip header row
+    if (vendorCell.toLowerCase() === 'vendor name') {
+      continue;
+    }
+    
+    // Exit if we hit an empty row (both vendor and file ID empty)
+    if (vendorCell === '' && fileIdCell === '') {
+      break;
+    }
+    
+    // Parse blacklist entries
+    if (vendorCell !== '' && fileIdCell !== '') {
+      if (!blacklist[vendorCell]) {
+        blacklist[vendorCell] = [];
+      }
+      blacklist[vendorCell].push(fileIdCell);
+    }
+  }
+  
+  Logger.log(`Box blacklist loaded: ${JSON.stringify(blacklist)}`);
+  return blacklist;
+}
+
+/**
+ * Get stored checksum for a vendor
+ * Returns object with { checksum, emailChecksum, moduleChecksums, emailData }
+ */
+function getStoredChecksum_(vendor) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      let moduleChecksums = null;
+      let emailData = null;
+      try {
+        if (data[i][3]) {
+          moduleChecksums = JSON.parse(data[i][3]);
+        }
+      } catch (e) {
+        // Invalid JSON, ignore
+      }
+      try {
+        if (data[i][6]) {
+          emailData = JSON.parse(data[i][6]);
+        }
+      } catch (e) {
+        // Invalid JSON, ignore
+      }
+      return {
+        checksum: data[i][1],
+        emailChecksum: data[i][2] || null,
+        moduleChecksums: moduleChecksums,
+        emailData: emailData,
+        vendorLabelChecksum: data[i][8] || null  // Column 9 (0-indexed = 8)
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Store checksum for a vendor (including module sub-checksums and email data)
+ * @param {string} vendor
+ * @param {string} checksum
+ * @param {string} emailChecksum
+ * @param {object} moduleChecksums
+ * @param {object} emailData
+ * @param {string} vendorLabelChecksum - Optional secondary checksum for vendor-label-only search
+ */
+function storeChecksum_(vendor, checksum, emailChecksum, moduleChecksums, emailData, vendorLabelChecksum) {
+  const sh = getChecksumsSheet_();
+  const data = sh.getDataRange().getValues();
+  const now = new Date();
+  const moduleJson = moduleChecksums ? JSON.stringify(moduleChecksums) : '';
+  const emailDataJson = emailData ? JSON.stringify(emailData) : '';
+
+  // Look for existing row
+  for (let i = 1; i < data.length; i++) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      // Update columns 2-5 (Checksum, EmailChecksum, ModuleChecksums, Last Viewed) and column 7 (EmailData), column 9 (VendorLabelChecksum)
+      sh.getRange(i + 1, 2, 1, 4).setValues([[checksum, emailChecksum || '', moduleJson, now]]);
+      sh.getRange(i + 1, 7).setValue(emailDataJson);
+      if (vendorLabelChecksum) {
+        sh.getRange(i + 1, 9).setValue(vendorLabelChecksum);
+      }
+      return;
+    }
+  }
+
+  // Add new row (9 columns now)
+  sh.appendRow([vendor, checksum, emailChecksum || '', moduleJson, now, '', emailDataJson, '', vendorLabelChecksum || '']);
+}
+
+/**
+ * Log what changed in emails by comparing old and new email data
+ * @returns {object} { added: [], removed: [] }
+ */
+function logEmailChanges_(oldEmails, newEmails, vendor) {
+  // Create maps for comparison using subject+date as key
+  const oldMap = new Map((oldEmails || []).map(e => [`${e.subject}|${e.date}`, e]));
+  const newMap = new Map((newEmails || []).map(e => [`${e.subject}|${e.date}`, e]));
+
+  const added = [];
+  const removed = [];
+
+  // Find added emails (in new but not in old)
+  for (const [key, email] of newMap) {
+    if (!oldMap.has(key)) {
+      added.push(email);
+    }
+  }
+
+  // Find removed emails (in old but not in new)
+  for (const [key, email] of oldMap) {
+    if (!newMap.has(key)) {
+      removed.push(email);
+    }
+  }
+
+  // Log the changes
+  if (added.length > 0 || removed.length > 0) {
+    Logger.log(`📧 Email changes for ${vendor}:`);
+    if (added.length > 0) {
+      Logger.log(`  ➕ ADDED (${added.length}):`);
+      for (const e of added.slice(0, 5)) {
+        Logger.log(`     - "${e.subject}" (${e.date})`);
+      }
+      if (added.length > 5) Logger.log(`     ... and ${added.length - 5} more`);
+    }
+    if (removed.length > 0) {
+      Logger.log(`  ➖ REMOVED (${removed.length}):`);
+      for (const e of removed.slice(0, 5)) {
+        Logger.log(`     - "${e.subject}" (${e.date})`);
+      }
+      if (removed.length > 5) Logger.log(`     ... and ${removed.length - 5} more`);
+    }
+  } else {
+    // If no added/removed but checksum changed, might be label changes
+    Logger.log(`📧 Email changes for ${vendor}: Labels or other metadata changed (same threads)`);
+  }
+
+  return { added, removed };
+}
+
+/**
+ * Parse the overdue count from an email checksum (e.g., "-17ff163c_OD1" -> 1)
+ */
+function parseOverdueCount_(checksum) {
+  if (!checksum) return 0;
+  const match = String(checksum).match(/_OD(\d+)$/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
+ * Get human-readable description of email checksum change
+ */
+function getEmailChangeDescription_(oldChecksum, newChecksum, addedCount, removedCount) {
+  const oldOverdue = parseOverdueCount_(oldChecksum);
+  const newOverdue = parseOverdueCount_(newChecksum);
+
+  const changes = [];
+
+  if (addedCount > 0) {
+    changes.push(`${addedCount} new email${addedCount > 1 ? 's' : ''}`);
+  }
+  if (removedCount > 0) {
+    changes.push(`${removedCount} removed`);
+  }
+  if (oldOverdue !== newOverdue) {
+    if (newOverdue > oldOverdue) {
+      changes.push(`${newOverdue - oldOverdue} became overdue`);
+    } else {
+      changes.push(`${oldOverdue - newOverdue} no longer overdue`);
+    }
+  }
+
+  if (changes.length === 0) {
+    changes.push('labels or metadata changed');
+  }
+
+  return changes.join(', ');
+}
+
+/************************************************************
+ * HELPER FUNCTIONS - Shared utilities for change detection
+ ************************************************************/
+
+/**
+ * Make a monday.com API request
+ * Centralizes all monday API calls for consistency
+ * @param {string} query - GraphQL query
+ * @param {string} apiToken - API token (optional, defaults to BS_CFG.MONDAY_API_TOKEN)
+ * @returns {object} Parsed JSON response
+ */
+function mondayApiRequest_(query, apiToken) {
+  const token = apiToken || BS_CFG.MONDAY_API_TOKEN;
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'Authorization': token },
+    payload: JSON.stringify({ query: query }),
+    muteHttpExceptions: true
+  };
+  
+  const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+  return JSON.parse(response.getContentText());
+}
+
+/**
+ * Generate checksum for tasks data
+ * @param {array} tasks - Array of task objects
+ * @returns {string} Hash string
+ */
+function generateTasksChecksum_(tasks) {
+  return hashString_(JSON.stringify((tasks || []).map(t => ({ 
+    name: t.subject, 
+    status: t.status, 
+    created: t.created 
+  }))));
+}
+
+/**
+ * Generate checksum for contacts data (sorted for consistency)
+ * @param {array} contacts - Array of contact objects
+ * @returns {string} Hash string
+ */
+function generateContactsChecksum_(contacts) {
+  return hashString_(JSON.stringify(
+    (contacts || [])
+      .map(c => ({ name: c.name, email: c.email, status: c.status }))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  ));
+}
+
+/**
+ * Generate checksum for meetings data
+ * Only includes future meetings - past meetings falling off shouldn't trigger changes
+ * Excludes [DAILY], [WEEKLY], and [MONTHLY] recurring events as they change too often
+ * @param {array} meetings - Array of meeting objects
+ * @returns {string} Hash string
+ */
+function generateMeetingsChecksum_(meetings) {
+  // Filter to only future meetings for checksum, excluding recurring events
+  const futureMeetings = (meetings || []).filter(m => {
+    if (m.isPast) return false;
+    // Exclude recurring events that change daily/weekly/monthly
+    const title = (m.title || '').toUpperCase();
+    if (title.includes('[DAILY]') || title.includes('[WEEKLY]') || title.includes('[MONTHLY]')) return false;
+    return true;
+  });
+  return hashString_(JSON.stringify(futureMeetings.map(m => ({
+    title: m.title,
+    date: m.date,
+    time: m.time
+  }))));
+}
+
+/**
+ * Filter tasks based on vendor source (affiliate vs buyer)
+ * Removes inappropriate onboarding tasks
+ * @param {array} tasks - Array of task objects
+ * @param {string} source - Vendor source (e.g., "Buyers L1M", "affiliates monday.com")
+ * @returns {array} Filtered tasks
+ */
+function filterTasksBySource_(tasks, source) {
+  const sourceLower = (source || '').toLowerCase();
+  const isAffiliate = sourceLower.includes('affiliate');
+  const isBuyer = sourceLower.includes('buyer');
+  
+  return (tasks || []).filter(task => {
+    const project = (task.project || '').toLowerCase();
+    if (isAffiliate && project.includes('onboarding - buyer')) return false;
+    if (isBuyer && project.includes('onboarding - affiliate')) return false;
+    return true;
+  });
+}
+
+/**
+ * Check if a vendor has changes compared to stored checksums
+ * Returns detailed change info for use in skip functions
+ *
+ * @param {string} vendor - Vendor name
+ * @param {number} listRow - Row number in List sheet
+ * @param {string} source - Vendor source for task filtering
+ * @param {object} [options] - Optional settings
+ * @param {boolean} [options.skipVendorLabelCheck] - Skip the vendor label checksum check (faster, but may miss unlabeled emails)
+ * @returns {object} { hasChanges, changeType, data }
+ *   - hasChanges: boolean
+ *   - changeType: string describing what changed (or 'first_view' or 'unchanged')
+ *   - data: object with fetched data for reuse { emails, tasks, contactData, meetings }
+ */
+function checkVendorForChanges_(vendor, listRow, source, options) {
+  options = options || {};
+  // Check if vendor is flagged - always stop on flagged vendors (fast - no API)
+  if (isVendorFlagged_(vendor)) {
+    Logger.log(`${vendor}: flagged for review`);
+    // Clear the flag since we're stopping here
+    setVendorFlag_(vendor, false);
+    return {
+      hasChanges: true,
+      changeType: 'Flagged',
+      data: null
+    };
+  }
+
+  // Get stored checksum data first (fast - just reads from sheet)
+  const storedData = getStoredChecksum_(vendor);
+
+  // If no stored data, this is a first view - definitely has changes
+  if (!storedData) {
+    Logger.log(`${vendor}: no stored checksums - first view`);
+    return {
+      hasChanges: true,
+      changeType: 'First view',
+      data: null
+    };
+  }
+
+  // FAST PATH: Quick thread count check before fetching full email data
+  // If count differs from stored, we know there's a change without expensive processing
+  const storedEmailChecksum = String(storedData.emailChecksum || '');
+  const storedCountMatch = storedEmailChecksum.match(/^(\d+):/);
+  if (storedCountMatch) {
+    const storedCount = parseInt(storedCountMatch[1], 10);
+    const currentCount = getEmailThreadCountFast_(listRow);
+
+    if (currentCount >= 0 && currentCount !== storedCount) {
+      Logger.log(`${vendor}: FAST DETECT - email count changed (${storedCount} → ${currentCount})`);
+      return {
+        hasChanges: true,
+        changeType: `Emails: ${currentCount > storedCount ? 'new emails' : 'emails removed'}`,
+        data: null  // Don't fetch full data - loadVendorData will do that
+      };
+    }
+    // Count matches - need to fetch full data for detailed comparison
+  }
+
+  // Full email fetch needed for overdue check and detailed checksum
+  const emails = getEmailsForVendor_(vendor, listRow) || [];
+  const overdueEmails = emails.filter(e => isEmailOverdue_(e));
+  if (overdueEmails.length > 0) {
+    Logger.log(`${vendor}: has ${overdueEmails.length} overdue email(s)`);
+    return {
+      hasChanges: true,
+      changeType: 'Overdue emails',
+      data: { emails }
+    };
+  }
+
+  // Check emails (most volatile) - emails already fetched above for overdue check
+  const newEmailChecksum = generateEmailChecksum_(emails);
+
+  if (storedData.emailChecksum !== newEmailChecksum) {
+    // Get human-readable description of what changed
+    const changeDesc = getEmailChangeDescription_(storedData.emailChecksum, newEmailChecksum, 0, 0);
+    Logger.log(`${vendor}: emails changed (stored=${storedData.emailChecksum}, new=${newEmailChecksum}) - ${changeDesc}`);
+    return {
+      hasChanges: true,
+      changeType: `Emails: ${changeDesc}`,
+      data: { emails }
+    };
+  }
+
+  // Check vendor-label-only checksum (catches emails without 00.received label)
+  // Skip if: no stored checksum, or skipVendorLabelCheck option is true (for faster skip unchanged)
+  if (storedData.vendorLabelChecksum && !options.skipVendorLabelCheck) {
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const gmailLink = listSh.getRange(listRow, BS_CFG.L_GMAIL_LINK + 1).getValue();
+    const newVendorLabelChecksum = generateVendorLabelChecksum_(gmailLink);
+
+    if (newVendorLabelChecksum && storedData.vendorLabelChecksum !== newVendorLabelChecksum) {
+      Logger.log(`${vendor}: vendor label emails changed (stored=${storedData.vendorLabelChecksum}, new=${newVendorLabelChecksum})`);
+      return {
+        hasChanges: true,
+        changeType: 'New vendor emails (unlabeled)',
+        data: { emails }
+      };
+    }
+  }
+
+  // Check tasks (second most volatile)
+  let tasks = getTasksForVendor_(vendor, listRow) || [];
+  tasks = filterTasksBySource_(tasks, source);
+  const newTasksChecksum = generateTasksChecksum_(tasks);
+  
+  if (storedData.moduleChecksums && storedData.moduleChecksums.tasks !== newTasksChecksum) {
+    Logger.log(`${vendor}: tasks changed`);
+    return { 
+      hasChanges: true, 
+      changeType: 'Tasks changed',
+      data: { emails, tasks } 
+    };
+  }
+  
+  // Check contacts/notes/status
+  const contactData = getVendorContacts_(vendor, listRow);
+  const newNotesChecksum = hashString_(JSON.stringify(contactData.notes || ''));
+  const newStatusChecksum = hashString_(JSON.stringify(contactData.liveStatus || ''));
+  const newContactsChecksum = generateContactsChecksum_(contactData.contacts);
+  
+  if (storedData.moduleChecksums) {
+    if (storedData.moduleChecksums.notes !== newNotesChecksum) {
+      Logger.log(`${vendor}: notes changed`);
+      return { 
+        hasChanges: true, 
+        changeType: 'Notes changed',
+        data: { emails, tasks, contactData } 
+      };
+    }
+    if (storedData.moduleChecksums.status !== newStatusChecksum) {
+      Logger.log(`${vendor}: status changed`);
+      return { 
+        hasChanges: true, 
+        changeType: 'Status changed',
+        data: { emails, tasks, contactData } 
+      };
+    }
+    if (storedData.moduleChecksums.contacts !== newContactsChecksum) {
+      Logger.log(`${vendor}: contacts changed`);
+      return { 
+        hasChanges: true, 
+        changeType: 'Contacts changed',
+        data: { emails, tasks, contactData } 
+      };
+    }
+  }
+  
+  // Check meetings
+  const contactEmails = (contactData.contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
+  const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+  const meetings = meetingsResult.meetings || [];
+  const newMeetingsChecksum = generateMeetingsChecksum_(meetings);
+  
+  if (storedData.moduleChecksums && storedData.moduleChecksums.meetings !== newMeetingsChecksum) {
+    Logger.log(`${vendor}: meetings changed`);
+    return { 
+      hasChanges: true, 
+      changeType: 'Meetings changed',
+      data: { emails, tasks, contactData, meetings } 
+    };
+  }
+  
+  // No changes detected
+  Logger.log(`${vendor}: unchanged (emails, tasks, notes, status, contacts, meetings all same)`);
+  return { 
+    hasChanges: false, 
+    changeType: 'unchanged',
+    data: { emails, tasks, contactData, meetings } 
+  };
+}
+
+/**
+ * Format change type for display in toast notifications
+ * @param {string} changeType - Raw change type from checkVendorForChanges_
+ * @return {string} Formatted change type with emoji
+ */
+function formatChangeType_(changeType) {
+  const typeMap = {
+    'Flagged': '⚑ Flagged for review',
+    'Overdue emails': '🔴 Overdue emails need attention',
+    'First view': '🆕 First time viewing',
+    'Emails changed': '📧 New or updated emails',
+    'Tasks changed': '📋 Tasks changed on monday.com',
+    'Notes changed': '📝 Notes updated',
+    'Status changed': '🔄 Status changed',
+    'Contacts changed': '👤 Contacts updated',
+    'Meetings changed': '📅 Meetings changed'
+  };
+  return typeMap[changeType] || changeType;
+}
+
+/**
+ * Set row background color in List sheet
+ * @param {Sheet} listSh - List sheet
+ * @param {number} listRow - Row number (1-based)
+ * @param {string} color - Background color
+ */
+function setListRowColor_(listSh, listRow, color) {
+  const numCols = listSh.getLastColumn();
+  Logger.log(`setListRowColor_: row=${listRow}, cols=${numCols}, color=${color}`);
+  if (numCols > 0) {
+    listSh.getRange(listRow, 1, 1, numCols).setBackground(color);
+  } else {
+    Logger.log(`WARNING: numCols is ${numCols}, skipping row color`);
+  }
+}
+
+/**
+ * Find vendor index by name (case-insensitive)
+ * @param {Sheet} listSh - List sheet
+ * @param {string} vendorName - Vendor name to search for
+ * @returns {number|null} - Vendor index (1-based) or null if not found
+ */
+function findVendorIndexByName_(listSh, vendorName) {
+  const data = listSh.getDataRange().getValues();
+  const searchName = vendorName.toLowerCase().trim();
+
+  for (let i = 1; i < data.length; i++) {
+    const name = String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase().trim();
+    if (name === searchName) {
+      return i;  // Return the index (1-based matches row - 1)
+    }
+  }
+  return null;
+}
+
+/**
+ * Check inbox for new emails with zzzVendors labels since a given timestamp
+ * @param {Date} sinceTime - Only return emails newer than this time
+ * @returns {Object|null} - {vendorName, threadId, subject} or null if none found
+ */
+function checkInboxForNewVendorEmails_(sinceTime) {
+  try {
+    // Get current user's email to check if last message is from me
+    const myEmail = Session.getEffectiveUser().getEmail().toLowerCase();
+
+    // Search inbox for emails since the given time
+    const threads = GmailApp.search('in:inbox', 0, 100);
+
+    for (const thread of threads) {
+      const lastMessageDate = thread.getLastMessageDate();
+
+      // Skip if older than sinceTime
+      if (lastMessageDate <= sinceTime) {
+        continue;
+      }
+
+      // Check if last message in thread is from me - skip if so
+      // (It's probably a response I sent that's still in inbox waiting for reply)
+      const messages = thread.getMessages();
+      if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const fromHeader = lastMessage.getFrom().toLowerCase();
+        if (fromHeader.includes(myEmail)) {
+          console.log(`Skipping inbox thread - last message is from me: ${thread.getFirstMessageSubject()}`);
+          continue;
+        }
+      }
+
+      // Check for zzzVendors label
+      const labels = thread.getLabels();
+      for (const label of labels) {
+        const labelName = label.getName();
+
+        if (labelName.startsWith('zzzVendors/')) {
+          const vendorName = labelName.substring('zzzVendors/'.length);
+          console.log(`Found inbox email for vendor: ${vendorName} (${thread.getFirstMessageSubject()})`);
+          return {
+            vendorName: vendorName,
+            threadId: thread.getId(),
+            subject: thread.getFirstMessageSubject(),
+            date: lastMessageDate
+          };
+        }
+      }
+    }
+
+    return null;
+  } catch (e) {
+    console.error('Error checking inbox for vendor emails:', e);
+    return null;
+  }
+}
+
+/**
+ * Inbox Mode - Navigate to vendors based on oldest inbox emails
+ * Searches for inbox emails with zzzVendors/ labels, sorted oldest first
+ * Skips emails where the last message is from the user
+ */
+function inboxModeNext() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  ss.toast('Searching inbox for vendor emails...', '📥 Inbox Mode', 2);
+
+  // Get user's email to skip threads where last message is from me
+  const myEmail = Session.getEffectiveUser().getEmail().toLowerCase();
+
+  // Search inbox for all threads (get more to find vendor-labeled ones)
+  const threads = GmailApp.search('in:inbox', 0, 200);
+
+  if (threads.length === 0) {
+    ui.alert('Inbox Empty', 'No emails found in inbox.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Find all threads with zzzVendors labels, and track unlabeled ones
+  const vendorThreads = [];
+  const unlabeledThreads = [];
+
+  for (const thread of threads) {
+    // Check if last message is from me - skip if so
+    const messages = thread.getMessages();
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      const fromHeader = lastMessage.getFrom().toLowerCase();
+      if (fromHeader.includes(myEmail)) {
+        continue; // Skip - last message is from me
+      }
+    }
+
+    // Check for zzzVendors label
+    const labels = thread.getLabels();
+    let hasVendorLabel = false;
+    for (const label of labels) {
+      const labelName = label.getName();
+      if (labelName.startsWith('zzzVendors/')) {
+        const vendorName = labelName.substring('zzzVendors/'.length);
+        vendorThreads.push({
+          vendorName: vendorName,
+          threadId: thread.getId(),
+          subject: thread.getFirstMessageSubject(),
+          date: thread.getLastMessageDate(),
+          messageCount: thread.getMessageCount()
+        });
+        hasVendorLabel = true;
+        break; // Only need one vendor label per thread
+      }
+    }
+
+    // Track inbox emails missing a zzzVendors sublabel
+    if (!hasVendorLabel) {
+      unlabeledThreads.push({
+        threadId: thread.getId(),
+        subject: thread.getFirstMessageSubject(),
+        from: thread.getMessages()[0] ? thread.getMessages()[thread.getMessages().length - 1].getFrom() : '',
+        date: thread.getLastMessageDate()
+      });
+    }
+  }
+
+  if (vendorThreads.length === 0) {
+    if (unlabeledThreads.length === 0) {
+      ui.alert('No Vendor Emails', 'No inbox emails found with vendor labels (zzzVendors/).', ui.ButtonSet.OK);
+    } else {
+      showUnlabeledEmailsDialog_(unlabeledThreads);
+    }
+    return;
+  }
+
+  // Sort by date - oldest first
+  vendorThreads.sort((a, b) => a.date - b.date);
+
+  // Get the oldest one
+  const oldest = vendorThreads[0];
+
+  // Show unlabeled dialog only if the next email after the current one is unlabeled
+  if (unlabeledThreads.length > 0) {
+    const currentDate = oldest.date;
+    // Find the next thread chronologically after the current vendor thread
+    const allOtherThreads = [
+      ...vendorThreads.slice(1).map(t => ({ ...t, hasVendorLabel: true })),
+      ...unlabeledThreads.map(t => ({ ...t, hasVendorLabel: false }))
+    ];
+    allOtherThreads.sort((a, b) => a.date - b.date);
+    if (allOtherThreads.length > 0 && !allOtherThreads[0].hasVendorLabel) {
+      showUnlabeledEmailsDialog_(unlabeledThreads);
+    }
+  }
+  Logger.log(`Inbox Mode: Found ${vendorThreads.length} vendor emails. Oldest: ${oldest.vendorName} (${oldest.date})`);
+
+  // Find vendor in list
+  const vendorIdx = findVendorIndexByName_(listSh, oldest.vendorName);
+
+  if (!vendorIdx) {
+    // Vendor not in list - try the next one
+    Logger.log(`Inbox Mode: Vendor "${oldest.vendorName}" not found in list`);
+
+    for (let i = 1; i < vendorThreads.length; i++) {
+      const next = vendorThreads[i];
+      const nextIdx = findVendorIndexByName_(listSh, next.vendorName);
+      if (nextIdx) {
+        ss.toast(`Navigating to ${next.vendorName} (oldest in inbox)`, '📥 Inbox Mode', 3);
+        loadVendorData(nextIdx, { forceChanged: true });
+
+        ui.alert(
+          '📥 Inbox Mode',
+          `Oldest inbox email for: ${next.vendorName}\n\n` +
+          `Subject: ${next.subject}\n` +
+          `Date: ${next.date.toLocaleString()}\n\n` +
+          `${vendorThreads.length} vendor email(s) in inbox total.`,
+          ui.ButtonSet.OK
+        );
+        return;
+      }
+    }
+
+    ui.alert('Vendor Not Found', `Vendor "${oldest.vendorName}" (and others) not found in list.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Navigate to the vendor
+  ss.toast(`Navigating to ${oldest.vendorName} (oldest in inbox)`, '📥 Inbox Mode', 3);
+  loadVendorData(vendorIdx, { forceChanged: true });
+
+  ui.alert(
+    '📥 Inbox Mode',
+    `Oldest inbox email for: ${oldest.vendorName}\n\n` +
+    `Subject: ${oldest.subject}\n` +
+    `Date: ${oldest.date.toLocaleString()}\n\n` +
+    `${vendorThreads.length} vendor email(s) in inbox total.`,
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Show a dialog listing inbox emails that are missing a zzzVendors sublabel
+ * Each email is shown with a clickable Gmail link so the user can label it
+ * @param {Array} unlabeledThreads - Array of {threadId, subject, from, date}
+ */
+function showUnlabeledEmailsDialog_(unlabeledThreads) {
+  const maxToShow = 20;
+  const threadsToShow = unlabeledThreads.slice(0, maxToShow);
+
+  let rows = '';
+  for (const thread of threadsToShow) {
+    const gmailUrl = `https://mail.google.com/mail/u/0/#inbox/${thread.threadId}`;
+    const subject = (thread.subject || '(no subject)').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    const from = (thread.from || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const dateStr = thread.date ? thread.date.toLocaleDateString() : '';
+
+    rows += `
+      <tr>
+        <td style="padding:6px 8px; border-bottom:1px solid #e0e0e0;">
+          <a href="${gmailUrl}" target="_blank" style="color:#1a73e8; text-decoration:none; font-weight:500;">${subject}</a>
+          <div style="font-size:11px; color:#666; margin-top:2px;">${from}</div>
+        </td>
+        <td style="padding:6px 8px; border-bottom:1px solid #e0e0e0; white-space:nowrap; color:#666; font-size:12px;">${dateStr}</td>
+      </tr>`;
+  }
+
+  const moreNote = unlabeledThreads.length > maxToShow
+    ? `<p style="color:#999; font-size:12px;">...and ${unlabeledThreads.length - maxToShow} more</p>`
+    : '';
+
+  const html = `
+    <html>
+    <body style="font-family: Google Sans, Roboto, Arial, sans-serif; padding: 16px; margin: 0;">
+      <p style="margin:0 0 12px 0; color:#333;">
+        These inbox emails are missing a <strong>zzzVendors</strong> sublabel. Click to open and label them:
+      </p>
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr style="background:#f5f5f5;">
+            <th style="text-align:left; padding:8px; border-bottom:2px solid #ddd;">Subject / From</th>
+            <th style="text-align:left; padding:8px; border-bottom:2px solid #ddd;">Date</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${moreNote}
+      <div style="text-align:right; margin-top:16px;">
+        <button onclick="google.script.host.close()" style="padding:8px 24px; background:#1a73e8; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px;">Got it</button>
+      </div>
+    </body>
+    </html>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(600).setHeight(400);
+  SpreadsheetApp.getUi().showModalDialog(htmlOutput, '⚠️ Inbox Emails Missing Vendor Label');
+}
+
+/**
+ * Find resume position - the first white (no color) vendor that:
+ * - Has green or yellow colored vendors before it
+ * - Has a white vendor after it
+ * This is used to resume normal skip-unchanged flow after inbox redirects
+ * @param {Sheet} listSh - List sheet
+ * @returns {number|null} - Vendor index (1-based) or null if not found
+ */
+function findResumePosition_(listSh) {
+  const lastRow = listSh.getLastRow();
+  const numCols = listSh.getLastColumn();
+
+  // Get all row backgrounds at once for performance
+  const backgrounds = listSh.getRange(2, 1, lastRow - 1, numCols).getBackgrounds();
+
+  // Find the first white row that has colored rows before it and a white row after it
+  let hasSeenColored = false;
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    const rowBg = backgrounds[i][0];  // Check first column's background
+    const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
+    const isColored = rowBg === BS_CFG.COLOR_ROW_CURRENT || rowBg === BS_CFG.COLOR_ROW_VIEWED;
+
+    if (isColored) {
+      hasSeenColored = true;
+    } else if (isWhite && hasSeenColored) {
+      // This is a white row after colored rows
+      // Check if there's a white row after this one
+      if (i + 1 < backgrounds.length) {
+        const nextRowBg = backgrounds[i + 1][0];
+        const nextIsWhite = !nextRowBg || nextRowBg === '#ffffff' || nextRowBg === 'white' || nextRowBg === '';
+
+        if (nextIsWhite) {
+          // Found it! Return the index (1-based, accounting for header row)
+          console.log(`Found resume position at row ${i + 2} (index ${i + 1})`);
+          return i + 1;  // Convert to 1-based vendor index
+        }
+      }
+    }
+  }
+
+  // If no ideal position found, return the first white row after any colored rows
+  if (hasSeenColored) {
+    for (let i = 0; i < backgrounds.length; i++) {
+      const rowBg = backgrounds[i][0];
+      const isWhite = !rowBg || rowBg === '#ffffff' || rowBg === 'white' || rowBg === '';
+
+      if (isWhite) {
+        // Check if there were colored rows before this
+        let coloredBefore = false;
+        for (let j = 0; j < i; j++) {
+          const prevBg = backgrounds[j][0];
+          if (prevBg === BS_CFG.COLOR_ROW_CURRENT || prevBg === BS_CFG.COLOR_ROW_VIEWED) {
+            coloredBefore = true;
+            break;
+          }
+        }
+        if (coloredBefore) {
+          console.log(`Found resume position (fallback) at row ${i + 2} (index ${i + 1})`);
+          return i + 1;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Skip to next vendor with changes (different checksum)
+ * Now with Inbox Redirect support:
+ * - Records timestamp when skip happens
+ * - Checks inbox for new emails with zzzVendors labels
+ * - If found, redirects to that vendor
+ * - On next skip, resumes normal flow if no new inbox emails
+ */
+function skipToNextChanged(trackComeback) {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const props = PropertiesService.getScriptProperties();
+
+  if (!bsSh || !listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  // ===== LOGGING: Initial State =====
+  const currentVendorIdx = getCurrentVendorIndex_();
+  const currentVendorName = currentVendorIdx ? listSh.getRange(currentVendorIdx + 1, 1).getValue() : 'none';
+  Logger.log(`\n========== SKIP TO NEXT CHANGED ==========`);
+  Logger.log(`Starting from: Vendor #${currentVendorIdx} (${currentVendorName})`);
+  Logger.log(`trackComeback param: ${trackComeback}`);
+
+  // Check if there's an active Skip 5 & Return session
+  let skip5Session = null;
+  const skip5Str = props.getProperty('BS_SKIP5_SESSION');
+  if (skip5Str) {
+    try {
+      skip5Session = JSON.parse(skip5Str);
+      Logger.log(`Skip5 Session: ACTIVE - origin=${skip5Session.originVendor} (idx ${skip5Session.originIdx}), found=${skip5Session.changedFound}/${skip5Session.changedTarget}, complete=${skip5Session.complete}`);
+
+      // Check if session is marked complete (ready to return)
+      if (skip5Session.complete) {
+        Logger.log(`DECISION: Skip5 complete - returning to origin vendor ${skip5Session.originVendor}`);
+        ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 Skip 5 Complete', 3);
+        Utilities.sleep(500);
+        loadVendorData(skip5Session.originIdx);
+        props.deleteProperty('BS_SKIP5_SESSION');
+
+        SpreadsheetApp.getUi().alert(
+          'Skip 5 & Return Complete',
+          `Found ${skip5Session.changedFound} changed vendor(s).\n` +
+          `Skipped ${skip5Session.skippedCount || 0} unchanged vendor(s).\n\n` +
+          `Returned to: ${skip5Session.originVendor}`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+        return;
+      }
+    } catch (e) {
+      Logger.log(`Skip5 Session: ERROR parsing - ${e.message}`);
+      props.deleteProperty('BS_SKIP5_SESSION');
+      skip5Session = null;
+    }
+  } else {
+    Logger.log(`Skip5 Session: none`);
+  }
+
+  // If trackComeback wasn't explicitly passed, check if there's an existing comeback pending
+  const comebackStr = props.getProperty('BS_COMEBACK');
+  if (comebackStr) {
+    try {
+      const comebackData = JSON.parse(comebackStr);
+      Logger.log(`Comeback: PENDING - return to ${comebackData.vendorName} (idx ${comebackData.vendorIndex}) after ${comebackData.comebackAfter - comebackData.vendorsSeen} more vendors`);
+    } catch (e) {
+      Logger.log(`Comeback: ERROR parsing - ${e.message}`);
+    }
+  } else {
+    Logger.log(`Comeback: none`);
+  }
+
+  if (trackComeback === undefined) {
+    if (comebackStr) {
+      trackComeback = true;  // Auto-enable if comeback is pending
+      Logger.log(`trackComeback auto-enabled due to pending comeback`);
+    }
+  }
+
+  const listData = listSh.getDataRange().getValues();
+  const totalVendors = listData.length - 1;
+  Logger.log(`Total vendors: ${totalVendors}`);
+
+  // ===== INBOX REDIRECT LOGIC =====
+  // Check if we had a previous Inbox Redirect
+  const lastInboxRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
+  const lastInboxCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+
+  let lastInboxRedirectTime = lastInboxRedirectStr ? new Date(lastInboxRedirectStr) : null;
+  let lastInboxCheckTime = lastInboxCheckStr ? new Date(lastInboxCheckStr) : null;
+
+  const storedResumeIdxStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  const storedResumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+  Logger.log(`InboxRedirect: lastRedirect=${lastInboxRedirectStr || 'none'}, lastCheck=${lastInboxCheckStr || 'none'}, resumeIdx=${storedResumeIdxStr || 'none'}, resumeVendor=${storedResumeVendorStr || 'none'}`);
+
+  // Determine what time to use for checking new emails
+  // If we had an Inbox Redirect, check for emails newer than that
+  // Otherwise, check for emails newer than the last check
+  const checkSinceTime = lastInboxRedirectTime || lastInboxCheckTime || new Date(0);
+
+  // Throttle inbox checks - don't check if we checked less than 5 minutes ago
+  const INBOX_CHECK_THROTTLE_MS = 5 * 60 * 1000; // 5 minutes
+  const timeSinceLastCheck = lastInboxCheckTime ? (new Date() - lastInboxCheckTime) : Infinity;
+  const shouldCheckInbox = timeSinceLastCheck >= INBOX_CHECK_THROTTLE_MS;
+
+  if (shouldCheckInbox) {
+    Logger.log(`Checking inbox for emails since: ${checkSinceTime.toISOString()}`);
+    ss.toast('Checking inbox for new vendor emails...', '📬 Inbox Check', 2);
+
+    // Record current time as the check time
+    const checkTime = new Date();
+    props.setProperty('BS_INBOX_CHECK_TIME', checkTime.toISOString());
+
+    // Check inbox for new vendor emails
+    const inboxResult = checkInboxForNewVendorEmails_(checkSinceTime);
+    Logger.log(`Inbox check result: ${inboxResult ? `found email for ${inboxResult.vendorName}` : 'no new emails'}`);
+
+    if (inboxResult) {
+      // Found a new email with zzzVendors label - do Inbox Redirect
+      const vendorIdx = findVendorIndexByName_(listSh, inboxResult.vendorName);
+      Logger.log(`DECISION PATH: Inbox Redirect - new email for ${inboxResult.vendorName}, vendorIdx=${vendorIdx}`);
+
+      if (vendorIdx) {
+        // Check if there's already an active inbox redirect with a resume position
+        // If so, DON'T overwrite the resume position - keep the original one
+        const existingResumeIdx = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+        const existingResumeVendor = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+        let resumeFromIdx, resumeFromVendor;
+
+        if (existingResumeIdx && existingResumeVendor && lastInboxRedirectTime) {
+          // Chained redirect - keep original resume position
+          resumeFromIdx = existingResumeIdx;
+          resumeFromVendor = existingResumeVendor;
+          Logger.log(`Chained Inbox Redirect - preserving original resume: idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+        } else {
+          // First redirect - record where we were so we can resume later
+          const originalIdx = currentVendorIdx || 1;
+          const originalVendor = currentVendorName || 'Vendor #1';
+          resumeFromIdx = String(originalIdx + 1);
+          resumeFromVendor = originalVendor;
+          Logger.log(`First Inbox Redirect - saving resume: idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+        }
+
+        // Update timestamp (always) and resume position (only if not chained)
+        props.setProperty('BS_INBOX_REDIRECT_TIME', checkTime.toISOString());
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_IDX', resumeFromIdx);
+        props.setProperty('BS_INBOX_REDIRECT_RESUME_VENDOR', resumeFromVendor);
+
+        Logger.log(`NAVIGATING TO: Vendor #${vendorIdx} (${inboxResult.vendorName}) via Inbox Redirect`);
+        Logger.log(`Resume position: will resume from idx ${resumeFromIdx} (after ${resumeFromVendor})`);
+
+        ss.toast('');
+        loadVendorData(vendorIdx, { forceChanged: true });
+
+        SpreadsheetApp.getUi().alert(
+          '📬 Inbox Redirect',
+          `New email found for: ${inboxResult.vendorName}\n\n` +
+          `Subject: ${inboxResult.subject}\n\n` +
+          `Redirecting to this vendor.\n\n` +
+          `(Will resume from ${resumeFromVendor} on next skip if no new emails)`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+
+        if (trackComeback) checkComeback_();
+        return;
+      } else {
+        // Vendor not found in list - log and continue with normal flow
+        Logger.log(`Inbox Redirect: Vendor "${inboxResult.vendorName}" not found in list - continuing to normal flow`);
+        ss.toast(`Vendor "${inboxResult.vendorName}" not in list, continuing...`, '⚠️', 2);
+      }
+    }
+  } else {
+    const minutesAgo = Math.round(timeSinceLastCheck / 60000);
+    Logger.log(`Inbox check THROTTLED - last check was ${minutesAgo} minutes ago (threshold: 5 min)`);
+  }
+
+  // Handle resume from Inbox Redirect (only if we didn't just do a new redirect)
+  if (lastInboxRedirectTime) {
+    // No new inbox emails since last Inbox Redirect - resume from stored position
+    Logger.log(`DECISION PATH: Resume from Inbox Redirect (no new inbox emails since ${lastInboxRedirectTime.toISOString()})`);
+
+    // Get the stored resume position (preferred) or fall back to heuristic
+    const storedResumeIdx = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+    const storedResumeVendor = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+    let resumeIdx = storedResumeIdx ? parseInt(storedResumeIdx, 10) : null;
+
+    if (resumeIdx) {
+      Logger.log(`Using stored resume position: idx ${resumeIdx} (after ${storedResumeVendor})`);
+      ss.toast(`Resuming from where you left off (after ${storedResumeVendor})...`, '🔄 Resume', 2);
+    } else {
+      // Fall back to heuristic if no stored position
+      ss.toast('No new inbox emails, finding resume position...', '🔄 Resume', 2);
+      resumeIdx = findResumePosition_(listSh);
+      Logger.log(`Resume position (heuristic): ${resumeIdx ? `Vendor #${resumeIdx}` : 'not found'}`);
+    }
+
+    if (resumeIdx) {
+      // Clear the Inbox Redirect state since we're resuming normal flow
+      props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+      props.deleteProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+      props.deleteProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+      const resumeVendor = listData[resumeIdx][BS_CFG.L_VENDOR];
+      Logger.log(`Resuming from: ${resumeVendor} (idx ${resumeIdx})`);
+
+      // Start searching from the resume position
+      ss.toast(`Resuming from: ${resumeVendor}`, '🔄 Resume', 2);
+
+      // Set current index to resume position - 1 so the loop starts at resume position
+      let currentIdx = resumeIdx - 1;
+      let skippedCount = 0;
+
+      ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
+
+      // Loop through vendors looking for one with changes - start from resume position
+      while (true) {
+        currentIdx++;  // Move to next vendor FIRST
+
+        // Stop at end
+        if (currentIdx > totalVendors) {
+          Logger.log(`RESULT: Reached end of list from resume position. Skipped ${skippedCount} vendors.`);
+          ss.toast('');
+          SpreadsheetApp.getUi().alert(`Checked all remaining vendors.\nSkipped ${skippedCount} unchanged vendor(s).\nNo more vendors with changes found.`);
+          return;
+        }
+
+        const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+        const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
+        const listRow = currentIdx + 1;
+
+        ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
+
+        // Use the centralized change detection helper
+        const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
+
+        if (changeResult.hasChanges) {
+          Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via resume path]`);
+          ss.toast('');
+          loadVendorData(currentIdx, { forceChanged: true });
+          if (skippedCount > 0) {
+            SpreadsheetApp.getUi().alert(`Resumed and skipped ${skippedCount} unchanged vendor(s).\nNow viewing: ${vendor} (${changeResult.changeType})`);
+          }
+          if (trackComeback) checkComeback_();
+          return;
+        }
+
+        // No changes - mark as viewed (yellow)
+        setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
+        skippedCount++;
+      }
+    }
+  }
+
+  // ===== NORMAL SKIP UNCHANGED LOGIC =====
+  Logger.log(`DECISION PATH: Normal skip unchanged flow (no inbox redirect active)`);
+
+  // Get current index using the same function as other navigation
+  let currentIdx = getCurrentVendorIndex_() || 1;
+  const startIdx = currentIdx;  // Track where we started for wrap-around detection
+  let hasWrapped = false;       // Track if we've wrapped around
+
+  Logger.log(`Starting normal skip from idx ${startIdx}, will search forward`);
+
+  let skippedCount = 0;
+
+  // Show progress message based on session state
+  if (skip5Session) {
+    ss.toast(`Skip 5 & Return: ${skip5Session.changedFound}/${skip5Session.changedTarget} found. Searching...`, '🔄 Skip 5', -1);
+  } else {
+    ss.toast('Searching for changed vendors...', '⏭️ Skipping', -1);
+  }
+
+  // Loop through vendors looking for one with changes - start from NEXT vendor
+  while (true) {
+    currentIdx++;  // Move to next vendor FIRST
+
+    // Wrap around at end of list
+    if (currentIdx > totalVendors) {
+      // If Skip 5 session is active, don't wrap - return to origin
+      if (skip5Session) {
+        Logger.log(`RESULT: End of list during Skip5 - returning to origin ${skip5Session.originVendor}`);
+        ss.toast('');
+        ss.toast(`Returning to: ${skip5Session.originVendor}`, '🔄 End of List', 3);
+        Utilities.sleep(500);
+        loadVendorData(skip5Session.originIdx);
+        props.deleteProperty('BS_SKIP5_SESSION');
+
+        SpreadsheetApp.getUi().alert(
+          'Skip 5 & Return Complete',
+          `Reached end of list.\n` +
+          `Found ${skip5Session.changedFound} changed vendor(s).\n` +
+          `Skipped ${skippedCount + (skip5Session.skippedCount || 0)} unchanged vendor(s).\n\n` +
+          `Returned to: ${skip5Session.originVendor}`,
+          SpreadsheetApp.getUi().ButtonSet.OK
+        );
+        return;
+      }
+
+      // Wrap around to vendor #1
+      Logger.log(`Wrapping around to vendor #1 (was at end of list)`);
+      currentIdx = 1;
+      hasWrapped = true;
+      ss.toast('Wrapping to vendor #1...', '🔄 Wrap Around', 2);
+    }
+
+    // If we've wrapped and reached our starting point, we've checked everyone
+    if (hasWrapped && currentIdx >= startIdx) {
+      Logger.log(`RESULT: Checked all vendors (wrapped around). Skipped ${skippedCount} vendors.`);
+      ss.toast('');
+      SpreadsheetApp.getUi().alert(`Checked all vendors (wrapped around).\nSkipped ${skippedCount} unchanged vendor(s).\nNo vendors with changes found.`);
+      return;
+    }
+
+    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+    const source = listData[currentIdx][BS_CFG.L_SOURCE] || '';
+    const listRow = currentIdx + 1;
+
+    if (skip5Session) {
+      ss.toast(`Checking ${vendor}... (${skip5Session.changedFound}/${skip5Session.changedTarget}, ${skippedCount} skipped)`, '🔄 Skip 5', -1);
+    } else {
+      ss.toast(`Checking ${vendor}... (${skippedCount} skipped so far)`, '⏭️ Skipping', -1);
+    }
+
+    // Safeguard: After 30 skips, stop on this vendor to avoid 6-minute timeout
+    const MAX_SKIPS = 30;
+    if (skippedCount >= MAX_SKIPS) {
+      Logger.log(`RESULT: Safeguard triggered after ${skippedCount} skips - stopping at ${vendor}`);
+      ss.toast(`Stopped after ${skippedCount} skips to avoid timeout`, '⚠️ Safeguard', 5);
+
+      // Update Skip 5 session if active
+      if (skip5Session) {
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
+      }
+
+      // Load this vendor with a note about the safeguard
+      loadVendorData(currentIdx, { forceChanged: false, changeType: `No changes - stopped after ${skippedCount} skips (timeout safeguard)` });
+      setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
+      if (trackComeback) checkComeback_();
+      return;
+    }
+
+    // Use the centralized change detection helper
+    const changeResult = checkVendorForChanges_(vendor, listRow, source, { skipVendorLabelCheck: true });
+
+    if (changeResult.hasChanges) {
+      // If Skip 5 session is active, update it
+      if (skip5Session) {
+        skip5Session.changedFound++;
+        skip5Session.currentIdx = currentIdx;
+        skip5Session.skippedCount = (skip5Session.skippedCount || 0) + skippedCount;
+
+        // Check if we've found all 5
+        if (skip5Session.changedFound >= skip5Session.changedTarget) {
+          skip5Session.complete = true;
+          Logger.log(`Skip5: Found ${skip5Session.changedFound}/${skip5Session.changedTarget} - session complete, next skip returns to ${skip5Session.originVendor}`);
+          ss.toast(`Found ${skip5Session.changedFound}/${skip5Session.changedTarget}! Next skip will return to ${skip5Session.originVendor}`, '🔄 5/5 Found', 5);
+        } else {
+          Logger.log(`Skip5: Found ${skip5Session.changedFound}/${skip5Session.changedTarget} at ${vendor}`);
+          ss.toast(`Skip 5: ${skip5Session.changedFound}/${skip5Session.changedTarget} - ${vendor}`, '🔄 Skip 5', 3);
+        }
+
+        props.setProperty('BS_SKIP5_SESSION', JSON.stringify(skip5Session));
+      }
+
+      Logger.log(`NAVIGATING TO: Vendor #${currentIdx} (${vendor}) - ${changeResult.changeType} [via normal skip, skipped ${skippedCount}]`);
+
+      // Show what changed in a toast BEFORE loading modules
+      const changeLabel = formatChangeType_(changeResult.changeType);
+      ss.toast(`${vendor}\n${changeLabel}`, '🔔 Change Detected', 5);
+
+      loadVendorData(currentIdx, { forceChanged: true, changeType: changeResult.changeType });
+      // WHAT CHANGED section now shows the details, no need for dialog
+      if (trackComeback) checkComeback_();
+      return;
+    }
+
+    // No changes - mark as viewed (yellow)
+    setListRowColor_(listSh, listRow, BS_CFG.COLOR_ROW_VIEWED);
+    skippedCount++;
+  }
+}
+
+/**
+ * Clear Inbox Redirect state - allows resuming normal skip flow without inbox check
+ */
+function clearInboxRedirectState() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const lastRedirect = props.getProperty('BS_INBOX_REDIRECT_TIME');
+
+  if (!lastRedirect) {
+    ui.alert('No Inbox Redirect', 'There is no active Inbox Redirect state to clear.', ui.ButtonSet.OK);
+    return;
+  }
+
+  props.deleteProperty('BS_INBOX_REDIRECT_TIME');
+  props.deleteProperty('BS_INBOX_CHECK_TIME');
+  props.deleteProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  props.deleteProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+  ui.alert('Inbox Redirect Cleared', 'Inbox Redirect state has been cleared.\nNext skip will continue from current position.', ui.ButtonSet.OK);
+}
+
+/**
+ * View Inbox Redirect status
+ */
+function viewInboxRedirectStatus() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  const lastRedirectStr = props.getProperty('BS_INBOX_REDIRECT_TIME');
+  const lastCheckStr = props.getProperty('BS_INBOX_CHECK_TIME');
+  const resumeIdxStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_IDX');
+  const resumeVendorStr = props.getProperty('BS_INBOX_REDIRECT_RESUME_VENDOR');
+
+  if (!lastRedirectStr && !lastCheckStr) {
+    ui.alert('📬 Inbox Redirect Status', 'No Inbox Redirect tracking active.\n\nThe next Skip Unchanged will start fresh.', ui.ButtonSet.OK);
+    return;
+  }
+
+  let message = '';
+
+  if (lastRedirectStr) {
+    const lastRedirect = new Date(lastRedirectStr);
+    message += `Last Inbox Redirect: ${lastRedirect.toLocaleString()}\n`;
+    message += `Status: ACTIVE - Next skip will check for new inbox emails since this time.\n`;
+    if (resumeIdxStr && resumeVendorStr) {
+      message += `If no new emails, will resume from vendor #${resumeIdxStr} (after ${resumeVendorStr}).\n\n`;
+    } else {
+      message += `If no new emails, will resume from first white vendor after colored vendors.\n\n`;
+    }
+  }
+
+  if (lastCheckStr) {
+    const lastCheck = new Date(lastCheckStr);
+    message += `Last Inbox Check: ${lastCheck.toLocaleString()}`;
+  }
+
+  ui.alert('📬 Inbox Redirect Status', message, ui.ButtonSet.OK);
+}
+
+/**
+ * Skip with Comeback - Skip to next changed vendor but mark current vendor to revisit
+ * After N vendors are viewed, automatically returns to the marked vendor
+ */
+function skipWithComeback() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const checkSh = ss.getSheetByName(BS_CFG.CHECKSUMS_SHEET);
+  
+  if (!listSh || !checkSh) {
+    ui.alert('Error', 'Required sheets not found.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx || currentIdx < 1) {
+    ui.alert('Error', 'No vendor currently loaded.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  
+  // Ask how many vendors to see before coming back
+  const response = ui.prompt(
+    '⏰ Skip with Comeback',
+    `Current vendor: ${vendor}\n\nHow many vendors do you want to review before coming back to this one?`,
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+  
+  const countStr = response.getResponseText().trim();
+  const comebackAfter = parseInt(countStr, 10);
+  
+  if (isNaN(comebackAfter) || comebackAfter < 1 || comebackAfter > 50) {
+    ui.alert('Error', 'Please enter a number between 1 and 50.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Store comeback info in script properties
+  const props = PropertiesService.getScriptProperties();
+  const comebackData = {
+    vendorIndex: currentIdx,
+    vendorName: vendor,
+    comebackAfter: comebackAfter,
+    vendorsSeen: 0,
+    setAt: new Date().toISOString()
+  };
+  props.setProperty('BS_COMEBACK', JSON.stringify(comebackData));
+  
+  // Color the comeback vendor row with a distinct color (light purple)
+  const numCols = listSh.getLastColumn();
+  listSh.getRange(listRow, 1, 1, numCols).setBackground('#e1d5e7');
+  
+  Logger.log(`Comeback set for ${vendor} after ${comebackAfter} vendors`);
+  ss.toast(`Will return to ${vendor} after ${comebackAfter} vendors`, '⏰ Comeback Set', 3);
+  
+  // Now run skipToNextChanged with comeback tracking enabled
+  skipToNextChanged(true);
+}
+
+/**
+ * Check and handle comeback when using regular Skip Unchanged
+ * Call this at the end of skipToNextChanged or wrap it
+ */
+function checkComeback_() {
+  const props = PropertiesService.getScriptProperties();
+  const comebackStr = props.getProperty('BS_COMEBACK');
+  
+  if (!comebackStr) return false;
+  
+  try {
+    const comebackData = JSON.parse(comebackStr);
+    comebackData.vendorsSeen++;
+    
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    
+    Logger.log(`Comeback tracker: ${comebackData.vendorsSeen}/${comebackData.comebackAfter} vendors seen`);
+    
+    if (comebackData.vendorsSeen >= comebackData.comebackAfter) {
+      // Time to go back!
+      props.deleteProperty('BS_COMEBACK');
+      
+      // Clear the purple highlight
+      const numCols = listSh.getLastColumn();
+      listSh.getRange(comebackData.vendorIndex + 1, 1, 1, numCols).setBackground(null);
+      
+      // Load the comeback vendor
+      ss.toast(`Returning to ${comebackData.vendorName}...`, '⏰ Comeback!', 2);
+      loadVendorData(comebackData.vendorIndex);
+      
+      SpreadsheetApp.getUi().alert('⏰ Comeback!', `Reviewed ${comebackData.vendorsSeen} vendors.\nNow returning to: ${comebackData.vendorName}`, SpreadsheetApp.getUi().ButtonSet.OK);
+      return true; // Indicates comeback was triggered
+    } else {
+      // Update counter
+      props.setProperty('BS_COMEBACK', JSON.stringify(comebackData));
+      const remaining = comebackData.comebackAfter - comebackData.vendorsSeen;
+      ss.toast(`${remaining} more vendor(s) until returning to ${comebackData.vendorName}`, '⏰ Comeback', 2);
+      return false;
+    }
+  } catch (e) {
+    props.deleteProperty('BS_COMEBACK');
+    return false;
+  }
+}
+
+/**
+ * Cancel any pending comeback
+ */
+function cancelComeback() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const props = PropertiesService.getScriptProperties();
+  
+  const comebackStr = props.getProperty('BS_COMEBACK');
+  
+  if (!comebackStr) {
+    ui.alert('No Comeback', 'There is no pending comeback to cancel.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  try {
+    const comebackData = JSON.parse(comebackStr);
+    
+    // Clear the purple highlight
+    const numCols = listSh.getLastColumn();
+    listSh.getRange(comebackData.vendorIndex + 1, 1, 1, numCols).setBackground(null);
+    
+    props.deleteProperty('BS_COMEBACK');
+    
+    ui.alert('Comeback Cancelled', `Cancelled comeback to: ${comebackData.vendorName}`, ui.ButtonSet.OK);
+  } catch (e) {
+    props.deleteProperty('BS_COMEBACK');
+    ui.alert('Comeback Cancelled', 'Pending comeback has been cleared.', ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * View current comeback status
+ */
+function viewComebackStatus() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  
+  const comebackStr = props.getProperty('BS_COMEBACK');
+  
+  if (!comebackStr) {
+    ui.alert('Comeback Status', 'No comeback currently scheduled.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  try {
+    const comebackData = JSON.parse(comebackStr);
+    const remaining = comebackData.comebackAfter - comebackData.vendorsSeen;
+    
+    ui.alert('⏰ Comeback Status', 
+      `Vendor: ${comebackData.vendorName}\n` +
+      `Vendors seen: ${comebackData.vendorsSeen}/${comebackData.comebackAfter}\n` +
+      `Remaining: ${remaining} vendor(s)\n` +
+      `Set at: ${comebackData.setAt}`,
+      ui.ButtonSet.OK);
+  } catch (e) {
+    props.deleteProperty('BS_COMEBACK');
+    ui.alert('Comeback Status', 'No valid comeback scheduled.', ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Skip to next changed vendor 5 times, then return to the original
+ * Useful for putting things in motion and letting them process while reviewing others
+ * This function initializes a session and delegates to skipToNextChanged()
+ */
+function skip5AndReturn() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const props = PropertiesService.getScriptProperties();
+
+  if (!listSh) {
+    SpreadsheetApp.getUi().alert('Required sheets not found.');
+    return;
+  }
+
+  // Check if we're already in a "Skip 5 & Return" session
+  const sessionStr = props.getProperty('BS_SKIP5_SESSION');
+
+  if (!sessionStr) {
+    // Start a new session
+    const originIdx = getCurrentVendorIndex_();
+
+    if (!originIdx) {
+      SpreadsheetApp.getUi().alert('Could not determine current vendor index.');
+      return;
+    }
+
+    const originVendor = listSh.getRange(originIdx + 1, 1).getValue();
+
+    const session = {
+      originIdx: originIdx,
+      originVendor: originVendor,
+      currentIdx: originIdx,
+      changedFound: 0,
+      changedTarget: 5,
+      skippedCount: 0,
+      startedAt: new Date().toISOString()
+    };
+
+    props.setProperty('BS_SKIP5_SESSION', JSON.stringify(session));
+    ss.toast(`Starting Skip 5 & Return from: ${originVendor}`, '🔄 Skip 5 & Return', 3);
+  }
+
+  // Delegate to skipToNextChanged which now handles Skip 5 sessions
+  skipToNextChanged();
+}
+
+/**
+ * Continue or complete a Skip 5 & Return session
+ * Called automatically or can be called manually
+ */
+function continueSkip5AndReturn() {
+  // Auto-save notes if changed before transitioning
+  checkAndAutoSaveNotes_();
+
+  const props = PropertiesService.getScriptProperties();
+  const sessionStr = props.getProperty('BS_SKIP5_SESSION');
+
+  if (!sessionStr) {
+    SpreadsheetApp.getUi().alert('No Skip 5 & Return session active.\n\nUse "Skip 5 & Return" to start a new session.');
+    return;
+  }
+  
+  let session;
+  try {
+    session = JSON.parse(sessionStr);
+  } catch (e) {
+    props.deleteProperty('BS_SKIP5_SESSION');
+    SpreadsheetApp.getUi().alert('Session data corrupted. Please start a new session.');
+    return;
+  }
+  
+  // If session is complete, return to origin
+  if (session.complete) {
+    const ss = SpreadsheetApp.getActive();
+    ss.toast(`Returning to: ${session.originVendor}`, '🔄 Returning', 2);
+    Utilities.sleep(500);
+    loadVendorData(session.originIdx);
+    
+    // Clear the session
+    props.deleteProperty('BS_SKIP5_SESSION');
+    
+    ss.toast(`Back to ${session.originVendor} after ${session.changedFound} changed, ${session.skippedCount} skipped`, '✅ Done', 3);
+    return;
+  }
+  
+  // Otherwise, continue searching
+  skip5AndReturn();
+}
+
+/**
+ * Cancel an active Skip 5 & Return session
+ */
+function cancelSkip5Session() {
+  const props = PropertiesService.getScriptProperties();
+  const sessionStr = props.getProperty('BS_SKIP5_SESSION');
+  
+  if (!sessionStr) {
+    SpreadsheetApp.getUi().alert('No Skip 5 & Return session active.');
+    return;
+  }
+  
+  props.deleteProperty('BS_SKIP5_SESSION');
+  SpreadsheetApp.getUi().alert('Skip 5 & Return session cancelled.');
+}
+
+/**
+ * TURBO BATCH: Process all vendors continuously without stopping
+ * Rebuilds checksums for all vendors in batches to avoid timeout
+ * Run repeatedly to process all vendors (~50-60 per run)
+ */
+function turboTraverseAll() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const props = PropertiesService.getScriptProperties();
+  const startTime = Date.now();
+  const MAX_RUNTIME_MS = 5 * 60 * 1000; // 5 minutes (leaving 1 min buffer)
+
+  if (!listSh) {
+    ss.toast('List sheet not found.', '❌ Error', 3);
+    return;
+  }
+
+  const listData = listSh.getDataRange().getValues();
+  const totalVendors = listData.length - 1;
+
+  // Get or initialize session
+  let sessionData = null;
+  const sessionStr = props.getProperty('BS_TURBO_SESSION');
+  if (sessionStr) {
+    try {
+      sessionData = JSON.parse(sessionStr);
+    } catch (e) {
+      sessionData = null;
+    }
+  }
+
+  let startIdx = sessionData?.nextIndex || 1;
+  let processedTotal = sessionData?.processedTotal || 0;
+
+  // Check if we're done
+  if (startIdx > totalVendors) {
+    ss.toast(`All ${totalVendors} vendors processed! Session complete.`, '✅ Turbo Complete', 5);
+    props.deleteProperty('BS_TURBO_SESSION');
+    return;
+  }
+
+  ss.toast(`Starting turbo traverse from vendor ${startIdx}...`, '🚀 Turbo Mode', 3);
+
+  // Box is skipped in turbo mode - will load in real-time when viewing individual vendors
+  Logger.log('Turbo: skipping Box pre-fetch (Box loads in real-time when viewing vendors)');
+
+  // Calendar is skipped in turbo mode (not essential for checksum updates)
+  Logger.log('Turbo: skipping Calendar pre-fetch (Calendar is skipped in turbo mode)');
+
+  let processedThisRun = 0;
+  let currentIdx = startIdx;
+
+  while (currentIdx <= totalVendors) {
+    // Check if we're running out of time
+    if (Date.now() - startTime > MAX_RUNTIME_MS) {
+      break;
+    }
+
+    const vendor = listData[currentIdx][BS_CFG.L_VENDOR];
+    const listRow = currentIdx + 1;
+
+    try {
+      // Load vendor - this updates checksums
+      // turboMode: skip expensive vendor label checksum (redundant with other checksums)
+      // Box and Calendar are skipped in turbo mode for speed
+      loadVendorData(currentIdx, {
+        forceChanged: false,
+        changeType: 'Turbo rebuild',
+        turboMode: true
+      });
+      processedThisRun++;
+      processedTotal++;
+
+      // Brief log every 10 vendors
+      if (processedThisRun % 10 === 0) {
+        Logger.log(`Turbo: processed ${processedThisRun} this run (${currentIdx}/${totalVendors})`);
+      }
+    } catch (e) {
+      Logger.log(`Turbo error on ${vendor}: ${e.message}`);
+      // Continue to next vendor on error
+    }
+
+    currentIdx++;
+  }
+
+  // Save progress
+  if (currentIdx > totalVendors) {
+    // Done!
+    ss.toast(`✅ Complete! Processed all ${totalVendors} vendors.`, '🚀 Turbo Done', 5);
+    props.deleteProperty('BS_TURBO_SESSION');
+  } else {
+    // More to go
+    props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+      nextIndex: currentIdx,
+      processedTotal: processedTotal,
+      startedAt: sessionData?.startedAt || new Date().toISOString()
+    }));
+
+    const remaining = totalVendors - currentIdx + 1;
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    ss.toast(
+      `Processed ${processedThisRun} vendors in ${elapsed}s\n` +
+      `Progress: ${currentIdx - 1}/${totalVendors} (${remaining} remaining)\n` +
+      `Run again to continue!`,
+      '🚀 Turbo Paused',
+      5
+    );
+  }
+}
+
+/**
+ * Reset turbo traverse session
+ */
+function resetTurboSession() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('BS_TURBO_SESSION');
+  SpreadsheetApp.getActive().toast('Turbo session reset.', '🚀 Reset', 3);
+}
+
+/**
+ * Schedule Turbo Traverse to run 6 times automatically
+ * Each run is spaced 7 minutes apart (5 min execution + 2 min buffer)
+ * Starts from current vendor position (not from beginning)
+ * Perfect for overnight batch processing of all vendors
+ */
+function scheduleTurboTraverse() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+
+  // Clear any existing turbo triggers first
+  const existingTriggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (const trigger of existingTriggers) {
+    if (trigger.getHandlerFunction() === 'turboTraverseAll') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  }
+
+  // Get current vendor position to start from there
+  const currentIdx = getCurrentVendorIndex_() || 1;
+  const listSh = SpreadsheetApp.getActive().getSheetByName(BS_CFG.LIST_SHEET);
+  const totalVendors = listSh ? listSh.getLastRow() - 1 : 0;
+  const remaining = totalVendors - currentIdx;
+
+  // Initialize session to start from current position
+  props.setProperty('BS_TURBO_SESSION', JSON.stringify({
+    nextIndex: currentIdx,
+    processedTotal: 0,
+    startedAt: new Date().toISOString()
+  }));
+
+  // Schedule 6 runs, 7 minutes apart
+  // Run 1 is immediate, runs 2-6 are scheduled
+  const RUNS = 6;
+  const INTERVAL_MINUTES = 7;
+
+  for (let i = 1; i < RUNS; i++) {
+    ScriptApp.newTrigger('turboTraverseAll')
+      .timeBased()
+      .after(i * INTERVAL_MINUTES * 60 * 1000) // milliseconds
+      .create();
+  }
+
+  const totalMinutes = (RUNS - 1) * INTERVAL_MINUTES;
+  ui.alert(
+    '🚀 Turbo Traverse Scheduled',
+    `Starting from vendor #${currentIdx} (${remaining} remaining)\n\n` +
+    `Scheduled ${RUNS} runs over the next ${totalMinutes} minutes.\n\n` +
+    `• Run 1: Now\n` +
+    `• Run 2-${RUNS}: Every ${INTERVAL_MINUTES} minutes\n\n` +
+    `You can close this spreadsheet - it will run in the background.\n` +
+    `Check execution logs tomorrow to verify completion.`,
+    ui.ButtonSet.OK
+  );
+
+  // Start the first run immediately
+  turboTraverseAll();
+}
+
+/**
+ * Cancel all scheduled Turbo Traverse runs
+ */
+function cancelTurboSchedule() {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'turboTraverseAll') {
+      ScriptApp.deleteTrigger(trigger);
+      removed++;
+    }
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty('BS_TURBO_SESSION');
+
+  SpreadsheetApp.getActive().toast(
+    `Removed ${removed} scheduled runs and reset session.`,
+    '❌ Schedule Cancelled',
+    5
+  );
+}
+
+/**
+ * TEST FUNCTION: Debug Google Drive folder search
+ * Run this from the Apps Script editor to see why folders aren't being found
+ */
+function testGDriveSearch() {
+  const vendorName = 'Ion Solar';  // Changed to test Ion Solar
+  const parentFolderId = BS_CFG.GDRIVE_VENDORS_FOLDER_ID;
+  
+  Logger.log('='.repeat(60));
+  Logger.log('GOOGLE DRIVE DEBUG TEST');
+  Logger.log('='.repeat(60));
+  Logger.log(`Vendor: ${vendorName}`);
+  Logger.log(`Parent Folder ID: ${parentFolderId}`);
+  Logger.log('');
+  
+  // Test 1: Can we access the parent folder?
+  Logger.log('--- TEST 1: Access Parent Folder ---');
+  try {
+    const parentFolder = DriveApp.getFolderById(parentFolderId);
+    Logger.log(`✅ Parent folder found: ${parentFolder.getName()}`);
+    Logger.log(`   URL: ${parentFolder.getUrl()}`);
+  } catch (e) {
+    Logger.log(`❌ Cannot access parent folder: ${e.message}`);
+    return;
+  }
+  
+  // Test 2: List ALL subfolders in parent (first 20)
+  Logger.log('');
+  Logger.log('--- TEST 2: List Subfolders (first 20) ---');
+  try {
+    const parentFolder = DriveApp.getFolderById(parentFolderId);
+    const folders = parentFolder.getFolders();
+    let count = 0;
+    while (folders.hasNext() && count < 20) {
+      const folder = folders.next();
+      Logger.log(`  ${count + 1}. "${folder.getName()}" (ID: ${folder.getId()})`);
+      count++;
+    }
+    Logger.log(`   Total shown: ${count}`);
+  } catch (e) {
+    Logger.log(`❌ Error listing folders: ${e.message}`);
+  }
+  
+  // Test 3: Search for folder using searchFolders
+  Logger.log('');
+  Logger.log('--- TEST 3: searchFolders() with vendor name ---');
+  try {
+    const query1 = `title contains '${vendorName}' and '${parentFolderId}' in parents`;
+    Logger.log(`Query: ${query1}`);
+    const results1 = DriveApp.searchFolders(query1);
+    let found1 = 0;
+    while (results1.hasNext()) {
+      const folder = results1.next();
+      Logger.log(`  ✅ Found: "${folder.getName()}" (ID: ${folder.getId()})`);
+      found1++;
+    }
+    if (found1 === 0) Logger.log('  ❌ No results');
+  } catch (e) {
+    Logger.log(`❌ Error: ${e.message}`);
+  }
+  
+  // Test 4: Search without parent restriction
+  Logger.log('');
+  Logger.log('--- TEST 4: searchFolders() without parent restriction ---');
+  try {
+    const query2 = `title contains '${vendorName}' and mimeType = 'application/vnd.google-apps.folder'`;
+    Logger.log(`Query: ${query2}`);
+    const results2 = DriveApp.searchFolders(query2);
+    let found2 = 0;
+    while (results2.hasNext() && found2 < 10) {
+      const folder = results2.next();
+      Logger.log(`  Found: "${folder.getName()}" (ID: ${folder.getId()})`);
+      found2++;
+    }
+    if (found2 === 0) Logger.log('  ❌ No results');
+  } catch (e) {
+    Logger.log(`❌ Error: ${e.message}`);
+  }
+  
+  // Test 5: Try to access the known folder directly
+  Logger.log('');
+  Logger.log('--- TEST 5: Direct access to known test folder ---');
+  const knownFolderId = 'your-test-folder-id';
+  try {
+    const folder = DriveApp.getFolderById(knownFolderId);
+    Logger.log(`✅ Direct access works: "${folder.getName()}"`);
+    Logger.log(`   URL: ${folder.getUrl()}`);
+    
+    // Check its parent
+    const parents = folder.getParents();
+    while (parents.hasNext()) {
+      const parent = parents.next();
+      Logger.log(`   Parent: "${parent.getName()}" (ID: ${parent.getId()})`);
+    }
+  } catch (e) {
+    Logger.log(`❌ Cannot access folder directly: ${e.message}`);
+  }
+  
+  // Test 6: List files in the known folder
+  Logger.log('');
+  Logger.log('--- TEST 6: Files in known test folder ---');
+  try {
+    const folder = DriveApp.getFolderById(knownFolderId);
+    const files = folder.getFiles();
+    let fileCount = 0;
+    while (files.hasNext() && fileCount < 10) {
+      const file = files.next();
+      Logger.log(`  ${fileCount + 1}. "${file.getName()}"`);
+      fileCount++;
+    }
+    Logger.log(`   Total shown: ${fileCount}`);
+  } catch (e) {
+    Logger.log(`❌ Error: ${e.message}`);
+  }
+  
+  Logger.log('');
+  Logger.log('='.repeat(60));
+  Logger.log('TEST COMPLETE - Check logs above');
+  Logger.log('='.repeat(60));
+}
+
+/************************************************************
+ * MONDAY.COM BOARD SYNC
+ * Pull data directly from monday.com boards to update
+ * the affiliates monday.com and buyers monday.com sheets
+ ************************************************************/
+
+/**
+ * Main function to sync monday.com boards to sheets
+ */
+function syncMondayComBoards() {
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast('Starting sync...', '🔄 Syncing', 30);
+  
+  try {
+    // Sync Buyers board
+    ss.toast('Syncing Buyers board...', '🔄 Syncing', 30);
+    const buyersResult = syncBuyersBoard_();
+    Logger.log(`Buyers sync complete: ${buyersResult.count} items`);
+    
+    // Sync Affiliates board
+    ss.toast('Syncing Affiliates board...', '🔄 Syncing', 30);
+    const affiliatesResult = syncAffiliatesBoard_();
+    Logger.log(`Affiliates sync complete: ${affiliatesResult.count} items`);
+    
+    ss.toast(`Sync complete! Buyers: ${buyersResult.count}, Affiliates: ${affiliatesResult.count}`, '✅ Done', 5);
+    
+  } catch (e) {
+    Logger.log(`Sync error: ${e.message}`);
+    ss.toast(`Error: ${e.message}`, '❌ Error', 5);
+  }
+}
+
+/**
+ * Sync Buyers board to buyers monday.com sheet
+ */
+function syncBuyersBoard_() {
+  const ss = SpreadsheetApp.getActive();
+  const sheetName = 'buyers monday.com';
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  }
+  
+  // Column IDs from testGetBoardColumns() output
+  const columns = [
+    { id: 'name', header: 'Name', type: 'name' },
+    { id: 'subtasks_mktcnxe', header: 'Subitems', type: 'subtasks' },
+    { id: 'color_mktqyter', header: 'Buyer Type', type: 'status' },
+    { id: 'text_mkqnvsqh', header: 'BUYER NOTES MAIN', type: 'text' },
+    { id: 'rating_mkv5ztjb', header: 'Opportunity Size', type: 'rating' },
+    { id: 'tag_mkskgt84', header: 'Live Verticals', type: 'tags' },
+    { id: 'tag_mkskewmq', header: 'Other Verticals', type: 'tags' },
+    { id: 'board_relation_mky0bt0z', header: 'Contacts', type: 'board_relation' },
+    { id: 'tag_mkskfmf3', header: 'Live Modalities', type: 'tags' },
+    { id: 'tag_mkskassa', header: 'Other Modalities', type: 'tags' },
+    { id: 'link_mksmwprd', header: 'Phonexa Link', type: 'link' },
+    { id: 'link_mksmgg2h', header: 'Company URL', type: 'link' },
+    { id: 'pulse_log_mkthvn03', header: 'Creation log', type: 'creation_log' },
+    { id: 'board_relation_mkvd98v7', header: 'Sourcing', type: 'board_relation' },
+    { id: 'text_mkvkr178', header: 'Other Name', type: 'text' },
+    { id: 'pulse_updated_mkvqtmew', header: 'Last updated', type: 'last_updated' },
+    { id: 'numeric_mkwp5np4', header: 'Rank', type: 'numbers' },
+    { id: 'board_relation_mky0j7qj', header: 'link to Helpful Links', type: 'board_relation' },
+    { id: 'dropdown_mkyam4qw', header: 'State(s)', type: 'dropdown' },
+    { id: 'dropdown_mkyazy2j', header: 'Dead States(s)', type: 'dropdown' }
+  ];
+  
+  return syncBoardToSheet_(BS_CFG.BUYERS_BOARD_ID, sheet, columns, 'Buyers');
+}
+
+/**
+ * Sync Affiliates board to affiliates monday.com sheet
+ */
+function syncAffiliatesBoard_() {
+  const ss = SpreadsheetApp.getActive();
+  const sheetName = 'affiliates monday.com';
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  }
+  
+  // Column IDs from testGetBoardColumns() output
+  const columns = [
+    { id: 'name', header: 'Name', type: 'name' },
+    { id: 'multiple_person_mkt9k1n1', header: 'AM', type: 'people' },
+    { id: 'text_mkrdahqz', header: 'AFFILIATE NOTES MAIN', type: 'text' },
+    { id: 'rating_mkv5k453', header: 'Opportunity Size', type: 'rating' },
+    { id: 'board_relation_mky0n0rf', header: 'Contacts', type: 'board_relation' },
+    { id: 'tag_mksm70xw', header: 'Traffic Sources', type: 'tags' },
+    { id: 'tag_mkskrddx', header: 'Live Verticals', type: 'tags' },
+    { id: 'tag_mkskfs70', header: 'Other Verticals', type: 'tags' },
+    { id: 'tag_mksk7whx', header: 'Live Modalities', type: 'tags' },
+    { id: 'tag_mkskkszw', header: 'Other Modalities', type: 'tags' },
+    { id: 'link_mksmgnc0', header: 'Phonexa Link', type: 'link' },
+    { id: 'text_mksmcrpw', header: 'Other Name', type: 'text' },
+    { id: 'board_relation_mksnsmsg', header: 'Sourcing', type: 'board_relation' },
+    { id: 'color_mksy6tak', header: 'Priority', type: 'status' },
+    { id: 'board_relation_mkthwkt6', header: 'URLs - Affiliates', type: 'board_relation' },
+    { id: 'subtasks_mkvgk8ab', header: 'Subitems', type: 'subtasks' },
+    { id: 'pulse_updated_mkvq53b1', header: 'Last updated', type: 'last_updated' },
+    { id: 'boolean_mkxb61bz', header: 'imp', type: 'checkbox' },
+    { id: 'board_relation_mky04azc', header: 'link to Helpful Links', type: 'board_relation' }
+  ];
+  
+  return syncBoardToSheet_(BS_CFG.AFFILIATES_BOARD_ID, sheet, columns, 'Affiliates');
+}
+
+/**
+ * Generic function to sync a monday.com board to a sheet
+ */
+function syncBoardToSheet_(boardId, sheet, columns, boardName) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  
+  // Build column IDs for query (excluding 'name' which is automatic)
+  const columnIds = columns
+    .filter(c => c.id !== 'name')
+    .map(c => `"${c.id}"`)
+    .join(', ');
+  
+  // Query all items with pagination
+  const allItems = [];
+  let cursor = null;
+  let pageCount = 0;
+  const maxPages = 20; // Safety limit
+  
+  do {
+    pageCount++;
+    Logger.log(`Fetching ${boardName} page ${pageCount}...`);
+    
+    const cursorPart = cursor ? `, cursor: "${cursor}"` : '';
+    const query = `
+      query {
+        boards(ids: [${boardId}]) {
+          groups {
+            id
+            title
+          }
+          items_page(limit: 500${cursorPart}) {
+            cursor
+            items {
+              id
+              name
+              group {
+                id
+                title
+              }
+              column_values(ids: [${columnIds}]) {
+                id
+                text
+                value
+                ... on MirrorValue {
+                  display_value
+                }
+                ... on BoardRelationValue {
+                  display_value
+                }
+                ... on StatusValue {
+                  label
+                }
+                ... on DropdownValue {
+                  text
+                }
+                ... on TagsValue {
+                  text
+                }
+                ... on PersonValue {
+                  text
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: query }),
+      muteHttpExceptions: true
+    };
+    
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+    
+    if (result.errors) {
+      Logger.log(`API Error: ${JSON.stringify(result.errors)}`);
+      throw new Error(result.errors[0].message);
+    }
+    
+    const itemsPage = result.data?.boards?.[0]?.items_page;
+    if (!itemsPage) {
+      Logger.log('No items_page in response');
+      break;
+    }
+    
+    allItems.push(...itemsPage.items);
+    cursor = itemsPage.cursor;
+    
+    Logger.log(`  Fetched ${itemsPage.items.length} items (total: ${allItems.length})`);
+    
+  } while (cursor && pageCount < maxPages);
+  
+  Logger.log(`Total ${boardName} items fetched: ${allItems.length}`);
+  
+  // Build sheet data
+  const headers = columns.map(c => c.header);
+  // Add Group column at the end
+  headers.push('Group');
+  
+  const rows = allItems.map(item => {
+    const row = columns.map(col => {
+      if (col.id === 'name') {
+        return item.name;
+      }
+      
+      const colValue = item.column_values.find(cv => cv.id === col.id);
+      if (!colValue) return '';
+      
+      // Extract value based on type
+      switch (col.type) {
+        case 'status':
+          return colValue.label || colValue.text || '';
+        case 'board_relation':
+          return colValue.display_value || colValue.text || '';
+        case 'tags':
+        case 'dropdown':
+        case 'people':
+          return colValue.text || '';
+        case 'checkbox':
+          // Parse checkbox JSON to get checked state
+          try {
+            const checkData = JSON.parse(colValue.value || '{}');
+            return checkData.checked === 'true' || checkData.checked === true ? 'Yes' : '';
+          } catch {
+            return colValue.text || '';
+          }
+        case 'rating':
+          // Parse rating JSON to get rating value
+          try {
+            const ratingData = JSON.parse(colValue.value || '{}');
+            return ratingData.rating || colValue.text || '';
+          } catch {
+            return colValue.text || '';
+          }
+        case 'link':
+          // Parse link JSON to get URL
+          try {
+            const linkData = JSON.parse(colValue.value || '{}');
+            return linkData.url || colValue.text || '';
+          } catch {
+            return colValue.text || '';
+          }
+        case 'creation_log':
+        case 'last_updated':
+          // Parse to get date
+          try {
+            const logData = JSON.parse(colValue.value || '{}');
+            if (logData.created_at) {
+              return formatMondayDate_(logData.created_at);
+            }
+            if (logData.updated_at) {
+              return formatMondayDate_(logData.updated_at);
+            }
+            return colValue.text || '';
+          } catch {
+            return colValue.text || '';
+          }
+        default:
+          return colValue.text || '';
+      }
+    });
+    
+    // Add group name
+    row.push(item.group?.title || '');
+    
+    return row;
+  });
+  
+  // Clear sheet and write data
+  sheet.clear();
+  
+  // Write headers
+  if (headers.length > 0) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold')
+      .setBackground('#4a86e8')
+      .setFontColor('white');
+  }
+  
+  // Write data rows
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, headers.length).setValues(rows);
+  }
+  
+  // Auto-resize columns
+  for (let i = 1; i <= headers.length; i++) {
+    sheet.autoResizeColumn(i);
+  }
+  
+  // Freeze header row
+  sheet.setFrozenRows(1);
+  
+  return { count: rows.length };
+}
+
+/**
+ * Format monday.com date to readable format
+ */
+function formatMondayDate_(dateStr) {
+  try {
+    const date = new Date(dateStr);
+    // Format as "MMM D, YYYY H:MM AM/PM"
+    return Utilities.formatDate(date, 'America/Los_Angeles', 'MMM d, yyyy h:mm a');
+  } catch {
+    return dateStr;
+  }
+}
+
+/**
+ * Test function to get column IDs from a board
+ * Run this to discover column IDs for new boards
+ */
+function testGetBoardColumns() {
+  const boardId = BS_CFG.AFFILIATES_BOARD_ID; // Change to BUYERS_BOARD_ID or AFFILIATES_BOARD_ID
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  
+  const query = `
+    query {
+      boards(ids: [${boardId}]) {
+        name
+        columns {
+          id
+          title
+          type
+        }
+      }
+    }
+  `;
+  
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'Authorization': apiToken },
+    payload: JSON.stringify({ query: query }),
+    muteHttpExceptions: true
+  };
+  
+  const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+  const result = JSON.parse(response.getContentText());
+  
+  Logger.log('Board: ' + result.data?.boards?.[0]?.name);
+  Logger.log('Columns:');
+  
+  const columns = result.data?.boards?.[0]?.columns || [];
+  columns.forEach(col => {
+    Logger.log(`  { id: '${col.id}', header: '${col.title}', type: '${col.type}' },`);
+  });
+}
+
+/************************************************************
+ * DUPLICATE VENDOR CHECK
+ * Identify vendors appearing in both Buyers and Affiliates boards
+ ************************************************************/
+
+/**
+ * Check for vendors appearing in both Buyers and Affiliates
+ * Also checks for duplicates within the same board
+ * Shows results and allows adding to exclusion list
+ */
+function checkDuplicateVendors() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  
+  ss.toast('Checking for duplicate vendors...', '🔍 Scanning', 5);
+  
+  // Get vendors from both sheets
+  const buyersSheet = ss.getSheetByName('buyers monday.com');
+  const affiliatesSheet = ss.getSheetByName('affiliates monday.com');
+  
+  if (!buyersSheet || !affiliatesSheet) {
+    ui.alert('Error', 'Please run "Sync monday.com Data" first to populate the buyers and affiliates sheets.', ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Get vendor names from column A (skip header)
+  const buyersData = buyersSheet.getRange(2, 1, buyersSheet.getLastRow() - 1, 1).getValues();
+  const affiliatesData = affiliatesSheet.getRange(2, 1, affiliatesSheet.getLastRow() - 1, 1).getValues();
+  
+  // Find duplicates within each board
+  const buyerDuplicatesWithinBoard = findDuplicatesInList_(buyersData);
+  const affiliateDuplicatesWithinBoard = findDuplicatesInList_(affiliatesData);
+  
+  const buyerNames = new Set(buyersData.map(row => String(row[0]).trim().toLowerCase()).filter(n => n));
+  const affiliateNames = new Set(affiliatesData.map(row => String(row[0]).trim().toLowerCase()).filter(n => n));
+  
+  // Get exclusion list from Settings
+  const exclusions = getDuplicateExclusions_();
+  const exclusionSet = new Set(exclusions.map(e => e.toLowerCase()));
+  
+  // Find cross-board duplicates (in both, not in exclusion list)
+  const crossBoardDuplicates = [];
+  for (const name of buyerNames) {
+    if (affiliateNames.has(name) && !exclusionSet.has(name)) {
+      // Get the proper case version
+      const properCase = buyersData.find(row => String(row[0]).trim().toLowerCase() === name)?.[0] || name;
+      crossBoardDuplicates.push(properCase);
+    }
+  }
+  
+  // Also find excluded ones for reference
+  const excludedDuplicates = [];
+  for (const name of buyerNames) {
+    if (affiliateNames.has(name) && exclusionSet.has(name)) {
+      const properCase = buyersData.find(row => String(row[0]).trim().toLowerCase() === name)?.[0] || name;
+      excludedDuplicates.push(properCase);
+    }
+  }
+  
+  Logger.log(`Found ${crossBoardDuplicates.length} cross-board duplicates (${excludedDuplicates.length} excluded)`);
+  Logger.log(`Found ${buyerDuplicatesWithinBoard.length} duplicates within Buyers board`);
+  Logger.log(`Found ${affiliateDuplicatesWithinBoard.length} duplicates within Affiliates board`);
+  
+  const totalIssues = crossBoardDuplicates.length + buyerDuplicatesWithinBoard.length + affiliateDuplicatesWithinBoard.length;
+  
+  if (totalIssues === 0) {
+    let message = '✅ No duplicate vendors found!';
+    if (excludedDuplicates.length > 0) {
+      message += `\n\n(${excludedDuplicates.length} known duplicates are excluded via Settings)`;
+    }
+    ui.alert('Duplicate Check Complete', message, ui.ButtonSet.OK);
+    return;
+  }
+  
+  // Show results
+  let message = '';
+  
+  if (crossBoardDuplicates.length > 0) {
+    message += `⚠️ ${crossBoardDuplicates.length} vendor(s) in BOTH Buyers and Affiliates:\n`;
+    message += crossBoardDuplicates.slice(0, 10).join(', ');
+    if (crossBoardDuplicates.length > 10) {
+      message += `, ... +${crossBoardDuplicates.length - 10} more`;
+    }
+    message += '\n\n';
+  }
+  
+  if (buyerDuplicatesWithinBoard.length > 0) {
+    message += `🔵 ${buyerDuplicatesWithinBoard.length} duplicate(s) within Buyers board:\n`;
+    message += buyerDuplicatesWithinBoard.slice(0, 10).join(', ');
+    if (buyerDuplicatesWithinBoard.length > 10) {
+      message += `, ... +${buyerDuplicatesWithinBoard.length - 10} more`;
+    }
+    message += '\n\n';
+  }
+  
+  if (affiliateDuplicatesWithinBoard.length > 0) {
+    message += `🔵 ${affiliateDuplicatesWithinBoard.length} duplicate(s) within Affiliates board:\n`;
+    message += affiliateDuplicatesWithinBoard.slice(0, 10).join(', ');
+    if (affiliateDuplicatesWithinBoard.length > 10) {
+      message += `, ... +${affiliateDuplicatesWithinBoard.length - 10} more`;
+    }
+    message += '\n\n';
+  }
+  
+  if (excludedDuplicates.length > 0) {
+    message += `(${excludedDuplicates.length} known cross-board duplicates already excluded)\n\n`;
+  }
+  message += 'See "Duplicate Vendors" sheet for full list.';
+  
+  ui.alert('Duplicate Vendors Found', message, ui.ButtonSet.OK);
+  
+  // Write to sheet for easier review
+  writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyerDuplicatesWithinBoard, affiliateDuplicatesWithinBoard);
+}
+
+/**
+ * Find duplicate names within a single list
+ * Returns array of names that appear more than once
+ */
+function findDuplicatesInList_(data) {
+  const nameCounts = {};
+  const duplicates = [];
+  
+  for (const row of data) {
+    const name = String(row[0]).trim();
+    const nameLower = name.toLowerCase();
+    if (!nameLower) continue;
+    
+    if (nameCounts[nameLower]) {
+      nameCounts[nameLower].count++;
+      // Only add to duplicates once (when we see it the second time)
+      if (nameCounts[nameLower].count === 2) {
+        duplicates.push(nameCounts[nameLower].properCase);
+      }
+    } else {
+      nameCounts[nameLower] = { count: 1, properCase: name };
+    }
+  }
+  
+  return duplicates;
+}
+
+/**
+ * Get duplicate exclusions from Settings sheet
+ * Format in Settings:
+ * Row: "Duplicate Exclusions" | (empty)
+ * Row: "Vendor Name" | "Reason"
+ * Row: "SomeVendor" | "Legitimately both buyer and affiliate"
+ */
+function getDuplicateExclusions_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+  
+  if (!settingsSh) {
+    return [];
+  }
+  
+  const data = settingsSh.getDataRange().getValues();
+  const exclusions = [];
+  let inExclusionsSection = false;
+  let startCol = -1;
+  
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Duplicate Exclusions" header in any column
+    if (!inExclusionsSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'duplicate exclusions') {
+          inExclusionsSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+    
+    const vendorCell = String(data[i][startCol] || '').trim();
+    
+    // Skip header row
+    if (vendorCell.toLowerCase() === 'vendor name') {
+      continue;
+    }
+    
+    // Exit if we hit an empty row
+    if (vendorCell === '') {
+      break;
+    }
+    
+    exclusions.push(vendorCell);
+  }
+  
+  Logger.log(`Loaded ${exclusions.length} duplicate exclusions from Settings`);
+  return exclusions;
+}
+
+/**
+ * Write duplicates to a sheet for easy review
+ */
+function writeDuplicatesToSheet_(crossBoardDuplicates, excludedDuplicates, buyerDuplicatesWithinBoard, affiliateDuplicatesWithinBoard) {
+  const ss = SpreadsheetApp.getActive();
+  const sheetName = 'Duplicate Vendors';
+  let sheet = ss.getSheetByName(sheetName);
+  
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  } else {
+    sheet.clear();
+  }
+  
+  // Headers
+  sheet.getRange(1, 1, 1, 4).setValues([['Vendor Name', 'Status', 'Type', 'Notes']]);
+  sheet.getRange(1, 1, 1, 4)
+    .setFontWeight('bold')
+    .setBackground('#4a86e8')
+    .setFontColor('white');
+  
+  let row = 2;
+  
+  // Write cross-board duplicates (yellow)
+  for (const vendor of crossBoardDuplicates) {
+    sheet.getRange(row, 1).setValue(vendor);
+    sheet.getRange(row, 2).setValue('⚠️ DUPLICATE');
+    sheet.getRange(row, 3).setValue('Cross-Board');
+    sheet.getRange(row, 4).setValue('In both Buyers AND Affiliates');
+    sheet.getRange(row, 1, 1, 4).setBackground('#fff2cc'); // Yellow
+    row++;
+  }
+  
+  // Write same-board duplicates - Buyers (blue)
+  for (const vendor of buyerDuplicatesWithinBoard) {
+    sheet.getRange(row, 1).setValue(vendor);
+    sheet.getRange(row, 2).setValue('🔵 DUPLICATE');
+    sheet.getRange(row, 3).setValue('Within Buyers');
+    sheet.getRange(row, 4).setValue('Appears multiple times in Buyers board');
+    sheet.getRange(row, 1, 1, 4).setBackground('#cfe2f3'); // Light blue
+    row++;
+  }
+  
+  // Write same-board duplicates - Affiliates (blue)
+  for (const vendor of affiliateDuplicatesWithinBoard) {
+    sheet.getRange(row, 1).setValue(vendor);
+    sheet.getRange(row, 2).setValue('🔵 DUPLICATE');
+    sheet.getRange(row, 3).setValue('Within Affiliates');
+    sheet.getRange(row, 4).setValue('Appears multiple times in Affiliates board');
+    sheet.getRange(row, 1, 1, 4).setBackground('#cfe2f3'); // Light blue
+    row++;
+  }
+  
+  // Write excluded duplicates (green)
+  for (const vendor of excludedDuplicates) {
+    sheet.getRange(row, 1).setValue(vendor);
+    sheet.getRange(row, 2).setValue('✓ Excluded');
+    sheet.getRange(row, 3).setValue('Cross-Board');
+    sheet.getRange(row, 4).setValue('In Settings exclusion list');
+    sheet.getRange(row, 1, 1, 4).setBackground('#d9ead3'); // Green
+    row++;
+  }
+  
+  // Auto-resize
+  sheet.autoResizeColumns(1, 4);
+  sheet.setFrozenRows(1);
+  
+  // Add legend and instructions
+  const totalRows = crossBoardDuplicates.length + buyerDuplicatesWithinBoard.length + 
+                    affiliateDuplicatesWithinBoard.length + excludedDuplicates.length;
+  if (totalRows > 0) {
+    row += 2;
+    sheet.getRange(row, 1).setValue('LEGEND:').setFontWeight('bold');
+    row++;
+    sheet.getRange(row, 1, 1, 2).setValues([['🟡 Yellow', 'Cross-board duplicate (in both Buyers and Affiliates)']]);
+    sheet.getRange(row, 1, 1, 2).setBackground('#fff2cc');
+    row++;
+    sheet.getRange(row, 1, 1, 2).setValues([['🔵 Blue', 'Same-board duplicate (appears multiple times on one board)']]);
+    sheet.getRange(row, 1, 1, 2).setBackground('#cfe2f3');
+    row++;
+    sheet.getRange(row, 1, 1, 2).setValues([['🟢 Green', 'Excluded (in Settings exclusion list)']]);
+    sheet.getRange(row, 1, 1, 2).setBackground('#d9ead3');
+    row += 2;
+    
+    sheet.getRange(row, 1).setValue('To exclude cross-board duplicates, add to Settings sheet:').setFontWeight('bold');
+    row++;
+    sheet.getRange(row, 1).setValue('Duplicate Exclusions');
+    sheet.getRange(row, 1).setFontWeight('bold');
+    row++;
+    sheet.getRange(row, 1).setValue('Vendor Name');
+    sheet.getRange(row, 2).setValue('Reason');
+    sheet.getRange(row, 1, 1, 2).setFontWeight('bold').setBackground('#f3f3f3');
+    row++;
+    sheet.getRange(row, 1).setValue('Example Vendor');
+    sheet.getRange(row, 2).setValue('Legitimately both buyer and affiliate');
+    sheet.getRange(row, 1, 1, 2).setFontStyle('italic');
+  }
+  
+  ss.toast(`Results written to "${sheetName}" sheet`, '✅ Done', 3);
+}
+
+/************************************************************
+ * CLAUDE API CONFIGURATION
+ ************************************************************/
+
+/**
+ * Get Claude API key - checks Script Properties first, then BS_CFG
+ */
+function getClaudeApiKey_() {
+  const props = PropertiesService.getScriptProperties();
+  const storedKey = props.getProperty('CLAUDE_API_KEY');
+  if (storedKey && storedKey.length > 10) return storedKey;
+  if (BS_CFG.CLAUDE_API_KEY && BS_CFG.CLAUDE_API_KEY !== 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    return BS_CFG.CLAUDE_API_KEY;
+  }
+  return null;
+}
+
+/**
+ * Set Claude API key via dialog prompt - stores in Script Properties
+ */
+function battleStationSetClaudeApiKey() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const currentKey = props.getProperty('CLAUDE_API_KEY');
+  const masked = currentKey ? '***' + currentKey.slice(-8) : '(not set)';
+
+  const response = ui.prompt(
+    '⚙️ Set Claude API Key',
+    `Current key: ${masked}\n\nEnter your Anthropic API key (starts with sk-ant-):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const newKey = response.getResponseText().trim();
+  if (!newKey || newKey.length < 20) {
+    ui.alert('Invalid API key. Key must be at least 20 characters.');
+    return;
+  }
+
+  props.setProperty('CLAUDE_API_KEY', newKey);
+  SpreadsheetApp.getActive().toast('Claude API key saved!', '✅ Success', 3);
+}
+
+/**
+ * Set persistent AI instructions - facts and context injected into all Claude prompts
+ */
+function battleStationSetAiInstructions() {
+  const ui = SpreadsheetApp.getUi();
+  const props = PropertiesService.getScriptProperties();
+  const current = props.getProperty('AI_INSTRUCTIONS') || '';
+
+  const response = ui.prompt(
+    '📋 AI Instructions',
+    `These facts/instructions are included in every Claude prompt (summaries, briefings, insights, etc.).\n\nCurrent:\n${current || '(none set)'}\n\nEnter your instructions (one per line):`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const instructions = response.getResponseText().trim();
+  if (instructions) {
+    props.setProperty('AI_INSTRUCTIONS', instructions);
+    SpreadsheetApp.getActive().toast('AI instructions saved!', '✅ Saved', 3);
+  } else {
+    props.deleteProperty('AI_INSTRUCTIONS');
+    SpreadsheetApp.getActive().toast('AI instructions cleared.', '✅ Cleared', 3);
+  }
+}
+
+/**
+ * Get AI instructions for injection into Claude prompts
+ * Returns formatted string or empty string if none set
+ */
+function getAiInstructions_() {
+  const instructions = PropertiesService.getScriptProperties().getProperty('AI_INSTRUCTIONS');
+  if (!instructions) return '';
+  return `\n\nIMPORTANT CONTEXT FROM ANDY:\n${instructions}\n`;
+}
+
+/************************************************************
+ * SMART BRIEFING - AI-powered vendor priority advisor
+ * Scans across all vendors and recommends actions
+ ************************************************************/
+
+/**
+ * Smart Briefing - Claude analyzes all active vendors and tells you what to do
+ */
+function battleStationSmartBriefing() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  if (!listSh) {
+    ui.alert('List sheet not found.');
+    return;
+  }
+
+  ss.toast('Scanning label:00.received for Smart Briefing...', '🧠 Thinking', 10);
+
+  // Single Gmail search - find ALL threads in 00.received
+  const receivedThreads = GmailApp.search('label:00.received', 0, 200);
+  Logger.log(`[Smart Briefing] Found ${receivedThreads.length} threads in 00.received`);
+
+  // Group threads by vendor label (zzzVendors/*)
+  const vendorThreads = {};  // vendorLabel -> { threads: [], vendorLabel: string }
+  for (const thread of receivedThreads) {
+    const labels = thread.getLabels().map(l => l.getName());
+    const vendorLabelObj = labels.find(l => l.toLowerCase().startsWith('zzzvendors/'));
+    if (!vendorLabelObj) continue;
+    const vendorLabel = vendorLabelObj;
+    if (!vendorThreads[vendorLabel]) {
+      vendorThreads[vendorLabel] = { threads: [], labels: [] };
+    }
+    vendorThreads[vendorLabel].threads.push(thread);
+    vendorThreads[vendorLabel].labels.push(labels);
+  }
+
+  Logger.log(`[Smart Briefing] Grouped into ${Object.keys(vendorThreads).length} vendors`);
+
+  // Build List sheet lookup: vendor name -> { status, notes }
+  const allVendorRows = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const listLookup = {};  // lowercase vendor name -> { vendor, status, notes, gmailLink }
+  for (let i = 0; i < allVendorRows.length; i++) {
+    const name = allVendorRows[i][BS_CFG.L_VENDOR];
+    if (name) {
+      listLookup[name.toString().toLowerCase().trim()] = {
+        vendor: name,
+        status: allVendorRows[i][BS_CFG.L_STATUS] || '(unknown)',
+        notes: (allVendorRows[i][BS_CFG.L_NOTES] || '').substring(0, 200)
+      };
+    }
+  }
+
+  // Build vendor summaries from grouped threads
+  const vendorSummaries = [];
+  const vendorKeys = Object.keys(vendorThreads);
+
+  for (let vi = 0; vi < vendorKeys.length; vi++) {
+    const vendorLabel = vendorKeys[vi];
+    const group = vendorThreads[vendorLabel];
+
+    // Convert label "zzzVendors/Some Name" to a display name for matching
+    const labelName = vendorLabel.replace(/^zzzVendors\//i, '').trim();
+
+    // Find matching vendor in List sheet (try exact match, then fuzzy)
+    let listInfo = listLookup[labelName.toLowerCase()];
+    if (!listInfo) {
+      // Try matching by checking if list vendor name appears in the label or vice versa
+      for (const key of Object.keys(listLookup)) {
+        if (key.includes(labelName.toLowerCase()) || labelName.toLowerCase().includes(key)) {
+          listInfo = listLookup[key];
+          break;
+        }
+      }
+    }
+
+    const vendorName = listInfo ? listInfo.vendor : labelName;
+    const emailCount = group.threads.length;
+
+    // Check for overdue/priority labels
+    let overdueCount = 0;
+    for (const threadLabels of group.labels) {
+      const hasOverdue = threadLabels.some(l => l === BS_CFG.MANUAL_OVERDUE_LABEL);
+      const hasPriority = threadLabels.some(l => l === '01.priority/1');
+      if (hasOverdue || hasPriority) overdueCount++;
+    }
+
+    // Get latest thread content for context
+    let latestSubject = '';
+    let latestLabels = '';
+    let latestContent = '';
+    let latestDate = new Date(0); // epoch for sorting
+    try {
+      const latestThread = group.threads[0];
+      latestSubject = latestThread.getFirstMessageSubject();
+      latestLabels = group.labels[0].join(', ');
+      const msgs = latestThread.getMessages();
+      latestDate = msgs[msgs.length - 1].getDate();
+      latestContent = msgs[msgs.length - 1].getPlainBody().substring(0, 600);
+    } catch (e) { /* skip if thread fetch fails */ }
+
+    vendorSummaries.push({
+      vendor: vendorName,
+      status: listInfo ? listInfo.status : '(unknown)',
+      notes: listInfo ? listInfo.notes : '',
+      emailCount: emailCount,
+      overdueCount: overdueCount,
+      latestSubject: latestSubject,
+      latestLabels: latestLabels,
+      latestContent: latestContent,
+      latestDate: latestDate
+    });
+
+    if (vi % 5 === 0) {
+      ss.toast(`Processing ${vi + 1} of ${vendorKeys.length} vendors...`, '🧠 Scanning', 5);
+    }
+  }
+
+  if (vendorSummaries.length === 0) {
+    ui.alert('No active vendor communications found to analyze.');
+    return;
+  }
+
+  // Sort by latest update ascending - vendors waiting longest appear first
+  vendorSummaries.sort((a, b) => a.latestDate - b.latestDate);
+
+  ss.toast(`Analyzing ${vendorSummaries.length} vendors with Claude...`, '🧠 Processing', 15);
+
+  const vendorText = vendorSummaries.map((v, i) =>
+    `\n--- VENDOR ${i + 1}: ${v.vendor} ---
+Status: ${v.status}
+Notes: ${v.notes || '(none)'}
+Active emails: ${v.emailCount}, Overdue: ${v.overdueCount}
+Latest email subject: ${v.latestSubject}
+Latest labels: ${v.latestLabels}
+Content preview: ${v.latestContent}`
+  ).join('\n');
+
+  // Build a name lookup for matching Claude's output back to exact vendor names
+  const vendorNameList = vendorSummaries.map(v => v.vendor);
+
+  // Include goals for context-aware prioritization
+  const goalsContext = getGoalsContext_();
+  const aiInstructions = getAiInstructions_();
+
+  const todayStr = Utilities.formatDate(new Date(), 'America/Los_Angeles', 'EEEE, MMMM d, yyyy h:mm a');
+
+  const prompt = `You are A(I)DEN, an AI strategic advisor for the user, a vendor relationship manager at a lead generation company (Home Services and Solar verticals).
+${aiInstructions}
+
+Current date/time: ${todayStr} (Pacific Time)
+
+Here's a snapshot of all ${vendorSummaries.length} vendors with emails in 00.received (active inbox):
+${vendorText}
+${goalsContext}
+
+Provide a SMART BRIEFING with specific, actionable recommendations:
+
+## 🔥 URGENT - Do Right Now
+[List 3-5 specific actions for overdue or time-sensitive items. Name the vendor and what to do.]
+
+## 📋 HIGH PRIORITY - Today
+[List 3-5 important follow-ups with specific vendor names and actions.]
+
+## 💡 OPPORTUNITIES
+[2-3 things Andy could proactively do to improve business outcomes or relationships.]
+
+## ⚠️ RISKS
+[2-3 vendors or situations that need attention before they become problems.]
+
+Be specific: name the vendor, state the action, explain why. Keep it concise and actionable.
+
+IMPORTANT: At the very end of your response, include a section exactly like this:
+
+## PRIORITY_ORDER
+[List EVERY vendor name from above, one per line, in the exact order Andy should work through them. Most urgent first. Use the EXACT vendor names as provided. No numbers, no dashes, just the vendor name on each line.]`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    const rawContent = response.content;
+
+    // Parse the PRIORITY_ORDER section from the response
+    const priorityNames = parsePriorityOrder_(rawContent, vendorNameList);
+
+    // Reorder the List sheet to match the priority order
+    if (priorityNames.length > 0) {
+      reorderListByPriority_(listSh, priorityNames);
+      ss.toast(`List reordered: ${priorityNames.length} priority vendors at top`, '🧠 Reordered', 3);
+    }
+
+    // Strip PRIORITY_ORDER section from display content
+    let displayContent = rawContent.replace(/## PRIORITY_ORDER[\s\S]*$/, '').trim();
+
+    let content = displayContent
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #4a86e8; margin-top: 0; }
+        h3 { color: #4a86e8; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #4a86e8; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .reorder-note { background: #e8f0fe; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; font-size: 12px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
+      </style>
+      <h2>🧠 Smart Briefing</h2>
+      <p class="meta">Analyzed ${vendorSummaries.length} vendors | ${new Date().toLocaleString()}</p>
+      ${priorityNames.length > 0 ? '<div class="reorder-note">✅ List has been reordered - hit <strong>Next Vendor</strong> to work through them in priority order.</div>' : ''}
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="briefing-content-smart">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('briefing-content-smart');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(650);
+    ui.showModalDialog(html, '🧠 Smart Briefing - What to do next');
+
+    // Load vendor #1 so user can start traversing
+    if (priorityNames.length > 0) {
+      loadVendorData(1, { loadMode: 'fast' });
+    }
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Parse PRIORITY_ORDER section from Claude's response
+ * Matches vendor names against the known list (fuzzy)
+ */
+function parsePriorityOrder_(responseText, knownVendors) {
+  const prioritySection = responseText.match(/## PRIORITY_ORDER\s*\n([\s\S]*?)$/);
+  if (!prioritySection) return [];
+
+  const lines = prioritySection[1].split('\n')
+    .map(l => l.replace(/^[\d.\-*•]+\s*/, '').trim()) // Strip numbering/bullets
+    .filter(l => l.length > 0);
+
+  // Build lowercase lookup for known vendors
+  const vendorLookup = {};
+  for (const v of knownVendors) {
+    vendorLookup[v.toLowerCase()] = v;
+  }
+
+  const matched = [];
+  const seen = new Set();
+
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    // Exact match first
+    if (vendorLookup[lower] && !seen.has(lower)) {
+      matched.push(vendorLookup[lower]);
+      seen.add(lower);
+      continue;
+    }
+    // Fuzzy: check if any known vendor is contained in the line
+    for (const known of knownVendors) {
+      const knownLower = known.toLowerCase();
+      if (!seen.has(knownLower) && (lower.includes(knownLower) || knownLower.includes(lower))) {
+        matched.push(known);
+        seen.add(knownLower);
+        break;
+      }
+    }
+  }
+
+  Logger.log(`Smart Briefing: Parsed ${matched.length} priority vendors from ${lines.length} lines`);
+  return matched;
+}
+
+/**
+ * Reorder the List sheet so priority vendors appear at the top
+ * Non-priority vendors keep their existing relative order below
+ */
+function reorderListByPriority_(listSh, priorityNames) {
+  const lastRow = listSh.getLastRow();
+  if (lastRow <= 1) return;
+
+  const numCols = listSh.getLastColumn();
+  const dataRange = listSh.getRange(2, 1, lastRow - 1, numCols);
+  const allData = dataRange.getValues();
+  const allBgs = dataRange.getBackgrounds();
+
+  // Build priority lookup: vendor name -> priority index
+  const priorityMap = {};
+  for (let i = 0; i < priorityNames.length; i++) {
+    priorityMap[priorityNames[i].toLowerCase()] = i;
+  }
+
+  // Split into priority rows and non-priority rows
+  const priorityRows = new Array(priorityNames.length).fill(null);
+  const priorityBgs = new Array(priorityNames.length).fill(null);
+  const otherRows = [];
+  const otherBgs = [];
+
+  for (let i = 0; i < allData.length; i++) {
+    const vendorName = String(allData[i][0] || '').toLowerCase();
+    const pIdx = priorityMap[vendorName];
+    if (pIdx !== undefined && priorityRows[pIdx] === null) {
+      priorityRows[pIdx] = allData[i];
+      priorityBgs[pIdx] = allBgs[i];
+    } else {
+      otherRows.push(allData[i]);
+      otherBgs.push(allBgs[i]);
+    }
+  }
+
+  // Remove any nulls (vendors in priority list but not found in sheet)
+  const finalRows = [];
+  const finalBgs = [];
+  for (let i = 0; i < priorityRows.length; i++) {
+    if (priorityRows[i]) {
+      finalRows.push(priorityRows[i]);
+      finalBgs.push(priorityBgs[i]);
+    }
+  }
+
+  // Combine: priority vendors first, then the rest
+  const combined = finalRows.concat(otherRows);
+  const combinedBgs = finalBgs.concat(otherBgs);
+
+  // Write back
+  dataRange.setValues(combined);
+  dataRange.setBackgrounds(combinedBgs);
+
+  // Highlight priority vendors with a subtle indicator
+  if (finalRows.length > 0) {
+    listSh.getRange(2, 1, finalRows.length, numCols).setBackground('#e8f0fe');
+  }
+
+  Logger.log(`List reordered: ${finalRows.length} priority vendors moved to top, ${otherRows.length} others below`);
+}
+
+/************************************************************
+ * AUTO-SUMMARIZE TO NOTES
+ * Claude summarizes current vendor state and appends to monday.com notes
+ ************************************************************/
+
+/**
+ * Summarize current vendor activity with Claude and update monday.com notes
+ */
+function battleStationSummarizeToNotes() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  if (!listSh || !bsSh) {
+    ui.alert('Required sheets not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const currentNotes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
+  const status = String(listSh.getRange(listRow, BS_CFG.L_STATUS + 1).getValue() || '');
+
+  ss.toast(`Analyzing ${vendor}...`, '📝 Summarizing', 5);
+
+  // Get emails for context
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 5)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latestMsg = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nLatest: ${latestMsg.getPlainBody().substring(0, 500)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You are writing vendor notes for the user, a relationship manager at a lead generation company.
+${aiInstructions}
+Vendor: ${vendor}
+Status: ${status}
+
+Recent unsnoozed emails (${unsnoozed.length} threads):
+${emailContext || '(no emails)'}
+
+Write 2-3 sentences summarizing the current state of this vendor in natural language from Andy's perspective. Key rules:
+- If the latest message was OUTBOUND (from your team), summarize what Andy said or did - e.g. "Sent message to [contact] about X. Waiting for their response."
+- If the latest message was INBOUND, summarize what the vendor said and what Andy needs to do next.
+- Be factual and conversational, not corporate or action-item-ish.
+- This REPLACES all previous notes, so capture the full current picture concisely.
+- Do NOT include labels like "Action needed:" or bullet points. Just natural sentences.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 500 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    const summary = response.content.trim();
+
+    // Store context for revision
+    const summaryContext = {
+      vendor: vendor,
+      listRow: listRow,
+      currentNotes: currentNotes,
+      status: status,
+      emailContext: emailContext,
+      unsnoozedCount: unsnoozed.length,
+      summary: summary
+    };
+    PropertiesService.getUserProperties().setProperty('summaryPreviewContext', JSON.stringify(summaryContext));
+
+    // Show preview dialog
+    showSummaryPreviewDialog_(vendor, currentNotes, summary);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Show summary preview dialog with Save, Revise, and Edit options
+ */
+function showSummaryPreviewDialog_(vendor, currentNotes, summary) {
+  const ui = SpreadsheetApp.getUi();
+
+  const escapeHtml = (text) => {
+    return (text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/\n/g, '<br>');
+  };
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 10px; }
+    .subheader { color: #5f6368; font-size: 12px; margin-bottom: 15px; }
+    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-success { background: #34a853; color: white; }
+    .btn-success:hover { background: #2d8f47; }
+    .btn-success:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .current-notes {
+      background: #fff3e0;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: #666;
+      max-height: 60px;
+      overflow-y: auto;
+    }
+    .current-label { font-size: 11px; color: #999; margin-bottom: 4px; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 13px;
+      max-height: 150px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .revision-section {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .revision-section.show { display: block; }
+    .revision-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <!-- Screen 1: Notes Preview -->
+  <div id="notesScreen">
+    <div class="header">📝 Summary Preview - ${escapeHtml(vendor)}</div>
+    ${currentNotes ? `<div class="current-label">Current notes:</div><div class="current-notes">${escapeHtml(currentNotes)}</div>` : ''}
+    <div class="subheader">New summary:</div>
+    <div id="previewContent" class="preview">${escapeHtml(summary)}</div>
+
+    <div class="buttons" style="margin-top: 15px;">
+      <button id="saveBtn" class="btn btn-success" onclick="doSave()">Save Notes</button>
+      <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="doKeepCurrentNotes()" style="background:#e3f2fd;color:#1565c0;">Keep Current</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    </div>
+
+    <div id="revisionSection" class="revision-section">
+      <div class="revision-label">What should be changed?</div>
+      <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., mention the call we scheduled, make it shorter, we're actually waiting on them...">
+      <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+    </div>
+  </div>
+
+  <!-- Screen 2: Blocker Preview -->
+  <div id="blockerScreen" style="display:none;">
+    <div class="header">🚧 Blocker Preview - ${escapeHtml(vendor)}</div>
+    <div id="blockerCurrentLabel"></div>
+    <div id="blockerCurrentNotes" class="current-notes" style="display:none;"></div>
+    <div class="subheader">Suggested blocker(s):</div>
+    <div id="blockerPreview" class="preview"></div>
+
+    <div class="buttons" style="margin-top: 15px;">
+      <button id="blockerSaveBtn" class="btn btn-success" onclick="doSaveBlockers()">Save Blockers</button>
+      <button id="blockerReviseBtn" class="btn btn-secondary" onclick="doShowBlockerRevision()">Revise</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()" style="background:#e3f2fd;color:#1565c0;">Keep Current</button>
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Skip</button>
+    </div>
+
+    <div id="blockerRevisionSection" class="revision-section">
+      <div class="revision-label">What should be changed?</div>
+      <input type="text" id="blockerRevisionInput" class="revision-input" placeholder="e.g., add the compliance issue, remove the integration blocker, no blockers...">
+      <button id="blockerRegenerateBtn" class="btn btn-primary" onclick="doRegenerateBlockers()">Regenerate</button>
+    </div>
+  </div>
+
+  <div id="loadingMsg" class="loading" style="display:none;"></div>
+
+  <script>
+    function esc(text) {
+      var s = (text || '').replace(/&/g, '&amp;');
+      s = s.replace(/[<]/g, '&lt;');
+      s = s.replace(/[>]/g, '&gt;');
+      return s.replace(/\\n/g, '<br>');
+    }
+
+    // ========== NOTES SCREEN ==========
+    function doKeepCurrentNotes() {
+      // Skip saving notes, go straight to blocker screen
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Generating blocker summary...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(data) {
+          document.getElementById('notesScreen').style.display = 'none';
+          document.getElementById('blockerScreen').style.display = 'block';
+          document.getElementById('loadingMsg').style.display = 'none';
+
+          if (data.currentBlockers) {
+            document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label">Current blocker(s):</div>';
+            document.getElementById('blockerCurrentNotes').innerHTML = esc(data.currentBlockers);
+            document.getElementById('blockerCurrentNotes').style.display = 'block';
+          } else {
+            document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>';
+          }
+          document.getElementById('blockerPreview').innerHTML = esc(data.suggestedBlockers);
+        })
+        .withFailureHandler(function() {
+          google.script.host.close();
+        })
+        .generateBlockerSummary();
+    }
+
+    function doSave() {
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Saving notes...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          document.getElementById('loadingMsg').textContent = 'Generating blocker summary...';
+
+          google.script.run
+            .withSuccessHandler(function(data) {
+              // Transition to blocker screen
+              document.getElementById('notesScreen').style.display = 'none';
+              document.getElementById('blockerScreen').style.display = 'block';
+              document.getElementById('loadingMsg').style.display = 'none';
+
+              if (data.currentBlockers) {
+                document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label">Current blocker(s):</div>';
+                document.getElementById('blockerCurrentNotes').innerHTML = esc(data.currentBlockers);
+                document.getElementById('blockerCurrentNotes').style.display = 'block';
+              } else {
+                document.getElementById('blockerCurrentLabel').innerHTML = '<div class="current-label" style="color: #999; margin-bottom: 12px;">No current blockers set</div>';
+              }
+              document.getElementById('blockerPreview').innerHTML = esc(data.suggestedBlockers);
+            })
+            .withFailureHandler(function() {
+              // If blocker generation fails, just close (notes already saved)
+              google.script.host.close();
+            })
+            .generateBlockerSummary();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .saveSummaryFromPreview();
+    }
+
+    function doShowRevision() {
+      document.getElementById('revisionSection').classList.add('show');
+      document.getElementById('revisionInput').focus();
+    }
+
+    function doRegenerate() {
+      var feedback = document.getElementById('revisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('regenerateBtn').disabled = true;
+      document.getElementById('saveBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newSummary) {
+          document.getElementById('previewContent').innerHTML = esc(newSummary);
+          document.getElementById('revisionInput').value = '';
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('revisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('saveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseSummaryDraft(feedback);
+    }
+
+    // ========== BLOCKER SCREEN ==========
+    function doSaveBlockers() {
+      document.getElementById('blockerSaveBtn').disabled = true;
+      document.getElementById('blockerReviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Saving blockers...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function() {
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('blockerSaveBtn').disabled = false;
+          document.getElementById('blockerReviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .saveBlockersFromPreview();
+    }
+
+    function doShowBlockerRevision() {
+      document.getElementById('blockerRevisionSection').classList.add('show');
+      document.getElementById('blockerRevisionInput').focus();
+    }
+
+    function doRegenerateBlockers() {
+      var feedback = document.getElementById('blockerRevisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('blockerRegenerateBtn').disabled = true;
+      document.getElementById('blockerSaveBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newBlockers) {
+          document.getElementById('blockerPreview').innerHTML = esc(newBlockers);
+          document.getElementById('blockerRevisionInput').value = '';
+          document.getElementById('blockerRegenerateBtn').disabled = false;
+          document.getElementById('blockerSaveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('blockerRevisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('blockerRegenerateBtn').disabled = false;
+          document.getElementById('blockerSaveBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseBlockersDraft(feedback);
+    }
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(550)
+    .setHeight(600);
+  ui.showModalDialog(htmlOutput, '📝 Summary Preview');
+}
+
+/**
+ * Save the summary from the preview dialog to List sheet and monday.com
+ */
+function saveSummaryFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
+  if (!contextRaw) throw new Error('No summary context found. Please regenerate.');
+
+  const context = JSON.parse(contextRaw);
+  const summary = context.summary;
+
+  // Update the List sheet
+  listSh.getRange(context.listRow, BS_CFG.L_NOTES + 1).setValue(summary);
+
+  // Update monday.com
+  const result = updateMondayComNotesForVendor_(context.vendor, summary, context.listRow);
+
+  if (result.success) {
+    ss.toast(`Notes updated for ${context.vendor}`, '✅ Summary Saved', 3);
+  } else {
+    ss.toast(`List updated but monday.com sync failed: ${result.error}`, '⚠️ Partial', 5);
+  }
+
+  // Update the notes cell on the Battle Station sheet
+  for (let i = 5; i < 50; i++) {
+    const label = String(bsSh.getRange(i, 1).getValue() || '');
+    if (label.indexOf('📝 NOTES') !== -1) {
+      bsSh.getRange(i + 1, 1).setValue(summary);
+      break;
+    }
+  }
+}
+
+/**
+ * Revise the summary based on user feedback
+ */
+function reviseSummaryDraft(feedback) {
+  const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
+  if (!contextRaw) throw new Error('No summary context found. Please regenerate.');
+
+  const context = JSON.parse(contextRaw);
+  const apiKey = getClaudeApiKey_();
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You previously wrote this vendor summary:
+"${context.summary}"
+
+For vendor: ${context.vendor} (Status: ${context.status})
+${aiInstructions}
+
+Andy wants you to revise it with this feedback: "${feedback}"
+
+Write the revised 2-3 sentence summary. Same rules as before:
+- Natural language from Andy's perspective
+- Factual and conversational
+- No labels, bullet points, or corporate speak
+- Just output the summary text, nothing else.`;
+
+  const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 500 });
+
+  if (response.error) {
+    throw new Error(`Claude API Error: ${response.error}`);
+  }
+
+  const newSummary = response.content.trim();
+
+  // Update stored context with new summary
+  context.summary = newSummary;
+  PropertiesService.getUserProperties().setProperty('summaryPreviewContext', JSON.stringify(context));
+
+  return newSummary;
+}
+
+/************************************************************
+ * BLOCKER SUMMARY (chained from Notes summarize flow)
+ * After saving notes, generates and shows a blocker preview
+ ************************************************************/
+
+/**
+ * Generate blocker summary with Claude and return data to the client dialog.
+ * Called after notes are saved - returns { currentBlockers, suggestedBlockers }
+ * so the dialog can transition to the blocker screen client-side.
+ */
+function generateBlockerSummary() {
+  const ss = SpreadsheetApp.getActive();
+
+  const contextRaw = PropertiesService.getUserProperties().getProperty('summaryPreviewContext');
+  if (!contextRaw) throw new Error('No summary context found.');
+
+  const context = JSON.parse(contextRaw);
+  const vendor = context.vendor;
+  const listRow = context.listRow;
+
+  ss.toast(`Analyzing blockers for ${vendor}...`, '🚧 Blockers', 5);
+
+  // Get current blockers from monday.com vendor field
+  const contactData = getVendorContacts_(vendor, listRow);
+  let currentBlockers = contactData.blockers || '';
+
+  // Also check all blocker tasks for notes
+  try {
+    const tasks = getTasksForVendor_(vendor, listRow) || [];
+    const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+    const taskBlockerNotes = [];
+    for (let bt = 0; bt < blockerTasks.length; bt++) {
+      if (blockerTasks[bt].notes) {
+        taskBlockerNotes.push(blockerTasks[bt].subject + ': ' + blockerTasks[bt].notes);
+      } else {
+        taskBlockerNotes.push(blockerTasks[bt].subject + ' (no notes)');
+      }
+    }
+    if (taskBlockerNotes.length > 0) {
+      currentBlockers += (currentBlockers ? '\n\n' : '') + 'Blocker Tasks:\n' + taskBlockerNotes.join('\n');
+    }
+  } catch (e) {
+    Logger.log('Could not fetch blocker tasks for summary: ' + e.message);
+  }
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) throw new Error('No Claude API key configured.');
+
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You are updating the "Current Blocker(s)" field for a vendor in the user's vendor management system at a lead generation company.
+${aiInstructions}
+Vendor: ${vendor}
+Status: ${context.status}
+
+Current Blocker(s): ${currentBlockers || '(none)'}
+
+Recent unsnoozed emails (${context.unsnoozedCount} threads):
+${context.emailContext || '(no emails)'}
+
+Notes that were just saved: ${context.summary}
+
+Based on the emails and current state, suggest what the "Current Blocker(s)" field should say. Key rules:
+- If there are active blockers (things preventing progress), describe them concisely.
+- If blockers have been resolved based on recent emails, remove them.
+- If there are no blockers, output exactly: (none)
+- Keep it brief - short phrases or 1-2 sentences max.
+- Be factual, not speculative.
+- Just output the blocker text, nothing else.`;
+
+  const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 300 });
+
+  if (response.error) {
+    throw new Error(`Claude API Error: ${response.error}`);
+  }
+
+  const suggestedBlockers = response.content.trim();
+
+  // Store blocker context for save/revise
+  const blockerContext = {
+    vendor: vendor,
+    listRow: listRow,
+    currentBlockers: currentBlockers,
+    status: context.status,
+    emailContext: context.emailContext,
+    suggestedBlockers: suggestedBlockers
+  };
+  PropertiesService.getUserProperties().setProperty('blockerPreviewContext', JSON.stringify(blockerContext));
+
+  return { currentBlockers: currentBlockers, suggestedBlockers: suggestedBlockers };
+}
+
+/**
+ * Save the blockers from the preview dialog to monday.com
+ */
+function saveBlockersFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  const contextRaw = PropertiesService.getUserProperties().getProperty('blockerPreviewContext');
+  if (!contextRaw) throw new Error('No blocker context found.');
+
+  const context = JSON.parse(contextRaw);
+  const blockers = context.suggestedBlockers;
+  const blockerText = (blockers.toLowerCase() === '(none)') ? '' : blockers;
+
+  // 1. Update the vendor's "Current Blocker(s)" field on monday.com
+  const result = updateMondayBlockersForVendor_(context.vendor, blockerText, context.listRow);
+
+  if (result.success) {
+    ss.toast(`Blockers updated for ${context.vendor}`, '✅ Blockers Saved', 3);
+  } else {
+    throw new Error(`Monday.com update failed: ${result.error}`);
+  }
+
+  // 2. Also post the blocker text as an update (note) on ALL active blocker tasks
+  if (blockerText) {
+    try {
+      const tasks = getTasksForVendor_(context.vendor, context.listRow) || [];
+      const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+      let posted = 0;
+      for (let bt = 0; bt < blockerTasks.length; bt++) {
+        const blockerTask = blockerTasks[bt];
+        const escapedBody = blockerText.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+        const updateMutation = `
+          mutation {
+            create_update (
+              item_id: ${blockerTask.itemId},
+              body: "${escapedBody}"
+            ) { id }
+          }
+        `;
+        const updateResult = mondayApiRequest_(updateMutation, BS_CFG.MONDAY_API_TOKEN);
+        if (updateResult.data?.create_update?.id) {
+          Logger.log('Posted blocker update to task: ' + blockerTask.subject + ' (ID: ' + blockerTask.itemId + ')');
+          posted++;
+        }
+      }
+      if (posted > 0) {
+        ss.toast('Posted to ' + posted + ' blocker task(s)', '📝 Tasks Updated', 3);
+      }
+    } catch (e) {
+      Logger.log('Could not post to blocker tasks: ' + e.message);
+    }
+  }
+
+  // Update the blocker section on the Battle Station sheet if it exists
+  for (let i = 5; i < 50; i++) {
+    const val = String(bsSh.getRange(i, 1).getValue() || '');
+    if (val.indexOf('CURRENT BLOCKER') !== -1) {
+      if (blockerText) {
+        bsSh.getRange(i + 1, 1).setValue(blockerText);
+      } else {
+        // Clear blocker display if no blockers
+        bsSh.getRange(i, 1).setValue('');
+        bsSh.getRange(i + 1, 1).setValue('');
+      }
+      break;
+    }
+  }
+}
+
+/**
+ * Revise the blocker text based on user feedback
+ */
+function reviseBlockersDraft(feedback) {
+  const contextRaw = PropertiesService.getUserProperties().getProperty('blockerPreviewContext');
+  if (!contextRaw) throw new Error('No blocker context found.');
+
+  const context = JSON.parse(contextRaw);
+  const apiKey = getClaudeApiKey_();
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You previously wrote this "Current Blocker(s)" text for a vendor:
+"${context.suggestedBlockers}"
+
+For vendor: ${context.vendor} (Status: ${context.status})
+${aiInstructions}
+
+Andy wants you to revise it with this feedback: "${feedback}"
+
+Write the revised blocker text. Same rules as before:
+- If there are active blockers, describe them concisely.
+- If there are no blockers, output exactly: (none)
+- Keep it brief - short phrases or 1-2 sentences max.
+- Just output the text, nothing else.`;
+
+  const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 300 });
+
+  if (response.error) {
+    throw new Error(`Claude API Error: ${response.error}`);
+  }
+
+  const newBlockers = response.content.trim();
+
+  context.suggestedBlockers = newBlockers;
+  PropertiesService.getUserProperties().setProperty('blockerPreviewContext', JSON.stringify(context));
+
+  return newBlockers;
+}
+
+/**
+ * Update the Current Blocker(s) column on monday.com for a vendor
+ */
+function updateMondayBlockersForVendor_(vendor, blockers, listRow) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listRow) {
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex) return { success: false, error: 'Could not determine vendor index' };
+    listRow = currentIndex + 1;
+  }
+
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  let boardId, blockersColumnId;
+  if (source.toLowerCase().includes('buyer')) {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
+  } else if (source.toLowerCase().includes('affiliate')) {
+    boardId = BS_CFG.AFFILIATES_BOARD_ID;
+    blockersColumnId = BS_CFG.AFFILIATES_BLOCKERS_COLUMN;
+  } else {
+    boardId = BS_CFG.BUYERS_BOARD_ID;
+    blockersColumnId = BS_CFG.BUYERS_BLOCKERS_COLUMN;
+  }
+
+  const itemId = findMondayItemIdByVendor_(vendor, boardId, apiToken);
+
+  if (!itemId) {
+    return { success: false, error: `Could not find monday.com item for vendor: ${vendor}` };
+  }
+
+  const valueJson = JSON.stringify(blockers);
+  const escapedValue = valueJson.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value (
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_id: "${blockersColumnId}",
+        value: "${escapedValue}"
+      ) { id }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: mutation }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    if (result.errors && result.errors.length > 0) {
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      return { success: true, itemId: result.data.change_column_value.id };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Create a new Blocker task for the current vendor by duplicating the template item.
+ * Called from the "Add a Blocker" button in the Battle Station UI.
+ */
+function createBlockerForVendor() {
+  const ss = SpreadsheetApp.getActive();
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ss.toast('Could not determine current vendor.', '❌ Error', 3);
+    return;
+  }
+
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue();
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  ss.toast(`Creating blocker for ${vendor}...`, '🚧 Blocker', 3);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+  const templateItemId = BS_CFG.BLOCKER_TEMPLATE_ITEM_ID;
+
+  // Step 1: Duplicate the template item
+  const dupMutation = `
+    mutation {
+      duplicate_item (
+        board_id: ${boardId},
+        item_id: ${templateItemId},
+        with_updates: false
+      ) {
+        id
+      }
+    }
+  `;
+
+  const dupResult = mondayApiRequest_(dupMutation, apiToken);
+  if (dupResult.errors && dupResult.errors.length > 0) {
+    ss.toast(`Error duplicating template: ${dupResult.errors[0].message}`, '❌ Error', 5);
+    return;
+  }
+
+  const newItemId = dupResult.data?.duplicate_item?.id;
+  if (!newItemId) {
+    ss.toast('Failed to duplicate template item.', '❌ Error', 5);
+    return;
+  }
+
+  // Step 2: Rename the item to the vendor name
+  const escapedVendor = vendor.replace(/"/g, '\\"');
+  const renameMutation = `
+    mutation {
+      change_simple_column_value (
+        board_id: ${boardId},
+        item_id: ${newItemId},
+        column_id: "name",
+        value: "${escapedVendor}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 2b: Add the title as an update (note) on the item so it shows in Battle Station
+  // Without this, the blocker task has no notes and displays greyed out
+  const noteMutation = `
+    mutation {
+      create_update (
+        item_id: ${newItemId},
+        body: "${escapedVendor}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(noteMutation, apiToken);
+
+  // Step 3: Move to Blockers group
+  const moveMutation = `
+    mutation {
+      move_item_to_group (
+        item_id: ${newItemId},
+        group_id: "${BS_CFG.BLOCKERS_GROUP_ID}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(moveMutation, apiToken);
+
+  // Step 4: Link the vendor item via board relation (find vendor's monday.com item ID)
+  const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
+
+  if (vendorItemId) {
+    // Find the board relation column that links to the vendor's board
+    // Try all board_relation columns on the task to link the vendor
+    const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type } } }`;
+    const colsResult = mondayApiRequest_(colsQuery, apiToken);
+    const cols = colsResult.data?.items?.[0]?.column_values || [];
+
+    for (const col of cols) {
+      if (col.type === 'board_relation' && col.id !== BS_CFG.TASKS_PROJECT_COLUMN) {
+        // Try linking - if it's the wrong board relation column, monday.com will reject it silently
+        const linkMutation = `
+          mutation {
+            change_column_value (
+              board_id: ${boardId},
+              item_id: ${newItemId},
+              column_id: "${col.id}",
+              value: "{\\"item_ids\\": [${vendorItemId}]}"
+            ) { id }
+          }
+        `;
+        const linkResult = mondayApiRequest_(linkMutation, apiToken);
+        if (linkResult.data?.change_column_value?.id) {
+          Logger.log(`Linked vendor ${vendor} (${vendorItemId}) via column ${col.id}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // Clear task cache so the new blocker shows up on refresh
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+  setCachedData_('monday_tasks', cacheKey, []);
+
+  ss.toast(`Blocker created for ${vendor}!`, '✅ Blocker Added', 3);
+
+  // Refresh the Battle Station to show the new blocker
+  battleStationRefresh();
+}
+
+/**
+ * Show a dialog when a vendor has no blocker tasks.
+ * Uses Claude to suggest possible blockers based on recent emails, notes, and tasks.
+ */
+function showNoBlockerDialog_(vendor, source, status, contactData, emails, mondayNotes, allTasks) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  // Build context from recent interactions
+  const unsnoozedEmails = (emails || []).filter(e => !e.isSnoozed).slice(0, 5);
+  const emailContext = unsnoozedEmails.map(e =>
+    `- "${e.subject}" (${e.date}, from: ${e.lastFrom}, labels: ${e.labels})`
+  ).join('\n') || '(no recent emails)';
+
+  const openTasks = (allTasks || []).filter(t => !t.isDone && !t.isBlocker).slice(0, 5);
+  const taskContext = openTasks.map(t =>
+    `- "${t.subject}" (Status: ${t.status}, Project: ${t.project})`
+  ).join('\n') || '(no open tasks)';
+
+  const currentBlockersText = contactData.blockers || '';
+
+  // Try to get AI suggestions
+  let suggestions = [];
+  try {
+    const apiKey = getClaudeApiKey_();
+    if (apiKey) {
+      const aiInstructions = getAiInstructions_();
+      const prompt = `You are the user's vendor management assistant at a lead generation company.
+${aiInstructions}
+A vendor was just loaded that has NO blocker task in Monday.com. Based on the context below, suggest 2-3 possible blockers that might apply. These are things that could be preventing progress or need attention.
+
+Vendor: ${vendor}
+Source: ${source}
+Status: ${status}
+Monday.com Blockers Field: ${currentBlockersText || '(empty)'}
+Monday.com Notes: ${mondayNotes || '(none)'}
+
+Recent Emails:
+${emailContext}
+
+Open Tasks:
+${taskContext}
+
+Live Verticals: ${contactData.liveVerticals || '(none)'}
+Live Modalities: ${contactData.liveModalities || '(none)'}
+
+Return ONLY a JSON array of 2-3 short blocker suggestions (strings). Each should be a concise phrase (5-15 words max) describing a potential blocker. Base them on actual signals from the data - overdue emails, missing setup, pending contracts, etc. If there's truly nothing blocking, include "No current blockers - relationship on track" as one option.
+
+Example format: ["Waiting on signed IO to go live", "Pending Phonexa campaign setup", "No current blockers - relationship on track"]`;
+
+      const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 200 });
+      if (!response.error) {
+        const content = response.content.trim();
+        const match = content.match(/\[[\s\S]*\]/);
+        if (match) {
+          suggestions = JSON.parse(match[0]);
+        }
+      }
+    }
+  } catch (e) {
+    Logger.log(`Error getting AI blocker suggestions: ${e.message}`);
+  }
+
+  // Fallback suggestions if AI fails
+  if (!suggestions || suggestions.length === 0) {
+    suggestions = [
+      'Waiting on signed IO/contract',
+      'Pending campaign setup in Phonexa',
+      'No current blockers - relationship on track'
+    ];
+  }
+
+  // Store context for the callback
+  const currentIndex = getCurrentVendorIndex_();
+  PropertiesService.getUserProperties().setProperty('noBlockerDialogContext', JSON.stringify({
+    vendor: vendor,
+    source: source,
+    listRow: currentIndex + 1
+  }));
+
+  // Build suggestion radio buttons
+  const suggestionsHtml = suggestions.map((s, i) =>
+    `<div class="suggestion-item">
+       <input type="radio" name="blockerChoice" id="sug${i}" value="${s.replace(/"/g, '&quot;')}">
+       <label for="sug${i}">${s.replace(/</g, '&lt;')}</label>
+     </div>`
+  ).join('\n');
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 14px; padding: 15px; line-height: 1.5; }
+      h3 { color: #e65100; margin-bottom: 5px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 15px; }
+      .suggestion-item {
+        display: flex; align-items: center; padding: 10px 12px; margin-bottom: 6px;
+        background: #fff8e1; border: 1px solid #ffe0b2; border-radius: 6px; cursor: pointer;
+      }
+      .suggestion-item:hover { background: #fff3e0; border-color: #ffcc80; }
+      .suggestion-item input[type="radio"] { width: 18px; height: 18px; margin-right: 10px; cursor: pointer; }
+      .suggestion-item label { cursor: pointer; flex: 1; }
+      .custom-section { margin-top: 12px; }
+      .custom-input {
+        width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 5px;
+        font-family: Arial; font-size: 13px; margin-top: 5px;
+      }
+      .custom-input:focus { border-color: #e65100; outline: none; }
+      .btn-row { margin-top: 15px; display: flex; gap: 8px; }
+      .btn { padding: 10px 20px; cursor: pointer; border: none; border-radius: 4px; font-size: 14px; }
+      .btn-primary { background: #e65100; color: white; }
+      .btn-primary:hover { background: #bf360c; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-skip { background: #f1f3f4; color: #333; }
+      .btn-skip:hover { background: #e0e0e0; }
+      .status { margin-top: 10px; font-size: 12px; color: #666; display: none; }
+    </style>
+
+    <h3>🚧 No Blocker Found</h3>
+    <div class="subtitle">${vendor} has no active blocker task. Pick one or skip:</div>
+
+    ${suggestionsHtml}
+
+    <div class="custom-section">
+      <div class="suggestion-item">
+        <input type="radio" name="blockerChoice" id="sugCustom" value="__custom__">
+        <label for="sugCustom">Custom:</label>
+      </div>
+      <input type="text" class="custom-input" id="customBlocker" placeholder="Type a custom blocker..."
+             onfocus="document.getElementById('sugCustom').checked = true;">
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" id="createBtn" onclick="createBlocker()">Create Blocker</button>
+      <button class="btn btn-skip" onclick="google.script.host.close()">Skip</button>
+    </div>
+    <div class="status" id="statusMsg">Creating blocker...</div>
+
+    <script>
+      function createBlocker() {
+        var selected = document.querySelector('input[name="blockerChoice"]:checked');
+        if (!selected) { alert('Please select a blocker or type a custom one.'); return; }
+
+        var blockerText = selected.value;
+        if (blockerText === '__custom__') {
+          blockerText = document.getElementById('customBlocker').value.trim();
+          if (!blockerText) { alert('Please type a custom blocker.'); return; }
+        }
+
+        document.getElementById('createBtn').disabled = true;
+        document.getElementById('statusMsg').style.display = 'block';
+
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(err) {
+            document.getElementById('createBtn').disabled = false;
+            document.getElementById('statusMsg').style.display = 'none';
+            alert('Error: ' + err.message);
+          })
+          .createBlockerFromSuggestion(blockerText);
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(480).setHeight(400);
+  ui.showModalDialog(htmlOutput, '🚧 Missing Blocker');
+}
+
+/**
+ * Create a blocker task from the no-blocker suggestion dialog.
+ * Duplicates the template, renames it to the selected blocker text, and links the vendor.
+ */
+function createBlockerFromSuggestion(blockerText) {
+  const ss = SpreadsheetApp.getActive();
+  const contextRaw = PropertiesService.getUserProperties().getProperty('noBlockerDialogContext');
+  if (!contextRaw) throw new Error('No dialog context found.');
+
+  const context = JSON.parse(contextRaw);
+  const vendor = context.vendor;
+  const source = context.source;
+  const listRow = context.listRow;
+
+  ss.toast(`Creating blocker for ${vendor}...`, '🚧 Blocker', 3);
+
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+  const templateItemId = BS_CFG.BLOCKER_TEMPLATE_ITEM_ID;
+
+  // Step 1: Duplicate the template item
+  const dupMutation = `
+    mutation {
+      duplicate_item (
+        board_id: ${boardId},
+        item_id: ${templateItemId},
+        with_updates: false
+      ) { id }
+    }
+  `;
+
+  const dupResult = mondayApiRequest_(dupMutation, apiToken);
+  if (dupResult.errors && dupResult.errors.length > 0) {
+    throw new Error(`Error duplicating template: ${dupResult.errors[0].message}`);
+  }
+
+  const newItemId = dupResult.data?.duplicate_item?.id;
+  if (!newItemId) throw new Error('Failed to duplicate template item.');
+
+  // Step 2: Rename the item to "blockerText - vendorName"
+  const escapedBlockerTitle = blockerText.replace(/"/g, '\\"');
+  const escapedVendor = vendor.replace(/"/g, '\\"');
+  const taskTitle = `${escapedBlockerTitle} - ${escapedVendor}`;
+  const renameMutation = `
+    mutation {
+      change_simple_column_value (
+        board_id: ${boardId},
+        item_id: ${newItemId},
+        column_id: "name",
+        value: "${taskTitle}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(renameMutation, apiToken);
+
+  // Step 2b: Add the title as notes so it shows in Battle Station
+  const noteMutation = `
+    mutation {
+      create_update (
+        item_id: ${newItemId},
+        body: "${taskTitle}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(noteMutation, apiToken);
+
+  // Step 3: Move to Blockers group
+  const moveMutation = `
+    mutation {
+      move_item_to_group (
+        item_id: ${newItemId},
+        group_id: "${BS_CFG.BLOCKERS_GROUP_ID}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(moveMutation, apiToken);
+
+  // Step 4: Set the blocker text as notes on the item
+  const escapedBlocker = blockerText.replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  const notesMutation = `
+    mutation {
+      change_simple_column_value (
+        board_id: ${boardId},
+        item_id: ${newItemId},
+        column_id: "notes",
+        value: "${escapedBlocker}"
+      ) { id }
+    }
+  `;
+  mondayApiRequest_(notesMutation, apiToken);
+
+  // Step 5: Set Scope to "Int/Ext" - discover scope column dynamically
+  const colsQuery = `query { items (ids: [${newItemId}]) { column_values { id type title } } }`;
+  const colsResult = mondayApiRequest_(colsQuery, apiToken);
+  const cols = colsResult.data?.items?.[0]?.column_values || [];
+
+  let scopeColumnId = null;
+  for (const col of cols) {
+    if ((col.title || '').toLowerCase() === 'scope') {
+      scopeColumnId = col.id;
+      break;
+    }
+  }
+
+  if (scopeColumnId) {
+    const scopeValue = JSON.stringify({ label: 'Int/Ext' }).replace(/"/g, '\\"');
+    const scopeMutation = `
+      mutation {
+        change_column_value (
+          board_id: ${boardId},
+          item_id: ${newItemId},
+          column_id: "${scopeColumnId}",
+          value: "${scopeValue}"
+        ) { id }
+      }
+    `;
+    mondayApiRequest_(scopeMutation, apiToken);
+    Logger.log(`Set Scope to "Int/Ext" via column ${scopeColumnId}`);
+  } else {
+    Logger.log('Scope column not found on Tasks board');
+  }
+
+  // Step 6: Link the vendor item via board relation
+  const vendorBoardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
+
+  if (vendorItemId) {
+    for (const col of cols) {
+      if (col.type === 'board_relation' && col.id !== BS_CFG.TASKS_PROJECT_COLUMN) {
+        const linkMutation = `
+          mutation {
+            change_column_value (
+              board_id: ${boardId},
+              item_id: ${newItemId},
+              column_id: "${col.id}",
+              value: "{\\"item_ids\\": [${vendorItemId}]}"
+            ) { id }
+          }
+        `;
+        const linkResult = mondayApiRequest_(linkMutation, apiToken);
+        if (linkResult.data?.change_column_value?.id) {
+          Logger.log(`Linked vendor ${vendor} (${vendorItemId}) via column ${col.id}`);
+          break;
+        }
+      }
+    }
+  }
+
+  // Also update the monday.com blockers text field
+  updateMondayBlockersForVendor_(vendor, blockerText, listRow);
+
+  // Clear task cache so the new blocker shows up
+  const cacheKey = `tasks_board_${BS_CFG.TASKS_BOARD_ID}`;
+  setCachedData_('monday_tasks', cacheKey, []);
+
+  ss.toast(`Blocker created: "${blockerText}"`, '✅ Blocker Added', 3);
+
+  // Refresh to show the new blocker
+  battleStationRefresh();
+}
+
+/************************************************************
+ * EMAIL RULES ENGINE
+ * Automatic actions based on inbound email patterns
+ ************************************************************/
+
+/**
+ * Get or create the Email Rules sheet for configuring automation
+ */
+function getEmailRulesSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('BS_Email_Rules');
+
+  if (!sh) {
+    sh = ss.insertSheet('BS_Email_Rules');
+    // Headers
+    sh.getRange(1, 1, 1, 8).setValues([[
+      'Rule Name', 'Sender Pattern', 'Subject Pattern', 'Label Pattern',
+      'Action', 'Action Value', 'Enabled', 'Last Triggered'
+    ]]);
+    sh.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#e8f0fe');
+
+    // Example rules
+    sh.getRange(2, 1, 4, 8).setValues([
+      ['Auto-label invoices', '*@billing*', '*invoice*', '', 'add_label', '04.accounting-invoices', 'TRUE', ''],
+      ['Flag contract requests', '', '*contract*,*agreement*,*MSA*', '', 'add_label', '01.priority/1', 'TRUE', ''],
+      ['Auto-snooze newsletters', '*@newsletter*,*@marketing*', '', '', 'snooze', '3', 'TRUE', ''],
+      ['Notify on urgent', '', '*urgent*,*ASAP*,*immediately*', '', 'notify', 'team-member-1@yourdomain.com', 'TRUE', '']
+    ]);
+
+    // Formatting
+    sh.setColumnWidth(1, 180);
+    sh.setColumnWidth(2, 200);
+    sh.setColumnWidth(3, 200);
+    sh.setColumnWidth(4, 150);
+    sh.setColumnWidth(5, 120);
+    sh.setColumnWidth(6, 200);
+    sh.setColumnWidth(7, 80);
+    sh.setColumnWidth(8, 150);
+
+    // Add instructions row at top
+    sh.insertRowBefore(1);
+    sh.getRange(1, 1, 1, 8).merge()
+      .setValue('📧 EMAIL RULES - Patterns use * as wildcard, comma-separate multiple patterns. Actions: add_label, snooze (days), notify (email), flag, auto_reply_draft')
+      .setBackground('#fff2cc')
+      .setFontStyle('italic')
+      .setWrap(true);
+    sh.setRowHeight(1, 40);
+  }
+
+  return sh;
+}
+
+/**
+ * Open/create the Email Rules configuration sheet
+ */
+function battleStationManageEmailRules() {
+  const sh = getEmailRulesSheet_();
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  SpreadsheetApp.getActive().toast('Edit rules in this sheet, then run "Process Email Rules" to apply them.', '📧 Email Rules', 5);
+}
+
+/**
+ * Process email rules against recent inbound emails
+ */
+function battleStationProcessEmailRules() {
+  const ss = SpreadsheetApp.getActive();
+  const rulesSh = getEmailRulesSheet_();
+
+  const rulesData = rulesSh.getDataRange().getValues();
+  const rules = [];
+
+  // Parse rules (skip header rows)
+  for (let i = 2; i < rulesData.length; i++) {
+    const enabled = String(rulesData[i][6]).toUpperCase();
+    if (enabled !== 'TRUE') continue;
+
+    rules.push({
+      row: i + 1,
+      name: rulesData[i][0],
+      senderPatterns: parsePatterns_(rulesData[i][1]),
+      subjectPatterns: parsePatterns_(rulesData[i][2]),
+      labelPatterns: parsePatterns_(rulesData[i][3]),
+      action: String(rulesData[i][4]).toLowerCase().trim(),
+      actionValue: String(rulesData[i][5]).trim(),
+    });
+  }
+
+  if (rules.length === 0) {
+    ss.toast('No enabled rules found.', '⚠️ No Rules', 3);
+    return;
+  }
+
+  ss.toast(`Processing ${rules.length} rules against recent emails...`, '📧 Processing', 10);
+
+  // Get threads from the last 24 hours in the vendor inbox
+  const threads = GmailApp.search('label:00.received newer_than:1d', 0, 50);
+  let matchCount = 0;
+  const actions = [];
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+    const latest = messages[messages.length - 1];
+    const sender = latest.getFrom();
+    const subject = thread.getFirstMessageSubject();
+    const labels = thread.getLabels().map(l => l.getName()).join(',');
+
+    for (const rule of rules) {
+      if (matchesPatterns_(sender, rule.senderPatterns) ||
+          matchesPatterns_(subject, rule.subjectPatterns) ||
+          matchesPatterns_(labels, rule.labelPatterns)) {
+
+        matchCount++;
+        actions.push({ rule: rule, thread: thread, subject: subject });
+
+        try {
+          switch (rule.action) {
+            case 'add_label':
+              const label = GmailApp.getUserLabelByName(rule.actionValue);
+              if (label) {
+                thread.addLabel(label);
+                Logger.log(`Rule "${rule.name}": Added label "${rule.actionValue}" to "${subject}"`);
+              }
+              break;
+
+            case 'snooze':
+              // Move to snooze by removing from inbox
+              const days = parseInt(rule.actionValue) || 3;
+              const snoozeLabel = GmailApp.getUserLabelByName('03.noInbox');
+              if (snoozeLabel) {
+                thread.addLabel(snoozeLabel);
+                GmailApp.moveThreadToArchive(thread);
+                Logger.log(`Rule "${rule.name}": Snoozed "${subject}" for ${days} days`);
+              }
+              break;
+
+            case 'notify':
+              GmailApp.sendEmail(
+                rule.actionValue,
+                `[Battle Station Alert] ${rule.name}: ${subject}`,
+                `Email rule "${rule.name}" triggered.\n\nSubject: ${subject}\nFrom: ${sender}\n\nView in Gmail to take action.`
+              );
+              Logger.log(`Rule "${rule.name}": Sent notification for "${subject}"`);
+              break;
+
+            case 'flag':
+              // Find vendor and flag it
+              const vendorName = findVendorForEmail_(sender, subject);
+              if (vendorName) {
+                setVendorFlag_(vendorName, true);
+                Logger.log(`Rule "${rule.name}": Flagged vendor "${vendorName}" for "${subject}"`);
+              }
+              break;
+
+            case 'auto_reply_draft':
+              // Create a draft reply using Claude
+              const apiKey = getClaudeApiKey_();
+              if (apiKey) {
+                const body = latest.getPlainBody().substring(0, 1000);
+                const replyPrompt = `Draft a brief, professional reply to this email. Context: You are the relationship manager at a lead gen company. Rule: "${rule.name}". Value: "${rule.actionValue}"\n\nFrom: ${sender}\nSubject: ${subject}\nBody: ${body}\n\nWrite ONLY the reply body (no subject, no greeting headers). Keep it under 3 sentences.`;
+                const aiResponse = callClaudeAPI_(replyPrompt, apiKey, { maxTokens: 300 });
+                if (!aiResponse.error) {
+                  thread.createDraftReply(aiResponse.content);
+                  Logger.log(`Rule "${rule.name}": Created draft reply for "${subject}"`);
+                }
+              }
+              break;
+          }
+
+          // Update last triggered timestamp
+          rulesSh.getRange(rule.row, 8).setValue(new Date());
+
+        } catch (e) {
+          Logger.log(`Rule "${rule.name}" error: ${e.message}`);
+        }
+
+        break; // Only apply first matching rule per thread
+      }
+    }
+  }
+
+  ss.toast(`Processed ${threads.length} emails, ${matchCount} rule matches`, '✅ Rules Applied', 5);
+
+  if (actions.length > 0) {
+    const summary = actions.map(a => `• ${a.rule.name}: "${a.subject}"`).join('\n');
+    Logger.log(`Email Rules Summary:\n${summary}`);
+  }
+}
+
+/**
+ * Parse comma-separated wildcard patterns
+ */
+function parsePatterns_(patternStr) {
+  if (!patternStr) return [];
+  return String(patternStr).split(',').map(p => p.trim().toLowerCase()).filter(p => p.length > 0);
+}
+
+/**
+ * Check if a string matches any of the wildcard patterns
+ */
+function matchesPatterns_(text, patterns) {
+  if (!patterns || patterns.length === 0) return false;
+  const lowerText = String(text || '').toLowerCase();
+
+  for (const pattern of patterns) {
+    if (!pattern) continue;
+
+    // Convert wildcard pattern to regex
+    const regexStr = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // Escape special regex chars
+      .replace(/\*/g, '.*'); // Convert * to .*
+
+    try {
+      if (new RegExp(regexStr).test(lowerText)) return true;
+    } catch (e) {
+      // Fallback: simple includes check
+      const cleanPattern = pattern.replace(/\*/g, '');
+      if (cleanPattern && lowerText.includes(cleanPattern)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Try to find which vendor an email belongs to based on sender/subject
+ */
+function findVendorForEmail_(sender, subject) {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSh) return null;
+
+  const data = listSh.getDataRange().getValues();
+  const searchText = (sender + ' ' + subject).toLowerCase();
+
+  for (let i = 1; i < data.length; i++) {
+    const vendorName = String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase();
+    if (vendorName && searchText.includes(vendorName)) {
+      return data[i][BS_CFG.L_VENDOR];
+    }
+  }
+  return null;
+}
+
+/************************************************************
+ * CLAUDE-POWERED EMAIL REPLY DRAFTING
+ * Smart reply drafting for the current vendor's emails
+ ************************************************************/
+
+/**
+ * Draft a reply to the most recent unsnoozed email using Claude
+ */
+function battleStationDraftReply() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const notes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
+
+  ss.toast(`Finding emails for ${vendor}...`, '✉️ Drafting', 3);
+
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+
+  if (unsnoozed.length === 0) {
+    ui.alert('No unsnoozed emails found for this vendor.');
+    return;
+  }
+
+  // Get the most recent unsnoozed email thread
+  const targetEmail = unsnoozed[0];
+  let thread = null;
+  let threadContent = '';
+  let lastSenderIsMe = false;
+
+  try {
+    thread = GmailApp.getThreadById(targetEmail.threadId);
+    if (thread) {
+      const result = getThreadContent_(thread);
+      threadContent = result.content;
+      lastSenderIsMe = result.lastSenderIsMe;
+    }
+  } catch (e) {
+    threadContent = `Subject: ${targetEmail.subject}\n(Could not fetch thread content)`;
+  }
+
+  // Ask for extra directions
+  const dirResponse = ui.prompt(
+    'Draft Reply for ' + vendor,
+    'Subject: ' + targetEmail.subject + '\n\nAny specific directions for this reply? (leave blank for auto):',
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (dirResponse.getSelectedButton() !== ui.Button.OK) return;
+  const extraDirections = dirResponse.getResponseText().trim();
+
+  ss.toast('Generating reply with Claude...', '🤖 Drafting', 5);
+
+  try {
+    // Use the same generateEmailWithClaude_ as Email Actions for consistent quality
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      targetEmail.subject,
+      'General Follow Up',
+      extraDirections || ('Vendor notes: ' + (notes || 'none')),
+      lastSenderIsMe
+    );
+
+    // Store context for revision/draft creation (same as Email Actions flow)
+    const revisionContext = {
+      threadId: targetEmail.threadId,
+      responseType: 'Draft Reply',
+      originalDirections: extraDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview dialog with recipients, revise option, and Create Draft button
+    showDraftPreviewDialog_(responseBody, targetEmail.threadId);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/************************************************************
+ * EMAIL RESPONSE GENERATION
+ * Generate email responses using Claude AI and create Gmail drafts
+ ************************************************************/
+
+/**
+ * Get the selected email thread from the A(I)DEN sheet
+ * User should have their cursor on an email row in the EMAILS section
+ */
+function getSelectedEmailThread_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    throw new Error('A(I)DEN sheet not found');
+  }
+
+  // Check if we're in the emails section by looking for the subject column (column A)
+  // and checking if the row is after the EMAILS header
+  const values = bsSh.getDataRange().getValues();
+
+  // Find the EMAILS header row
+  let emailsHeaderRow = -1;
+  for (let i = 0; i < values.length; i++) {
+    if (String(values[i][0]).includes('📧 EMAILS')) {
+      emailsHeaderRow = i + 1; // 1-based
+      break;
+    }
+  }
+
+  if (emailsHeaderRow === -1) {
+    throw new Error('Could not find EMAILS section');
+  }
+
+  // The header row with Subject/Date/Last/Labels is emailsHeaderRow + 1
+  // Email rows start at emailsHeaderRow + 2
+  const emailDataStartRow = emailsHeaderRow + 2;
+
+  // Determine which row to use - selected row if valid, otherwise first email row
+  const selection = bsSh.getSelection();
+  const activeCell = selection.getCurrentCell();
+  let row = emailDataStartRow; // Default to first email (newest)
+
+  if (activeCell) {
+    const selectedRow = activeCell.getRow();
+    if (selectedRow >= emailDataStartRow) {
+      row = selectedRow; // Use selected row if it's in the email section
+    }
+  }
+
+  // Get the subject from the row
+  const subject = String(bsSh.getRange(row, 1).getValue() || '').trim();
+
+  if (!subject || subject === 'No emails found') {
+    throw new Error('No emails available');
+  }
+
+  // Try to get the thread ID from the hyperlink formula
+  const formula = bsSh.getRange(row, 1).getFormula();
+  let threadId = null;
+
+  if (formula) {
+    // Extract thread ID from HYPERLINK formula like: =HYPERLINK("https://mail.google.com/mail/u/0/#inbox/THREADID", "Subject")
+    const match = formula.match(/#inbox\/([^"]+)/);
+    if (match) {
+      threadId = match[1];
+    }
+  }
+
+  if (!threadId) {
+    throw new Error('Could not find thread ID for selected email. Make sure you clicked on a valid email row.');
+  }
+
+  // Fetch the full thread
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) {
+    throw new Error('Could not fetch email thread');
+  }
+
+  return {
+    threadId: threadId,
+    subject: subject,
+    thread: thread
+  };
+}
+
+/**
+ * Get Email Response settings from Settings sheet
+ * Format in Settings:
+ * Row: "Email Response Settings" | (empty)
+ * Row: "Response Type" | "Custom Instructions"
+ * Row: "Cold Outreach - Follow Up" | "Be persistent but polite"
+ * Row: "Schedule a Call" | "Always offer specific times"
+ * Row: "General" | "Instructions that apply to all response types"
+ * Note: Signature is fetched dynamically from Gmail API, not from settings
+ */
+function getEmailResponseSettings_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return { typeInstructions: {}, generalInstructions: '' };
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const typeInstructions = {};
+  let generalInstructions = '';
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Email Response Settings" header in any column
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'email response settings') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const typeCell = String(data[i][startCol] || '').trim();
+    const instructionsCell = String(data[i][startCol + 1] || '').trim();
+
+    // Skip header row
+    if (typeCell.toLowerCase() === 'response type') {
+      continue;
+    }
+
+    // Exit if we hit an empty row
+    if (typeCell === '' && instructionsCell === '') {
+      break;
+    }
+
+    // Parse settings - skip "signature" row (signature comes from Gmail API now)
+    if (typeCell !== '' && instructionsCell !== '') {
+      const typeLower = typeCell.toLowerCase();
+      if (typeLower === 'general') {
+        generalInstructions = instructionsCell;
+      } else if (typeLower !== 'signature') {
+        typeInstructions[typeCell] = instructionsCell;
+      }
+    }
+  }
+
+  return { typeInstructions, generalInstructions };
+}
+
+/**
+ * Get task analysis settings from Settings sheet
+ * Format: "Task Analysis Settings" header, then "Task Name" | "What to Look For"
+ */
+function getTaskAnalysisSettings_() {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    return { taskInstructions: {}, generalInstructions: '' };
+  }
+
+  const data = settingsSh.getDataRange().getValues();
+  const taskInstructions = {};
+  let generalInstructions = '';
+  let inSection = false;
+  let startCol = -1;
+
+  for (let i = 0; i < data.length; i++) {
+    // Search for "Task Analysis Settings" header in any column
+    if (!inSection) {
+      for (let col = 0; col < data[i].length; col++) {
+        if (String(data[i][col] || '').trim().toLowerCase() === 'task analysis settings') {
+          inSection = true;
+          startCol = col;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const taskCell = String(data[i][startCol] || '').trim();
+    const instructionsCell = String(data[i][startCol + 1] || '').trim();
+
+    // Skip header row
+    if (taskCell.toLowerCase() === 'task name') {
+      continue;
+    }
+
+    // Exit if we hit an empty row
+    if (taskCell === '' && instructionsCell === '') {
+      break;
+    }
+
+    // Parse settings
+    if (taskCell !== '' && instructionsCell !== '') {
+      if (taskCell.toLowerCase() === 'general') {
+        generalInstructions = instructionsCell;
+      } else {
+        taskInstructions[taskCell.toLowerCase()] = instructionsCell;
+      }
+    }
+  }
+
+  return { taskInstructions, generalInstructions };
+}
+
+/**
+ * Get the full thread content formatted for Claude
+ */
+function getThreadContent_(thread) {
+  const messages = thread.getMessages();
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  let content = '';
+
+  for (const msg of messages) {
+    const from = msg.getFrom();
+    const to = msg.getTo();
+    const date = msg.getDate();
+    const body = msg.getPlainBody();
+
+    content += `\n\n=== MESSAGE ===\n`;
+    content += `From: ${from}\n`;
+    content += `To: ${to}\n`;
+    content += `Date: ${date}\n`;
+    content += `---\n`;
+    content += body.substring(0, 3000); // Limit each message
+  }
+
+  // Check if I sent the last message (meaning this is a follow-up, not a reply)
+  const lastMessage = messages[messages.length - 1];
+  const lastFrom = lastMessage.getFrom().toLowerCase();
+  const lastSenderIsMe = lastFrom.includes(myEmail) || lastFrom.includes('andy');
+
+  return { content, lastSenderIsMe };
+}
+
+/**
+ * Show dialog for extra directions and get user input
+ */
+function showDirectionsDialog_(responseType, lastMsgSummary) {
+  const ui = SpreadsheetApp.getUi();
+
+  const contextLine = lastMsgSummary
+    ? `${lastMsgSummary}\n\n---\nAdd any extra directions or context for the response:\n(Leave blank for default response)`
+    : 'Add any extra directions or context for the response:\n(Leave blank for default response)';
+
+  const result = ui.prompt(
+    `📧 ${responseType}`,
+    contextLine,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() !== ui.Button.OK) {
+    return null;
+  }
+
+  return result.getResponseText().trim();
+}
+
+/**
+ * Generate email response using Claude
+ */
+function generateEmailWithClaude_(threadContent, subject, responseType, extraDirections, lastSenderIsMe) {
+  const claudeApiKey = getClaudeApiKey_();
+
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    throw new Error('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+  }
+
+  // Load custom settings from Settings sheet
+  const settings = getEmailResponseSettings_();
+
+  // Build the prompt based on response type
+  let systemPrompt = `You are drafting an email AS the Director of Business Development at your company. Write in first person as the user.
+
+Key info:
+- Company: your company name - delivers exclusive homeowner leads in real-time with TCPA consent
+- Your scheduling link: https://your-calendar-link-here
+- Phone: your-phone-number
+
+CRITICAL STYLE RULES - You must follow these:
+- Write like a real human, not like an AI assistant
+- NEVER use dashes (— or -) to join clauses or thoughts. LLMs overuse "clause - clause" patterns and it's an obvious tell. Use periods to make separate sentences instead
+- NEVER use phrases like "Perfect!", "Absolutely!", "Great question!", "I'd be happy to", "Hope this helps!", "I wanted to", "Just wanted to"
+- NEVER start with enthusiastic affirmations - just get to the point
+- Be direct, professional, casual-friendly (not corporate-stiff)
+- Keep it brief - 2-4 sentences when possible
+- Don't over-explain or be overly formal
+- No signature block (added automatically)
+- No extra blank line between greeting and body (e.g., "Hi Catie,\\nJust following up..." not "Hi Catie,\\n\\nJust following up...")
+
+CONTEXT AWARENESS:
+- Pay attention to WHO sent the last message in the thread
+- If Andy (me) sent the last message, this is a FOLLOW-UP because they haven't replied yet
+- If someone else sent the last message, this is a REPLY to their message`;
+
+  // Add general custom instructions from Settings if present
+  if (settings.generalInstructions) {
+    systemPrompt += `\n\nADDITIONAL INSTRUCTIONS FROM ANDY:\n${settings.generalInstructions}`;
+  }
+
+  // Add type-specific instructions from Settings if present
+  if (settings.typeInstructions[responseType]) {
+    systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "${responseType}":\n${settings.typeInstructions[responseType]}`;
+  }
+
+  // Built-in instructions for specific response types
+  if (responseType === 'Check Affiliate') {
+    systemPrompt += `\n\nSPECIFIC INSTRUCTIONS FOR "Check Affiliate":
+- Look at the date of the last email in the thread. If it's been more than a few weeks, START by apologizing for the delay in getting back to them.
+- Explain that we're changing our model to be more traffic-based rather than host-and-post based.
+- Ask if they're able to do web traffic to our O&O (owned and operated) lander, since that's what we're prioritizing at the moment.
+- Keep it brief and friendly - we're checking in to see if they can work with our new model.`;
+  }
+
+  // Add context about whether this is a follow-up or reply
+  let contextNote = '';
+  if (lastSenderIsMe) {
+    contextNote = `\n\nIMPORTANT: I (Andy) sent the last message and haven't received a reply. This is a FOLLOW-UP, not a reply to them. Don't act like they said something they didn't.`;
+  }
+
+  let userPrompt = `Response Type: ${responseType}${contextNote}
+
+Email Thread:
+${threadContent}
+
+`;
+
+  if (extraDirections) {
+    userPrompt += `Extra directions: ${extraDirections}\n\n`;
+  }
+
+  userPrompt += `Draft the email body only (no subject line).`;
+
+  const result = callClaudeAPI_(userPrompt, claudeApiKey, {
+    maxTokens: 1024,
+    system: systemPrompt
+  });
+
+  if (result.error) {
+    throw new Error(`Claude API error: ${result.error}`);
+  }
+
+  return result.content;
+}
+
+/**
+ * Compute who a reply-all draft would go to, without creating the draft.
+ * Returns { to, cc, bcc } as comma-separated strings.
+ */
+function computeDraftRecipients_(threadId) {
+  if (!threadId) return { to: '', cc: '', bcc: '' };
+
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return { to: '', cc: '', bcc: '' };
+
+  const messages = thread.getMessages();
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  const internalDomains = ['yourdomain.com', 'yourpartner.com', 'yourcrmplatform.com'];
+
+  const isInternal = (email) => internalDomains.some(d => email.toLowerCase().includes('@' + d));
+  const extractEmail = (str) => { const m = str.match(/<([^>]+)>/); return m ? m[1].toLowerCase() : str.toLowerCase().trim(); };
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addrs = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < str.length; i++) {
+      if (str[i] === '"') { inQ = !inQ; cur += str[i]; }
+      else if (str[i] === ',' && !inQ) { if (cur.trim()) addrs.push(cur.trim()); cur = ''; }
+      else { cur += str[i]; }
+    }
+    if (cur.trim()) addrs.push(cur.trim());
+    return addrs;
+  };
+
+  const allParticipants = new Set();
+  for (const msg of messages) {
+    const all = [...splitAddresses(msg.getFrom() || ''), ...splitAddresses(msg.getTo() || ''), ...splitAddresses(msg.getCc() || '')];
+    for (const addr of all) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@yourdomain.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  const ext = []; const int = [];
+  for (const addr of allParticipants) {
+    if (isInternal(extractEmail(addr))) int.push(addr); else ext.push(addr);
+  }
+
+  let to = '', cc = '', bcc = '';
+  if (ext.length > 0) { to = ext.join(', '); cc = int.join(', '); }
+  else { to = int.join(', '); }
+
+  const allStr = [...allParticipants].join(',').toLowerCase();
+  if (!allStr.includes('sales@yourdomain.com')) {
+    if (cc) bcc = 'sales@yourdomain.com';
+    else bcc = 'sales@yourdomain.com';
+  }
+
+  return { to: to, cc: cc, bcc: bcc };
+}
+
+/**
+ * Create Gmail draft and return the URL
+ * Uses createDraftReplyAll for proper threading, then updates content via Gmail API
+ */
+function createDraftAndGetUrl_(thread, responseBody) {
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      // Find the primary send-as (or the one matching user's email)
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
+
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['yourdomain.com', 'yourpartner.com', 'yourcrmplatform.com'];
+
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
+
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Helper to split email addresses respecting quoted names (handles "Name, Inc" <email>)
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    // Parse all addresses (respecting quoted names with commas)
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@yourdomain.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  // If no external recipients, internal go to To instead of Cc
+  let toRecipients = '';
+  let ccRecipients = '';
+  let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    // Normal case: external to To, internal to Cc
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    // All internal: put them in To
+    toRecipients = internalRecipients.join(', ');
+  }
+
+  // Check if sales@yourdomain.com should be added
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  const salesAlreadyIncluded = allRecipientsStr.includes('sales@yourdomain.com');
+
+  if (!salesAlreadyIncluded) {
+    if (ccRecipients) {
+      bccRecipients = 'sales@yourdomain.com';
+    } else if (toRecipients) {
+      bccRecipients = 'sales@yourdomain.com';
+    } else {
+      toRecipients = 'sales@yourdomain.com';
+    }
+  }
+
+  // Log computed recipients
+  Logger.log('=== RECIPIENT CALCULATION ===');
+  Logger.log(`My email: ${myEmail}`);
+  Logger.log(`All participants (${allParticipants.size}): ${[...allParticipants].join('; ')}`);
+  Logger.log(`External (To): ${toRecipients || '(none)'}`);
+  Logger.log(`Internal (Cc): ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log('=============================');
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  // Use getBody() to preserve HTML formatting (images, fonts, styling)
+  const lastMsgBody = lastMessage.getBody() || '';
+
+  // Format date for quote header
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Helper to escape HTML special characters (for our text, not the original email)
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML (preserve line breaks)
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message using Gmail's standard format
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+  // Full email body with signature and quote (HTML format)
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
+  if (signature) {
+    fullBodyHtml += `<br><br>${signature}`;
+  }
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+  // Step 1: Create a draft reply using GmailApp (this ensures proper threading)
+  Logger.log('Creating draft reply with proper threading...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draft = draftReply.getMessage();
+  const draftId = draftReply.getId();
+
+  // Step 2: Get threading headers from the ACTUAL messages in the thread (not the draft)
+  // Draft messages may not have headers accessible via getHeader(), so we get them from the real messages
+  // This is CRITICAL for proper email threading - without these headers, Gmail creates a new thread
+
+  // Get Message-ID from the last message - this becomes our In-Reply-To
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+
+  // Build References header from all messages in the thread
+  // References should contain all Message-IDs in the conversation chain
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) {
+      allMessageIds.push(msgId);
+    }
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Use the last message's ID for In-Reply-To
+  const inReplyTo = lastMessageId;
+  const references = referencesHeader;
+
+  Logger.log(`Thread ID: ${thread.getId()}`);
+  Logger.log(`Thread first subject: ${thread.getFirstMessageSubject()}`);
+  Logger.log(`Draft subject: ${draft.getSubject()}`);
+  Logger.log(`Last message Message-ID: ${lastMessageId || '(empty)'}`);
+  Logger.log(`Threading - In-Reply-To: ${inReplyTo || '(empty)'}`);
+  Logger.log(`Threading - References: ${references || '(empty)'}`);
+  Logger.log(`Total messages in thread: ${messages.length}`);
+
+  // Step 3: Get the draft via Gmail API
+  const gmailDraft = Gmail.Users.Drafts.get('me', draftId);
+  const messageId = gmailDraft.message.id;
+
+  // Step 4: Build the updated message preserving threading headers
+  // Use thread's first message subject to avoid [External] tags added by recipients
+  let subject = thread.getFirstMessageSubject();
+  // Strip emojis and normalize smart quotes to ASCII to prevent MIME encoding issues
+  subject = cleanSubjectLine_(subject);
+  if (!subject.toLowerCase().startsWith('re:')) {
+    subject = 'Re: ' + subject;
+  }
+
+  let rawHeaders = `From: ${myEmail}\r\n`;
+  rawHeaders += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawHeaders += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawHeaders += `Bcc: ${bccRecipients}\r\n`;
+  rawHeaders += `Subject: ${subject}\r\n`;
+  // CRITICAL: Include threading headers for proper reply threading
+  if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
+  if (references) rawHeaders += `References: ${references}\r\n`;
+  rawHeaders += `MIME-Version: 1.0\r\n`;
+  rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n`;
+  rawHeaders += `Content-Transfer-Encoding: base64\r\n`;
+  rawHeaders += `\r\n`;
+
+  // Base64-encode the HTML body separately to preserve non-ASCII characters (smart quotes, etc.)
+  const htmlBase64 = Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes());
+
+  const updateResource = {
+    message: {
+      raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawHeaders + htmlBase64).getBytes()),
+      threadId: thread.getId()
+    }
+  };
+
+  // Step 4: Update the draft with correct content and recipients
+  Logger.log('Updating draft with HTML content and recipients...');
+  const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+
+  // Get the message ID from the updated draft for the URL
+  const updatedMessageId = updatedDraft.message.id;
+  Logger.log(`Draft updated, message ID: ${updatedMessageId}`);
+
+  // Track this thread for auto-archive after sending
+  addPendingArchiveThread_(thread.getId());
+  Logger.log(`Added thread ${thread.getId()} to pending archive list`);
+
+  // Use the draft message ID to open compose window
+  const gmailUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedMessageId}`;
+  return gmailUrl;
+}
+
+/**
+ * Create email with proper threading, then send it immediately
+ * Similar to createDraftAndGetUrl_ but sends instead of returning draft URL
+ * Returns URL to the sent message in Gmail
+ */
+function createAndSendEmail_(thread, responseBody) {
+  const messages = thread.getMessages();
+  const lastMessage = messages[messages.length - 1];
+
+  // Get my email address to exclude from recipients
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+
+  // Get signature from Gmail settings (includes images, fonts, formatting)
+  let signature = '';
+  try {
+    const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+    if (sendAsSettings && sendAsSettings.sendAs) {
+      const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                            sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                            sendAsSettings.sendAs[0];
+      if (primarySendAs && primarySendAs.signature) {
+        signature = primarySendAs.signature;
+      }
+    }
+  } catch (e) {
+    Logger.log('Could not fetch Gmail signature: ' + e.message);
+  }
+
+  // Internal domains - people in these domains go to CC
+  const internalDomains = ['yourdomain.com', 'yourpartner.com', 'yourcrmplatform.com'];
+
+  // Helper to check if email is internal
+  const isInternalEmail = (email) => {
+    const emailLower = email.toLowerCase();
+    return internalDomains.some(domain => emailLower.includes('@' + domain));
+  };
+
+  // Helper to extract email from "Name <email>" format
+  const extractEmail = (str) => {
+    const match = str.match(/<([^>]+)>/);
+    return match ? match[1].toLowerCase() : str.toLowerCase().trim();
+  };
+
+  // Helper to split email addresses respecting quoted names
+  const splitAddresses = (str) => {
+    if (!str) return [];
+    const addresses = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < str.length; i++) {
+      const char = str[i];
+      if (char === '"') {
+        inQuotes = !inQuotes;
+        current += char;
+      } else if (char === ',' && !inQuotes) {
+        if (current.trim()) addresses.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    if (current.trim()) addresses.push(current.trim());
+    return addresses;
+  };
+
+  // Collect all unique participants from the thread (excluding me)
+  const allParticipants = new Set();
+
+  for (const msg of messages) {
+    const from = msg.getFrom() || '';
+    const to = msg.getTo() || '';
+    const cc = msg.getCc() || '';
+
+    const allAddresses = [
+      ...splitAddresses(from),
+      ...splitAddresses(to),
+      ...splitAddresses(cc)
+    ];
+
+    for (const addr of allAddresses) {
+      const email = extractEmail(addr);
+      if (email && email !== myEmail && !email.includes('sales@yourdomain.com')) {
+        allParticipants.add(addr.trim());
+      }
+    }
+  }
+
+  // Separate into external (To) and internal (CC)
+  const externalRecipients = [];
+  const internalRecipients = [];
+
+  for (const addr of allParticipants) {
+    const email = extractEmail(addr);
+    if (isInternalEmail(email)) {
+      internalRecipients.push(addr);
+    } else {
+      externalRecipients.push(addr);
+    }
+  }
+
+  // Build recipient strings
+  let toRecipients = '';
+  let ccRecipients = '';
+  let bccRecipients = '';
+
+  if (externalRecipients.length > 0) {
+    toRecipients = externalRecipients.join(', ');
+    ccRecipients = internalRecipients.join(', ');
+  } else {
+    toRecipients = internalRecipients.join(', ');
+  }
+
+  // Add sales@yourdomain.com to BCC if not already included
+  const allRecipientsStr = [...allParticipants].join(',').toLowerCase();
+  if (!allRecipientsStr.includes('sales@yourdomain.com')) {
+    bccRecipients = 'sales@yourdomain.com';
+  }
+
+  Logger.log('=== SEND EMAIL RECIPIENTS ===');
+  Logger.log(`To: ${toRecipients || '(none)'}`);
+  Logger.log(`Cc: ${ccRecipients || '(none)'}`);
+  Logger.log(`Bcc: ${bccRecipients || '(none)'}`);
+  Logger.log('=============================');
+
+  // Build the quoted original message
+  const lastMsgDate = lastMessage.getDate();
+  const lastMsgFrom = lastMessage.getFrom();
+  const lastMsgBody = lastMessage.getBody() || '';
+  const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+  // Helper to escape HTML
+  const escapeHtml = (text) => {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  };
+
+  // Convert response body to HTML
+  const responseHtml = escapeHtml(responseBody).replace(/\n/g, '<br>');
+
+  // Build quoted message
+  const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+  const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+  // Full email body with signature and quote
+  let fullBodyHtml = `<div dir="ltr">${responseHtml}`;
+  if (signature) {
+    fullBodyHtml += `<br><br>${signature}`;
+  }
+  fullBodyHtml += `</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+  // Create draft reply for proper threading
+  Logger.log('Creating draft for threading, then sending...');
+  const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+  const draftId = draftReply.getId();
+
+  // Get threading headers from the actual messages
+  const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+  const allMessageIds = [];
+  for (const msg of messages) {
+    const msgId = msg.getHeader('Message-ID');
+    if (msgId) allMessageIds.push(msgId);
+  }
+  const referencesHeader = allMessageIds.join(' ');
+
+  // Get the subject (with Re: if needed)
+  const subject = draftReply.getMessage().getSubject();
+
+  // Build raw RFC 2822 message for proper threading
+  const boundary = 'boundary_' + Utilities.getUuid();
+  let rawMessage = '';
+  rawMessage += `To: ${toRecipients}\r\n`;
+  if (ccRecipients) rawMessage += `Cc: ${ccRecipients}\r\n`;
+  if (bccRecipients) rawMessage += `Bcc: ${bccRecipients}\r\n`;
+  rawMessage += `Subject: ${subject}\r\n`;
+  rawMessage += `In-Reply-To: ${lastMessageId}\r\n`;
+  rawMessage += `References: ${referencesHeader}\r\n`;
+  rawMessage += `MIME-Version: 1.0\r\n`;
+  rawMessage += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`;
+  rawMessage += `\r\n`;
+  // Base64-encode each part to preserve non-ASCII characters (smart quotes, etc.)
+  const plainBase64 = Utilities.base64Encode(Utilities.newBlob(responseBody).getBytes());
+  const htmlBase64 = Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes());
+
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/plain; charset="UTF-8"\r\n`;
+  rawMessage += `Content-Transfer-Encoding: base64\r\n\r\n`;
+  rawMessage += plainBase64 + '\r\n';
+  rawMessage += `--${boundary}\r\n`;
+  rawMessage += `Content-Type: text/html; charset="UTF-8"\r\n`;
+  rawMessage += `Content-Transfer-Encoding: base64\r\n\r\n`;
+  rawMessage += htmlBase64 + '\r\n';
+  rawMessage += `--${boundary}--`;
+
+  // Encode for Gmail API
+  const encodedMessage = Utilities.base64EncodeWebSafe(Utilities.newBlob(rawMessage).getBytes());
+
+  // Send the message using Gmail API
+  const sentMessage = Gmail.Users.Messages.send(
+    { raw: encodedMessage, threadId: thread.getId() },
+    'me'
+  );
+
+  Logger.log(`Email sent! Message ID: ${sentMessage.id}`);
+
+  // Delete the placeholder draft
+  try {
+    Gmail.Users.Drafts.remove('me', draftId);
+  } catch (e) {
+    Logger.log(`Could not delete placeholder draft: ${e.message}`);
+  }
+
+  // Track for auto-archive (same as draft flow)
+  addPendingArchiveThread_(thread.getId());
+
+  // Return URL to the sent message
+  return `https://mail.google.com/mail/u/0/#sent/${sentMessage.id}`;
+}
+
+/**
+ * Add a thread ID to the pending archive list (stored in Script Properties)
+ * These threads will be archived on next email refresh once Last=ME
+ */
+function addPendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+
+  if (!pending.includes(threadId)) {
+    pending.push(threadId);
+    props.setProperty('pendingArchiveThreads', JSON.stringify(pending));
+  }
+}
+
+/**
+ * Get pending archive thread IDs
+ */
+function getPendingArchiveThreads_() {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  return JSON.parse(pendingJson);
+}
+
+/**
+ * Remove a thread ID from pending archive list (after archiving)
+ */
+function removePendingArchiveThread_(threadId) {
+  const props = PropertiesService.getScriptProperties();
+  const pendingJson = props.getProperty('pendingArchiveThreads') || '[]';
+  const pending = JSON.parse(pendingJson);
+  const updated = pending.filter(id => id !== threadId);
+  props.setProperty('pendingArchiveThreads', JSON.stringify(updated));
+}
+
+/**
+ * Check and archive threads that were responded to via Email Response
+ * Called during email refresh - archives threads where Last=ME
+ * Also swaps waiting/me label to waiting/customer
+ * Returns true if any threads were archived (to trigger refresh)
+ */
+function checkAndArchivePendingThreads_() {
+  const pendingIds = getPendingArchiveThreads_();
+  if (pendingIds.length === 0) return false;
+
+  Logger.log(`Checking ${pendingIds.length} pending archive threads...`);
+  const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+  let archivedCount = 0;
+
+  // Get labels for swap (02.waiting/me → 02.waiting/customer)
+  const waitingMeLabel = GmailApp.getUserLabelByName('02.waiting/me');
+  const waitingCustomerLabel = GmailApp.getUserLabelByName('02.waiting/customer');
+
+  for (const threadId of pendingIds) {
+    try {
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        // Thread no longer exists, remove from pending
+        removePendingArchiveThread_(threadId);
+        continue;
+      }
+
+      const messages = thread.getMessages();
+      if (messages.length === 0) continue;
+
+      const lastMessage = messages[messages.length - 1];
+      const lastSender = lastMessage.getFrom().toLowerCase();
+
+      // Check if I sent the last message
+      if (lastSender.includes(myEmail)) {
+        Logger.log(`Archiving thread ${threadId} - Last sender is ME`);
+
+        // Swap labels: remove waiting/me, add waiting/customer
+        if (waitingMeLabel) {
+          thread.removeLabel(waitingMeLabel);
+          Logger.log(`Removed 02.waiting/me label from thread ${threadId}`);
+        }
+        if (waitingCustomerLabel) {
+          thread.addLabel(waitingCustomerLabel);
+          Logger.log(`Added 02.waiting/customer label to thread ${threadId}`);
+        }
+
+        thread.moveToArchive();
+        removePendingArchiveThread_(threadId);
+        archivedCount++;
+      }
+    } catch (e) {
+      Logger.log(`Error checking thread ${threadId}: ${e.message}`);
+      // Remove from pending to avoid repeated errors
+      removePendingArchiveThread_(threadId);
+    }
+  }
+
+  if (archivedCount > 0) {
+    Logger.log(`Archived ${archivedCount} threads (labels swapped to waiting/customer)`);
+    SpreadsheetApp.getActive().toast(`Archived ${archivedCount} sent email(s)`, '📬 Auto-Archive', 3);
+  }
+
+  return archivedCount > 0;
+}
+
+/**
+ * Check if there's a future meeting today for the current vendor
+ * Returns warning message if found, null otherwise
+ */
+function checkForFutureMeetingToday_() {
+  try {
+    const ss = SpreadsheetApp.getActive();
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    if (!listSh) return null;
+
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex) return null;
+
+    const listRow = currentIndex + 1; // +1 for header row
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+    if (!vendor) return null;
+
+    // Get contact emails for calendar search
+    const contactEmails = [];
+    // Try to get from cached/stored data first, or just search by vendor name
+
+    // Get meetings for this vendor
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    const meetings = meetingsResult.meetings || [];
+
+    // Find meetings that are today but in the future
+    const now = new Date();
+    const futureMeetingsToday = meetings.filter(m => {
+      if (!m.isToday || m.isPast) return false;
+      // Double-check: meeting start time is in the future
+      if (m.startTime && m.startTime > now) return true;
+      return false;
+    });
+
+    if (futureMeetingsToday.length > 0) {
+      const meetingList = futureMeetingsToday.map(m => `• ${m.title} at ${m.time}`).join('\n');
+      return `You have a meeting with ${vendor} later today:\n\n${meetingList}`;
+    }
+
+    return null;
+  } catch (e) {
+    Logger.log(`Error checking for future meetings: ${e.message}`);
+    return null; // Don't block on errors
+  }
+}
+
+/**
+ * Main function to handle email response generation
+ */
+function generateEmailResponse_(responseType) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return; // User cancelled
+      }
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread
+    const emailData = getSelectedEmailThread_();
+
+    // Read thread content BEFORE showing dialog so we can include a summary
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    // Get last message summary for the directions dialog
+    const msgs = emailData.thread.getMessages();
+    const lastMsg = msgs[msgs.length - 1];
+    const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+    const lastDate = lastMsg.getDate().toLocaleDateString();
+    const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+    const lastMsgSummary = `Last message from: ${lastFrom} (${lastDate})\n\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+
+    // Show directions dialog with email context
+    const extraDirections = showDirectionsDialog_(responseType, lastMsgSummary);
+    if (extraDirections === null) {
+      return; // User cancelled
+    }
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude (no draft yet)
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      responseType,
+      extraDirections,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision or draft creation
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: responseType,
+      originalDirections: extraDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview - draft only created when user confirms
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Show the draft preview dialog with revision option
+ * Draft is only created when user clicks "Create Draft"
+ */
+function showDraftPreviewDialog_(responseBody, threadId) {
+  const ui = SpreadsheetApp.getUi();
+
+  // Build Gmail thread URL
+  const threadUrl = threadId ? `https://mail.google.com/mail/u/0/#inbox/${threadId}` : '';
+
+  // Compute recipients so user can see who the email will go to
+  let toDisplay = '', ccDisplay = '', bccDisplay = '';
+  try {
+    const recipients = computeDraftRecipients_(threadId);
+    toDisplay = recipients.to || '';
+    ccDisplay = recipients.cc || '';
+    bccDisplay = recipients.bcc || '';
+  } catch (e) {
+    Logger.log('Could not compute recipients: ' + e.message);
+  }
+
+  // Safely escape the response for embedding in HTML
+  const escapedResponse = responseBody
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\n/g, '<br>');
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_blank">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
+    .buttons { display: flex; gap: 10px; margin-bottom: 15px; }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      font-size: 13px;
+      max-height: 180px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+    .revision-section {
+      display: none;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .revision-section.show { display: block; }
+    .revision-input {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 10px;
+      box-sizing: border-box;
+    }
+    .revision-label { font-size: 13px; color: #5f6368; margin-bottom: 5px; }
+    .loading { color: #5f6368; font-style: italic; margin-top: 10px; }
+    .recipients { background: #fff3e0; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; line-height: 1.6; border: 1px solid #ffe0b2; }
+    .recipients strong { color: #e65100; }
+    .rcpt-label { display: inline-block; min-width: 32px; font-weight: bold; color: #5f6368; }
+  </style>
+</head>
+<body>
+  <div class="header">Preview Generated Response ${threadUrl ? `<a href="${threadUrl}" target="_blank" style="font-size: 12px; color: #1a73e8; margin-left: 10px;">📧 View Original</a>` : ''}</div>
+  ${toDisplay ? `<div class="recipients">
+    <div><span class="rcpt-label">To:</span> ${toDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+    ${ccDisplay ? `<div><span class="rcpt-label">Cc:</span> ${ccDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+    ${bccDisplay ? `<div><span class="rcpt-label">Bcc:</span> ${bccDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>` : ''}
+  </div>` : ''}
+  <div class="buttons">
+    <button id="createBtn" class="btn btn-primary" onclick="doCreateDraft()">Create Draft</button>
+    <button id="sendBtn" class="btn btn-primary" style="background: #34a853;" onclick="doSendNow()">Send Now</button>
+    <button id="reviseBtn" class="btn btn-secondary" onclick="doShowRevision()">Revise</button>
+  </div>
+  <div id="previewContent" class="preview">${escapedResponse}</div>
+
+  <div id="revisionSection" class="revision-section">
+    <div class="revision-label">What would you like to change?</div>
+    <input type="text" id="revisionInput" class="revision-input" placeholder="e.g., add actual scheduling link, make it shorter...">
+    <button id="regenerateBtn" class="btn btn-primary" onclick="doRegenerate()">Regenerate</button>
+  </div>
+
+  <div id="loadingMsg" class="loading" style="display:none;"></div>
+
+  <script>
+    function doCreateDraft() {
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Creating draft...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(url) {
+          // Show clickable link in case popup is blocked
+          document.getElementById('loadingMsg').innerHTML = '<a href="' + url + '" target="_blank" style="color:#1a73e8;font-weight:bold;font-size:14px;">Open Draft in Gmail</a>';
+          document.getElementById('loadingMsg').style.display = 'block';
+          document.getElementById('loadingMsg').style.fontStyle = 'normal';
+          window.open(url, '_blank');
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .createDraftFromPreview();
+    }
+
+    function doSendNow() {
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('reviseBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Sending email...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(url) {
+          alert('Email sent!');
+          if (url) window.open(url, '_blank');
+          google.script.host.close();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('reviseBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .sendEmailFromPreview();
+    }
+
+    function doShowRevision() {
+      document.getElementById('revisionSection').classList.add('show');
+      document.getElementById('revisionInput').focus();
+    }
+
+    function doRegenerate() {
+      var feedback = document.getElementById('revisionInput').value.trim();
+      if (!feedback) {
+        alert('Please enter what you want to change');
+        return;
+      }
+
+      document.getElementById('regenerateBtn').disabled = true;
+      document.getElementById('createBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      document.getElementById('loadingMsg').textContent = 'Regenerating...';
+      document.getElementById('loadingMsg').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(newResponse) {
+          var el = document.getElementById('previewContent');
+          var safe = newResponse.replace(/&/g, '&amp;');
+          safe = safe.replace(/[<]/g, '&lt;');
+          safe = safe.replace(/[>]/g, '&gt;');
+          safe = safe.replace(/\\n/g, '<br>');
+          el.innerHTML = safe;
+          document.getElementById('revisionInput').value = '';
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+          document.getElementById('revisionInput').focus();
+        })
+        .withFailureHandler(function(err) {
+          alert('Error: ' + (err.message || err));
+          document.getElementById('regenerateBtn').disabled = false;
+          document.getElementById('createBtn').disabled = false;
+          document.getElementById('sendBtn').disabled = false;
+          document.getElementById('loadingMsg').style.display = 'none';
+        })
+        .reviseEmailDraft(feedback);
+    }
+
+    document.getElementById('revisionInput').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') doRegenerate();
+    });
+  </script>
+</body>
+</html>`;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(700)
+    .setHeight(600);
+
+  ui.showModalDialog(htmlOutput, 'Email Response');
+}
+
+/**
+ * Create draft from the previewed response (no underscore - must be callable from client)
+ */
+function createDraftFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Creating Gmail draft...', '📧 Creating Draft', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft
+  const draftUrl = createDraftAndGetUrl_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  return draftUrl;
+}
+
+/**
+ * Send email directly from the previewed response (no underscore - must be callable from client)
+ * Creates a draft for proper threading, then immediately sends it
+ */
+function sendEmailFromPreview() {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Sending email...', '📧 Sending', 2);
+
+  // Get the thread
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Create the draft (for proper threading), then send it
+  const sentUrl = createAndSendEmail_(thread, context.previousResponse);
+
+  // Clear the context
+  PropertiesService.getUserProperties().deleteProperty('emailRevisionContext');
+
+  ss.toast('Email sent!', '✅ Sent', 3);
+
+  return sentUrl;
+}
+
+/**
+ * Revise the email response based on user feedback (no underscore - must be callable from client)
+ * Returns the new response body to update the dialog in-place
+ */
+function reviseEmailDraft(feedback) {
+  const ss = SpreadsheetApp.getActive();
+
+  // Get stored context
+  const contextJson = PropertiesService.getUserProperties().getProperty('emailRevisionContext');
+  if (!contextJson) {
+    throw new Error('No response context found. Please generate a new response.');
+  }
+
+  const context = JSON.parse(contextJson);
+
+  ss.toast('Regenerating with your feedback...', '🤖 AI Working', 5);
+
+  // Get the thread again
+  const thread = GmailApp.getThreadById(context.threadId);
+  if (!thread) {
+    throw new Error('Could not find email thread');
+  }
+
+  // Get thread content
+  const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+  // Build revision directions combining original + feedback about previous response
+  const revisionDirections = `Previous draft was:
+---
+${context.previousResponse}
+---
+
+User feedback on that draft: ${feedback}
+
+Please generate an improved version addressing this feedback.`;
+
+  // Generate new response
+  const responseBody = generateEmailWithClaude_(
+    threadContent,
+    thread.getFirstMessageSubject(),
+    context.responseType,
+    revisionDirections,
+    lastSenderIsMe
+  );
+
+  // Update stored context with new response
+  context.previousResponse = responseBody;
+  PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(context));
+
+  ss.toast('Done! Review updated response.', '✅', 3);
+
+  // Return the new response - dialog will update in-place
+  return responseBody;
+}
+
+// Menu item functions for each response type
+function emailResponseColdFollowUp() {
+  generateEmailResponse_('Cold Outreach - Follow Up');
+}
+
+function emailResponseScheduleCall() {
+  generateEmailResponse_('Schedule a Call');
+}
+
+function emailResponsePaymentFollowUp() {
+  generateEmailResponse_('Payment/Invoice Follow Up');
+}
+
+function emailResponseGeneralFollowUp() {
+  generateEmailResponse_('General Follow Up');
+}
+
+function emailResponseCheckAffiliate() {
+  generateEmailResponse_('Check Affiliate');
+}
+
+/**
+ * Email Response: Current Sentiment
+ * One sentiment for Buyers, one for Affiliates (stored in Script Properties).
+ * Shows/sets the sentiment, then drafts a response using it.
+ */
+function emailResponseCurrentSentiment() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 3).getValue() || '';
+  const isAffiliate = source.toLowerCase().includes('affiliate');
+  const boardLabel = isAffiliate ? 'Affiliates' : 'Buyers';
+  const propKey = isAffiliate ? 'SENTIMENT_AFFILIATES' : 'SENTIMENT_BUYERS';
+
+  // Read stored sentiment for this board type
+  const props = PropertiesService.getScriptProperties();
+  const currentSentiment = props.getProperty(propKey) || '';
+
+  // Show current sentiment or prompt to set one
+  let sentiment;
+  if (currentSentiment) {
+    const result = ui.prompt(
+      `🎭 ${boardLabel} Sentiment`,
+      `Current ${boardLabel} Sentiment:\n"${currentSentiment}"\n\nChange sentiment (or leave blank to keep current):`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (result.getSelectedButton() !== ui.Button.OK) return;
+    const newSentiment = result.getResponseText().trim();
+    sentiment = newSentiment || currentSentiment;
+  } else {
+    const result = ui.prompt(
+      `🎭 Set ${boardLabel} Sentiment`,
+      `No sentiment set for ${boardLabel}.\n\nEnter current sentiment (e.g., "Prioritizing traffic-based partners", "Looking for high-volume buyers in roofing"):`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (result.getSelectedButton() !== ui.Button.OK) return;
+    sentiment = result.getResponseText().trim();
+    if (!sentiment) {
+      ui.alert('No sentiment entered.');
+      return;
+    }
+  }
+
+  // Save updated sentiment
+  if (sentiment !== currentSentiment) {
+    props.setProperty(propKey, sentiment);
+  }
+
+  // Now proceed with email response flow
+  try {
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) return;
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+    const emailData = getSelectedEmailThread_();
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    // Get last message summary
+    const msgs = emailData.thread.getMessages();
+    const lastMsg = msgs[msgs.length - 1];
+    const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+    const lastDate = lastMsg.getDate().toLocaleDateString();
+    const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+    const lastMsgSummary = `Last message from: ${lastFrom} (${lastDate})\n\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+
+    // Prompt for additional directions with sentiment shown
+    const dirResult = ui.prompt(
+      `🎭 ${boardLabel} Sentiment Response`,
+      `${boardLabel} Sentiment: "${sentiment}"\nVendor: ${vendor}\n\n${lastMsgSummary}\n\n---\nAny additional directions? (optional)`,
+      ui.ButtonSet.OK_CANCEL
+    );
+    if (dirResult.getSelectedButton() !== ui.Button.OK) return;
+
+    const extraDirs = dirResult.getResponseText().trim();
+    const sentimentDirections = `CURRENT ${boardLabel.toUpperCase()} SENTIMENT: "${sentiment}". This is Andy's current approach/priority for all ${boardLabel.toLowerCase()}.${extraDirs ? ' Additional directions: ' + extraDirs : ''} Write the response reflecting this sentiment naturally without quoting it directly.`;
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Current Sentiment',
+      sentimentDirections,
+      lastSenderIsMe
+    );
+
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Current Sentiment',
+      originalDirections: sentimentDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Generic URL Response - respond to any Gmail thread via URL
+ * Prompts for Gmail URL, reads the thread, then generates a response
+ */
+function genericUrlResponse() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Step 1: Get the Gmail URL
+    const urlResult = ui.prompt(
+      '🔗 Generic URL Response',
+      'Paste the Gmail conversation URL:',
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (urlResult.getSelectedButton() !== ui.Button.OK) {
+      return; // User cancelled
+    }
+
+    const gmailUrl = urlResult.getResponseText().trim();
+    if (!gmailUrl) {
+      ui.alert('Error', 'Please provide a Gmail URL.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Step 2: Extract thread ID from URL
+    const threadId = extractThreadIdFromGmailUrl_(gmailUrl);
+    if (!threadId) {
+      ui.alert('Error', 'Could not extract thread ID from URL.\n\nExpected format:\nhttps://mail.google.com/mail/u/0/#inbox/THREAD_ID', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast('Fetching email thread...', '📧 Reading Email', 2);
+
+    // Step 3: Get the thread using Gmail API (handles URL-style thread IDs)
+    let thread;
+    let actualThreadId = threadId;
+
+    try {
+      // First try the Gmail Advanced Service which handles URL-style IDs
+      const threadData = Gmail.Users.Threads.get('me', threadId, { format: 'metadata' });
+      actualThreadId = threadData.id;
+      thread = GmailApp.getThreadById(actualThreadId);
+    } catch (apiError) {
+      // Fallback to direct GmailApp (in case it's already a valid ID)
+      try {
+        thread = GmailApp.getThreadById(threadId);
+        actualThreadId = thread.getId();
+      } catch (e) {
+        // Legacy Gmail thread IDs (Ktbx..., FMfcg...) from search URLs need conversion
+        // Use Gmail Advanced Service to search by rfc822msgid or list recent threads
+        try {
+          Logger.log(`[GenericURL] Trying legacy ID conversion for: ${threadId}`);
+          const response = Gmail.Users.Threads.list('me', { q: `rfc822msgid:${threadId}`, maxResults: 1 });
+          if (response.threads && response.threads.length > 0) {
+            actualThreadId = response.threads[0].id;
+            thread = GmailApp.getThreadById(actualThreadId);
+          }
+        } catch (e2) {
+          Logger.log(`[GenericURL] rfc822msgid search failed: ${e2.message}`);
+        }
+
+        if (!thread) {
+          ui.alert('Error', 'Could not find email thread.\n\nTip: Open the email in Gmail first, then copy the URL from the inbox or label view (not search results).\n\nDetails: ' + apiError.message, ui.ButtonSet.OK);
+          return;
+        }
+      }
+    }
+
+    if (!thread) {
+      ui.alert('Error', 'Could not find email thread. Make sure the URL is correct and you have access.', ui.ButtonSet.OK);
+      return;
+    }
+
+    const subject = thread.getFirstMessageSubject();
+
+    // Step 4: Read the thread content
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(thread);
+
+    // Step 5: Show the thread summary and ask for directions
+    const messages = thread.getMessages();
+    const lastMessage = messages[messages.length - 1];
+    const lastSender = lastMessage.getFrom();
+    const lastDate = lastMessage.getDate();
+
+    const directionsResult = ui.prompt(
+      '📧 Generic URL Response',
+      `Thread: "${subject}"\nLast message from: ${lastSender}\nDate: ${lastDate.toLocaleDateString()}\n\nWhat kind of response do you want to send?\n(e.g., "follow up on pricing", "schedule a call", "ask for status update")`,
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (directionsResult.getSelectedButton() !== ui.Button.OK) {
+      return; // User cancelled
+    }
+
+    const directions = directionsResult.getResponseText().trim();
+    if (!directions) {
+      ui.alert('Error', 'Please provide directions for the response.', ui.ButtonSet.OK);
+      return;
+    }
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Step 6: Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      subject,
+      'Generic URL Response',
+      directions,
+      lastSenderIsMe
+    );
+
+    // Step 7: Store context for revision/draft creation
+    const revisionContext = {
+      threadId: actualThreadId,
+      responseType: 'Generic URL Response',
+      originalDirections: directions,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Step 8: Show preview dialog
+    showDraftPreviewDialog_(responseBody, actualThreadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Extract thread ID from various Gmail URL formats
+ * Supports: inbox, sent, label, search, thread URLs
+ */
+function extractThreadIdFromGmailUrl_(url) {
+  if (!url) return null;
+
+  // Common Gmail URL patterns:
+  // https://mail.google.com/mail/u/0/#inbox/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#sent/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#label/SomeLabel/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+  // https://mail.google.com/mail/u/0/#search/query/FMfcgzQfBQLXjkKRjpPdBZdznVFhdkTq
+
+  // Thread IDs are alphanumeric (not just hex) - typically 20+ chars
+  const patterns = [
+    /#(?:inbox|sent|all|starred|drafts|spam|trash)\/([A-Za-z0-9_-]+)$/,
+    /#label\/[^\/]+\/([A-Za-z0-9_-]+)$/,
+    /#search\/[^\/]+\/([A-Za-z0-9_-]+)$/,
+    /#[^\/]+\/([A-Za-z0-9_-]+)$/,  // Generic fallback
+  ];
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match && match[1] && match[1].length >= 10) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function emailResponseCustom() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return;
+      }
+    }
+
+    ss.toast('Getting selected email...', '📧 Email Response', 2);
+
+    // Get selected email thread and read it BEFORE showing dialog
+    const emailData = getSelectedEmailThread_();
+
+    ss.toast('Reading email thread...', '📧 Email Response', 2);
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    // Get last message summary for context in the dialog
+    const msgs = emailData.thread.getMessages();
+    const lastMsg = msgs[msgs.length - 1];
+    const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+    const lastDate = lastMsg.getDate().toLocaleDateString();
+    const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+    const lastMsgSummary = `Last message from: ${lastFrom} (${lastDate})\n\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+
+    // Single combined prompt for custom response - with email context
+    const result = ui.prompt(
+      '✍️ Custom Response',
+      `${lastMsgSummary}\n\n---\nWhat do you want to say or accomplish with this response?\n\n(e.g., "follow up on pricing we discussed", "ask when they can hop on a call", "check if they got the contract")`,
+      ui.ButtonSet.OK_CANCEL
+    );
+
+    if (result.getSelectedButton() !== ui.Button.OK) {
+      return;
+    }
+
+    const customDirections = result.getResponseText().trim();
+    if (!customDirections) {
+      return;
+    }
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude - use directions as both type and extra directions
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Custom Response',
+      customDirections,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision or draft creation
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Custom Response',
+      originalDirections: customDirections,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Email Response: Missed Meeting
+ * Gets highlighted meeting from UPCOMING MEETINGS and generates follow-up
+ */
+function emailResponseMissedMeeting() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+
+  if (!bsSh) {
+    ui.alert('Error', 'Battle Station sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  try {
+    // Get the selected cell/row to find the highlighted meeting
+    const selection = bsSh.getActiveRange();
+    const selectedRow = selection.getRow();
+
+    // Read data from the selected row to find meeting info
+    const rowData = bsSh.getRange(selectedRow, 1, 1, 4).getValues()[0];
+    const meetingTitle = String(rowData[0] || '').trim();
+    const meetingDate = String(rowData[1] || '').trim();
+    const meetingTime = String(rowData[2] || '').trim();
+
+    // Validate we have meeting data
+    if (!meetingTitle || !meetingDate) {
+      ui.alert('Error', 'Please highlight a meeting row in the UPCOMING MEETINGS section.\n\nThe row should have the meeting title, date, and time.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Check if this looks like a meeting row (not a header)
+    if (meetingTitle.includes('UPCOMING MEETINGS') || meetingTitle === 'Meeting' || meetingTitle === 'Type') {
+      ui.alert('Error', 'Please highlight a specific meeting row, not the header.', ui.ButtonSet.OK);
+      return;
+    }
+
+    // Get current vendor
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex || !listSh) {
+      ui.alert('Error', 'Could not determine current vendor.', ui.ButtonSet.OK);
+      return;
+    }
+    const listRow = currentIndex + 1;
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+    // Get selected email thread (to reply to)
+    ss.toast('Getting selected email...', '📧 Missed Meeting', 2);
+    const emailData = getSelectedEmailThread_();
+
+    // Build directions for Claude with meeting context
+    const meetingContext = `The meeting "${meetingTitle}" was scheduled for ${meetingDate} at ${meetingTime}.\n\nWe waited but the contact didn't show up. We understand things come up, so we want to send a friendly follow-up to reschedule.\n\nInclude your scheduling link for them to book a new time: https://your-calendar-link-here`;
+
+    ss.toast('Reading email thread...', '📧 Missed Meeting', 2);
+
+    // Get full thread content
+    const { content: threadContent, lastSenderIsMe } = getThreadContent_(emailData.thread);
+
+    ss.toast('Generating response with Claude...', '🤖 AI Working', 5);
+
+    // Generate response with Claude
+    const responseBody = generateEmailWithClaude_(
+      threadContent,
+      emailData.subject,
+      'Missed Meeting Follow Up',
+      meetingContext,
+      lastSenderIsMe
+    );
+
+    // Store context for potential revision
+    const revisionContext = {
+      threadId: emailData.threadId,
+      responseType: 'Missed Meeting Follow Up',
+      originalDirections: meetingContext,
+      previousResponse: responseBody
+    };
+    PropertiesService.getUserProperties().setProperty('emailRevisionContext', JSON.stringify(revisionContext));
+
+    // Show preview
+    showDraftPreviewDialog_(responseBody, emailData.threadId);
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/************************************************************
+ * CANNED RESPONSES
+ * Pre-written email templates without Claude processing
+ ************************************************************/
+
+/**
+ * Canned Response: Referral Program
+ */
+function cannedResponseReferralProgram() {
+  generateCannedResponse_('REFERRAL_PROGRAM', 'Referral Program');
+}
+
+/**
+ * Canned Response: Initial Call Follow-up
+ */
+function cannedResponseInitialCallFollowup() {
+  generateCannedResponse_('INITIAL_CALL_FOLLOWUP', 'Initial Call Follow-up');
+}
+
+/**
+ * Get contacts for the current vendor from the Battle Station sheet
+ * Returns array of contact names
+ */
+function getContactsForCurrentVendor_() {
+  const ss = SpreadsheetApp.getActive();
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  if (!bsSh) return [];
+
+  const contacts = [];
+  const data = bsSh.getDataRange().getValues();
+
+  // Find CONTACTS section and extract names
+  let inContactsSection = false;
+  for (let i = 0; i < data.length; i++) {
+    const cellA = String(data[i][0] || '').trim();
+
+    // Check if we're entering CONTACTS section
+    if (cellA.includes('CONTACTS')) {
+      inContactsSection = true;
+      continue;
+    }
+
+    // Check if we're leaving CONTACTS section (hit another section header)
+    if (inContactsSection && (cellA.includes('UPCOMING MEETINGS') || cellA.includes('BOX DOCUMENTS') ||
+        cellA.includes('GOOGLE DRIVE') || cellA.includes('CRYSTAL BALL') || cellA === '')) {
+      // Empty row might just be spacing, but major headers signal end
+      if (cellA.includes('UPCOMING') || cellA.includes('BOX') || cellA.includes('GOOGLE') || cellA.includes('CRYSTAL')) {
+        break;
+      }
+    }
+
+    // Extract contact names (they appear in column A after CONTACTS header)
+    if (inContactsSection && cellA && !cellA.includes(':') && !cellA.startsWith('📧') &&
+        !cellA.startsWith('📞') && !cellA.startsWith('💼')) {
+      // This looks like a contact name
+      contacts.push(cellA);
+    }
+  }
+
+  return contacts;
+}
+
+/**
+ * TEST: Run this function directly to check canned response config
+ */
+function testCannedResponseConfig() {
+  Logger.log('=== Testing Canned Response Config ===');
+  Logger.log('BS_CFG.CANNED_RESPONSE_DOCS = ' + JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS));
+  Logger.log('REFERRAL_PROGRAM docId = ' + (BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS.REFERRAL_PROGRAM : 'CANNED_RESPONSE_DOCS is undefined'));
+  Logger.log('BS_CFG.REFERRAL_CONTRACT_FILE_ID = ' + BS_CFG.REFERRAL_CONTRACT_FILE_ID);
+
+  SpreadsheetApp.getUi().alert('Check View > Logs for output');
+}
+
+/**
+ * Get canned response template from Google Doc
+ * Returns { text: plainText, html: htmlContent } or null if not found
+ */
+function getCannedResponseTemplate_(templateKey) {
+  Logger.log(`Looking for template: ${templateKey}`);
+  Logger.log(`CANNED_RESPONSE_DOCS: ${JSON.stringify(BS_CFG.CANNED_RESPONSE_DOCS)}`);
+
+  const docId = BS_CFG.CANNED_RESPONSE_DOCS ? BS_CFG.CANNED_RESPONSE_DOCS[templateKey] : null;
+
+  Logger.log(`Found docId: ${docId}`);
+
+  if (!docId) {
+    Logger.log(`No Google Doc configured for template: ${templateKey}`);
+    return null;
+  }
+
+  try {
+    // Get the document
+    const doc = DocumentApp.openById(docId);
+    const body = doc.getBody();
+
+    // Get plain text for preview
+    const text = body.getText();
+
+    // Build HTML with inline styles directly from document structure
+    // This is more reliable than parsing Google's CSS export (Gmail strips <style> blocks)
+    let html = '';
+    const numChildren = body.getNumChildren();
+
+    for (let i = 0; i < numChildren; i++) {
+      const child = body.getChild(i);
+      const type = child.getType();
+
+      if (type === DocumentApp.ElementType.PARAGRAPH) {
+        const para = child.asParagraph();
+        html += buildParagraphHtml_(para);
+      } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+        const listItem = child.asListItem();
+        const itemHtml = buildListItemHtml_(listItem);
+        html += itemHtml;
+      }
+    }
+
+    return { text, html };
+  } catch (e) {
+    Logger.log(`Error reading template doc ${templateKey}: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * Build HTML from a paragraph with inline styles
+ */
+function buildParagraphHtml_(para) {
+  const textHtml = buildTextElementsHtml_(para);
+
+  // Check for heading styles
+  const heading = para.getHeading();
+  if (heading === DocumentApp.ParagraphHeading.HEADING1) {
+    return `<p style="font-size:20px;font-weight:bold;margin:16px 0 8px 0;">${textHtml}</p>`;
+  } else if (heading === DocumentApp.ParagraphHeading.HEADING2) {
+    return `<p style="font-size:16px;font-weight:bold;margin:14px 0 6px 0;">${textHtml}</p>`;
+  } else if (heading === DocumentApp.ParagraphHeading.HEADING3) {
+    return `<p style="font-size:14px;font-weight:bold;margin:12px 0 4px 0;">${textHtml}</p>`;
+  }
+
+  // Empty paragraph = line break
+  if (!textHtml.trim()) {
+    return '<br>';
+  }
+
+  return `<p style="margin:0 0 8px 0;">${textHtml}</p>`;
+}
+
+/**
+ * Build HTML from a list item with inline styles
+ */
+function buildListItemHtml_(listItem) {
+  const textHtml = buildTextElementsHtml_(listItem);
+  const nestingLevel = listItem.getNestingLevel();
+  const indent = 20 + (nestingLevel * 20);
+  return `<p style="margin:0 0 4px ${indent}px;">• ${textHtml}</p>`;
+}
+
+/**
+ * Build HTML from text elements with inline styles for bold, italic, underline
+ */
+function buildTextElementsHtml_(element) {
+  let html = '';
+  const text = element.getText();
+  if (!text) return '';
+
+  // Get the text element to check formatting
+  const numChildren = element.getNumChildren();
+
+  if (numChildren === 0) {
+    // Simple text without children - check if element itself has formatting
+    return escapeHtml_(text);
+  }
+
+  // Process each child (usually Text elements)
+  for (let i = 0; i < numChildren; i++) {
+    const child = element.getChild(i);
+    if (child.getType() === DocumentApp.ElementType.TEXT) {
+      html += buildTextRunHtml_(child.asText());
+    }
+  }
+
+  return html;
+}
+
+/**
+ * Build HTML from a Text element, handling formatting runs
+ */
+function buildTextRunHtml_(textElement) {
+  const text = textElement.getText();
+  if (!text) return '';
+
+  let html = '';
+  let i = 0;
+
+  while (i < text.length) {
+    // Get formatting at this position
+    const isBold = textElement.isBold(i);
+    const isItalic = textElement.isItalic(i);
+    const isUnderline = textElement.isUnderline(i);
+    const link = textElement.getLinkUrl(i);
+    const fontSize = textElement.getFontSize(i);
+    const bgColor = textElement.getBackgroundColor(i);
+
+    // Find end of this formatting run
+    let j = i + 1;
+    while (j < text.length) {
+      if (textElement.isBold(j) !== isBold ||
+          textElement.isItalic(j) !== isItalic ||
+          textElement.isUnderline(j) !== isUnderline ||
+          textElement.getLinkUrl(j) !== link ||
+          textElement.getFontSize(j) !== fontSize ||
+          textElement.getBackgroundColor(j) !== bgColor) {
+        break;
+      }
+      j++;
+    }
+
+    // Get and escape the text for this run
+    let runText = escapeHtml_(text.substring(i, j));
+
+    // Apply formatting with inline styles
+    let styles = [];
+    if (isBold) styles.push('font-weight:bold');
+    if (isItalic) styles.push('font-style:italic');
+    if (isUnderline) styles.push('text-decoration:underline');
+    // Add font size if different from default (11pt)
+    if (fontSize && fontSize !== 11) {
+      styles.push(`font-size:${fontSize}pt`);
+    }
+    // Add background color if set
+    if (bgColor) {
+      styles.push(`background-color:${bgColor}`);
+    }
+
+    if (styles.length > 0) {
+      runText = `<span style="${styles.join(';')}">${runText}</span>`;
+    }
+
+    // Wrap in link if needed
+    if (link) {
+      runText = `<a href="${link}" style="color:#1a73e8">${runText}</a>`;
+    }
+
+    html += runText;
+    i = j;
+  }
+
+  return html;
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml_(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Main function to handle canned response generation
+ * Shows dialog for contact selection, then creates draft
+ */
+function generateCannedResponse_(templateKey, templateName) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+
+  try {
+    // Check for future meeting today before proceeding
+    const futureMeetingWarning = checkForFutureMeetingToday_();
+    if (futureMeetingWarning) {
+      const response = ui.alert(
+        '⚠️ Meeting Today',
+        `${futureMeetingWarning}\n\nDo you still want to send an email response?`,
+        ui.ButtonSet.YES_NO
+      );
+      if (response !== ui.Button.YES) {
+        return;
+      }
+    }
+
+    // Get template from Google Doc
+    const templateData = getCannedResponseTemplate_(templateKey);
+    if (!templateData) {
+      ui.alert('Error', `Template "${templateKey}" not configured.\n\nPlease set up a Google Doc with the template and add its ID to CANNED_RESPONSE_DOCS in the config.`, ui.ButtonSet.OK);
+      return;
+    }
+    const template = templateData.text; // Use plain text for preview
+
+    // Get current vendor
+    const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    const currentIndex = getCurrentVendorIndex_();
+    if (!currentIndex || !listSh) {
+      ui.alert('Error', 'Could not determine current vendor.', ui.ButtonSet.OK);
+      return;
+    }
+    const listRow = currentIndex + 1;
+    const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+
+    // Get contacts for this vendor
+    const contacts = getContactsForCurrentVendor_();
+
+    // Try to get selected email thread (optional - can create fresh draft if none)
+    ss.toast('Checking for selected email...', '📨 Canned Response', 2);
+    let emailData = null;
+    let threadId = null;
+    let lastMessageSummary = '';
+    try {
+      emailData = getSelectedEmailThread_();
+      threadId = emailData.threadId;
+
+      // Get last message summary for context
+      const msgs = emailData.thread.getMessages();
+      const lastMsg = msgs[msgs.length - 1];
+      const lastFrom = lastMsg.getFrom().replace(/<[^>]+>/g, '').trim();
+      const lastDate = lastMsg.getDate().toLocaleDateString();
+      const lastBody = lastMsg.getPlainBody().substring(0, 300).replace(/\n{2,}/g, '\n').trim();
+      lastMessageSummary = `From: ${lastFrom} (${lastDate})\n${lastBody}${lastMsg.getPlainBody().length > 300 ? '...' : ''}`;
+    } catch (e) {
+      // No email selected - will create fresh draft
+      Logger.log('No email selected, will create fresh draft: ' + e.message);
+    }
+
+    // Show contact selection dialog
+    // Extract first names only for dropdown
+    const contactOptions = contacts.length > 0
+      ? contacts.map(c => {
+          const firstName = c.split(' ')[0]; // Get first name only
+          return `<option value="${escapeHtml_(firstName)}">${escapeHtml_(c)} (${escapeHtml_(firstName)})</option>`;
+        }).join('')
+      : '<option value="">No contacts found</option>';
+
+    const replyInfo = threadId
+      ? `<div class="info reply-info">📧 Replying to: <strong>${escapeHtml_(emailData.subject || 'Selected email')}</strong></div>`
+      : '<div class="info new-info">📝 No email selected - will create a NEW draft</div>';
+
+    const lastMsgHtml = lastMessageSummary
+      ? `<div style="background:#f0f4ff;padding:10px;border-radius:6px;margin-bottom:12px;border-left:3px solid #1a73e8;font-size:12px;white-space:pre-wrap;max-height:150px;overflow-y:auto;color:#333;">${escapeHtml_(lastMessageSummary)}</div>`
+      : '';
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <base target="_blank">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .header { color: #202124; font-size: 16px; margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    select, input {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 15px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    .buttons { display: flex; gap: 10px; margin-top: 15px; }
+    .btn {
+      padding: 12px 24px;
+      border-radius: 4px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary { background: #1a73e8; color: white; }
+    .btn-primary:hover { background: #1557b0; }
+    .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+    .btn-secondary { background: #f1f3f4; color: #5f6368; }
+    .btn-secondary:hover { background: #e8eaed; }
+    .preview {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      max-height: 250px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+    }
+    .info { color: #5f6368; font-size: 12px; margin-bottom: 10px; }
+    .reply-info { color: #1a73e8; }
+    .new-info { color: #f9a825; }
+    #status { margin-top: 10px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="header">📨 ${escapeHtml_(templateName)}</div>
+  <div class="info">Vendor: <strong>${escapeHtml_(vendor)}</strong></div>
+  ${replyInfo}
+  ${lastMsgHtml}
+
+  <label for="contactSelect">Select Contact (first name will be used):</label>
+  <select id="contactSelect" onchange="updatePreview()">
+    ${contactOptions}
+  </select>
+
+  <label for="customContact">Or enter custom first name:</label>
+  <input type="text" id="customContact" placeholder="Enter first name..." oninput="updatePreview()">
+
+  <div class="preview" id="previewBox"></div>
+
+  <div class="buttons">
+    <button class="btn btn-primary" id="createBtn" onclick="createDraft()">✉️ Create Draft</button>
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+  </div>
+  <div id="status"></div>
+
+  <script>
+    const template = ${JSON.stringify(template)};
+    const vendor = ${JSON.stringify(vendor)};
+    const threadId = ${JSON.stringify(threadId)};
+    const templateKey = ${JSON.stringify(templateKey)};
+
+    function getContactName() {
+      const custom = document.getElementById('customContact').value.trim();
+      if (custom) return custom.split(' ')[0]; // First name only
+      const select = document.getElementById('contactSelect');
+      return select.value || 'there';
+    }
+
+    function updatePreview() {
+      const contactName = getContactName();
+      let preview = template
+        .replace(/<CONTACT_NAME>/g, contactName)
+        .replace(/<VENDOR_NAME>/g, vendor);
+      document.getElementById('previewBox').textContent = preview;
+    }
+
+    function createDraft() {
+      const btn = document.getElementById('createBtn');
+      const status = document.getElementById('status');
+      btn.disabled = true;
+      btn.textContent = '⏳ Creating...';
+      status.textContent = 'Creating draft...';
+      status.style.color = '#666';
+
+      const contactName = getContactName();
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result && result.success) {
+            status.textContent = '✅ Draft created! Opening...';
+            status.style.color = 'green';
+            // Open draft in new tab
+            if (result.draftUrl) {
+              window.open(result.draftUrl, '_blank');
+            }
+            setTimeout(function() {
+              google.script.host.close();
+            }, 500);
+          } else {
+            status.textContent = '❌ Error: ' + (result ? result.error : 'Unknown error');
+            status.style.color = 'red';
+            btn.disabled = false;
+            btn.textContent = '✉️ Create Draft';
+          }
+        })
+        .withFailureHandler(function(error) {
+          status.textContent = '❌ Error: ' + error.message;
+          status.style.color = 'red';
+          btn.disabled = false;
+          btn.textContent = '✉️ Create Draft';
+        })
+        .createCannedResponseDraft(threadId, templateKey, contactName, vendor);
+    }
+
+    // Initial preview
+    updatePreview();
+  </script>
+</body>
+</html>`;
+
+    const htmlOutput = HtmlService.createHtmlOutput(html)
+      .setWidth(650)
+      .setHeight(750);
+    ui.showModalDialog(htmlOutput, 'Canned Response');
+
+  } catch (e) {
+    ui.alert('Error', e.message, ui.ButtonSet.OK);
+  }
+}
+
+/**
+ * Create draft from canned response template
+ * Called from dialog
+ * If threadId is null, creates a fresh draft instead of a reply
+ */
+function createCannedResponseDraft(threadId, templateKey, contactName, vendor) {
+  try {
+    // Get template from Google Doc (with HTML formatting)
+    const templateData = getCannedResponseTemplate_(templateKey);
+    if (!templateData) {
+      return { success: false, error: 'Template not configured. Please set up a Google Doc.' };
+    }
+
+    // Replace placeholders in both plain text and HTML
+    let plainBody = templateData.text
+      .replace(/<CONTACT_NAME>/g, contactName)
+      .replace(/<VENDOR_NAME>/g, vendor);
+
+    let htmlBody = templateData.html
+      .replace(/&lt;CONTACT_NAME&gt;/g, contactName)
+      .replace(/&lt;VENDOR_NAME&gt;/g, vendor)
+      .replace(/<CONTACT_NAME>/g, contactName)
+      .replace(/<VENDOR_NAME>/g, vendor);
+
+    // Get Gmail signature and append it
+    const myEmail = Session.getActiveUser().getEmail().toLowerCase();
+    let signature = '';
+    try {
+      const sendAsSettings = Gmail.Users.Settings.SendAs.list('me');
+      if (sendAsSettings && sendAsSettings.sendAs) {
+        const primarySendAs = sendAsSettings.sendAs.find(s => s.isPrimary) ||
+                              sendAsSettings.sendAs.find(s => s.sendAsEmail.toLowerCase() === myEmail) ||
+                              sendAsSettings.sendAs[0];
+        if (primarySendAs && primarySendAs.signature) {
+          signature = primarySendAs.signature;
+        }
+      }
+    } catch (e) {
+      Logger.log('Could not fetch Gmail signature: ' + e.message);
+    }
+
+    // Append signature to body
+    if (signature) {
+      plainBody += '\n\n' + signature.replace(/<[^>]*>/g, ''); // Strip HTML for plain text
+      htmlBody += '<br><br>' + signature;
+    }
+
+    // Get attachment if configured for this template
+    let attachments = [];
+    let attachmentFileId = null;
+    if (templateKey === 'REFERRAL_PROGRAM' && BS_CFG.REFERRAL_CONTRACT_FILE_ID) {
+      attachmentFileId = BS_CFG.REFERRAL_CONTRACT_FILE_ID;
+    } else if (templateKey === 'INITIAL_CALL_FOLLOWUP' && BS_CFG.INITIAL_CALL_FOLLOWUP_FILE_ID) {
+      attachmentFileId = BS_CFG.INITIAL_CALL_FOLLOWUP_FILE_ID;
+    }
+
+    if (attachmentFileId) {
+      try {
+        const file = DriveApp.getFileById(attachmentFileId);
+        attachments.push(file.getBlob());
+        Logger.log('Attached file: ' + file.getName());
+      } catch (e) {
+        Logger.log('Could not attach file: ' + e.message);
+      }
+    }
+
+    let draftUrl;
+
+    if (threadId) {
+      // Reply to existing thread - use Gmail API for proper threading and quoted content
+      const thread = GmailApp.getThreadById(threadId);
+      if (!thread) {
+        return { success: false, error: 'Email thread not found' };
+      }
+
+      const messages = thread.getMessages();
+      const lastMessage = messages[messages.length - 1];
+
+      // Build the quoted original message
+      const lastMsgDate = lastMessage.getDate();
+      const lastMsgFrom = lastMessage.getFrom();
+      const lastMsgBody = lastMessage.getBody() || '';
+
+      // Format date for quote header
+      const dateStr = Utilities.formatDate(lastMsgDate, Session.getScriptTimeZone(), "EEE, MMM d, yyyy 'at' h:mm a");
+
+      // Helper to escape HTML special characters
+      const escapeHtml = (text) => {
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      };
+
+      // Build quoted message using Gmail's standard format
+      const quoteHeaderHtml = `<div class="gmail_quote"><div dir="ltr" class="gmail_attr">On ${escapeHtml(dateStr)}, ${escapeHtml(lastMsgFrom)} wrote:<br></div><blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">`;
+      const quotedBodyHtml = `${lastMsgBody}</blockquote></div>`;
+
+      // Full email body: template + signature + quoted message
+      let fullBodyHtml = `<div dir="ltr">${htmlBody}</div><br>${quoteHeaderHtml}${quotedBodyHtml}`;
+
+      // Step 1: Create placeholder draft for threading headers
+      const draftReply = thread.createDraftReplyAll('Placeholder body - will be replaced');
+      const draftMsg = draftReply.getMessage();
+      const draftId = draftReply.getId();
+
+      // Get threading headers from the ACTUAL messages in the thread (not the draft)
+      // Draft messages may not have headers accessible via getHeader(), so we get them from the real messages
+      // This is CRITICAL for proper email threading - without these headers, Gmail creates a new thread
+
+      // Get Message-ID from the last message - this becomes our In-Reply-To
+      const lastMessageId = lastMessage.getHeader('Message-ID') || '';
+
+      // Build References header from all messages in the thread
+      const allMessageIds = [];
+      for (const msg of messages) {
+        const msgId = msg.getHeader('Message-ID');
+        if (msgId) {
+          allMessageIds.push(msgId);
+        }
+      }
+      const referencesHeader = allMessageIds.join(' ');
+
+      // Use the last message's ID for In-Reply-To
+      const inReplyTo = lastMessageId;
+      const references = referencesHeader;
+
+      Logger.log(`Canned Response - Threading headers:`);
+      Logger.log(`  In-Reply-To: ${inReplyTo || '(empty)'}`);
+      Logger.log(`  References: ${references || '(empty)'}`);
+      Logger.log(`  Total messages in thread: ${messages.length}`);
+
+      // Get subject from thread
+      let subject = thread.getFirstMessageSubject();
+      subject = cleanSubjectLine_(subject);
+      if (!subject.toLowerCase().startsWith('re:')) {
+        subject = 'Re: ' + subject;
+      }
+
+      // Build recipients from last message
+      const lastFrom = lastMessage.getFrom();
+      const lastTo = lastMessage.getTo() || '';
+      const lastCc = lastMessage.getCc() || '';
+      const allRecipients = [lastFrom, lastTo, lastCc].filter(r => r).join(', ');
+
+      // Extract email addresses, exclude ourselves and profitise emails (they go in CC/BCC)
+      const emailRegex = /[\w.-]+@[\w.-]+\.\w+/g;
+      const allEmails = allRecipients.match(emailRegex) || [];
+      const toEmails = [];
+      allEmails.forEach(email => {
+        const lowerEmail = email.toLowerCase();
+        if (lowerEmail !== myEmail &&
+            !lowerEmail.includes('sales@yourdomain.com') &&
+            !lowerEmail.includes('team-member-2@yourdomain.com') &&
+            !toEmails.includes(lowerEmail)) {
+          toEmails.push(email);
+        }
+      });
+      const toRecipients = toEmails.join(', ') || lastFrom;
+
+      // Build raw email with headers
+      let rawHeaders = `From: ${myEmail}\r\n`;
+      rawHeaders += `To: ${toRecipients}\r\n`;
+      rawHeaders += `Cc: team-member-2@yourdomain.com\r\n`;
+      rawHeaders += `Bcc: sales@yourdomain.com\r\n`;
+      rawHeaders += `Subject: ${subject}\r\n`;
+      if (inReplyTo) rawHeaders += `In-Reply-To: ${inReplyTo}\r\n`;
+      if (references) rawHeaders += `References: ${references}\r\n`;
+      rawHeaders += `MIME-Version: 1.0\r\n`;
+
+      // Handle attachments with MIME multipart
+      if (attachments.length > 0) {
+        const boundary = 'boundary_' + Utilities.getUuid();
+        rawHeaders += `Content-Type: multipart/mixed; boundary="${boundary}"\r\n\r\n`;
+
+        let mimeBody = `--${boundary}\r\n`;
+        mimeBody += `Content-Type: text/html; charset="UTF-8"\r\n`;
+        mimeBody += `Content-Transfer-Encoding: base64\r\n\r\n`;
+        // Encode HTML content as base64 for proper UTF-8 handling
+        mimeBody += Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes()) + '\r\n';
+
+        attachments.forEach(blob => {
+          mimeBody += `--${boundary}\r\n`;
+          mimeBody += `Content-Type: ${blob.getContentType()}; name="${blob.getName()}"\r\n`;
+          mimeBody += `Content-Disposition: attachment; filename="${blob.getName()}"\r\n`;
+          mimeBody += `Content-Transfer-Encoding: base64\r\n\r\n`;
+          mimeBody += Utilities.base64Encode(blob.getBytes()) + '\r\n';
+        });
+        mimeBody += `--${boundary}--`;
+
+        // Convert full message to UTF-8 bytes for proper encoding
+        const rawEmail = rawHeaders + mimeBody;
+        const updateResource = {
+          message: {
+            raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),
+            threadId: thread.getId()
+          }
+        };
+        const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+        draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
+      } else {
+        rawHeaders += `Content-Type: text/html; charset="UTF-8"\r\n`;
+        rawHeaders += `Content-Transfer-Encoding: base64\r\n\r\n`;
+
+        // Base64-encode HTML body to preserve non-ASCII characters (smart quotes, etc.)
+        const htmlBase64 = Utilities.base64Encode(Utilities.newBlob(fullBodyHtml).getBytes());
+        const rawEmail = rawHeaders + htmlBase64;
+        const updateResource = {
+          message: {
+            raw: Utilities.base64EncodeWebSafe(Utilities.newBlob(rawEmail).getBytes()),
+            threadId: thread.getId()
+          }
+        };
+        const updatedDraft = Gmail.Users.Drafts.update(updateResource, 'me', draftId);
+        draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${updatedDraft.message.id}`;
+      }
+
+      // Track this thread for auto-archive after sending
+      addPendingArchiveThread_(thread.getId());
+      Logger.log(`Added thread ${thread.getId()} to pending archive list (canned response)`);
+
+    } else {
+      // Create fresh draft (no reply)
+      const subject = `Referral Partnership - ${vendor}`;
+      const options = {
+        cc: 'team-member-2@yourdomain.com',
+        bcc: 'sales@yourdomain.com',
+        htmlBody: htmlBody
+      };
+      if (attachments.length > 0) {
+        options.attachments = attachments;
+      }
+
+      const draft = GmailApp.createDraft('', subject, plainBody, options);
+      const draftId = draft.getMessage().getId();
+      draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draftId}`;
+    }
+
+    SpreadsheetApp.getActive().toast('Draft created! Opening in Gmail...', '✅ Draft Ready', 3);
+
+    return { success: true, draftUrl: draftUrl };
+  } catch (e) {
+    Logger.log(`Error creating canned response draft: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/************************************************************
+ * CONTACT DISCOVERY FROM GMAIL
+ * Searches Gmail for potential new contacts or updated info
+ * based on domains of existing contacts
+ ************************************************************/
+
+/**
+ * Discover potential new contacts or updates from Gmail
+ * Searches for emails from the same domains as existing contacts
+ */
+function discoverContactsFromGmail() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 2).getValue() || '';
+
+  ss.toast('Analyzing contacts and searching Gmail...', '🔍 Contact Discovery', 5);
+
+  // Get existing contacts for this vendor
+  const contactData = getVendorContacts_(vendor, listRow);
+  const existingContacts = contactData.contacts || [];
+
+  // Extract unique domains from existing contacts
+  const domains = new Set();
+  const existingEmails = new Set();
+  const existingPhones = new Set();
+
+  for (const contact of existingContacts) {
+    if (contact.email) {
+      existingEmails.add(contact.email.toLowerCase());
+      const domain = contact.email.split('@')[1];
+      if (domain && !isGenericDomain_(domain)) {
+        domains.add(domain.toLowerCase());
+      }
+    }
+    if (contact.phone) {
+      // Normalize phone to just digits for comparison
+      const normalizedPhone = contact.phone.replace(/\D/g, '');
+      if (normalizedPhone.length >= 10) {
+        existingPhones.add(normalizedPhone.slice(-10)); // Last 10 digits
+      }
+    }
+  }
+
+  // Also extract domain from source/website field
+  if (source) {
+    const sourceDomain = extractDomainFromSource_(source);
+    if (sourceDomain && !isGenericDomain_(sourceDomain)) {
+      domains.add(sourceDomain.toLowerCase());
+      Logger.log(`Added source domain: ${sourceDomain}`);
+    }
+  }
+
+  // Also try to extract domain from vendor name (e.g., "HomeFix" -> "homefix.com")
+  const vendorDomain = guessVendorDomain_(vendor);
+  if (vendorDomain && !isGenericDomain_(vendorDomain)) {
+    domains.add(vendorDomain.toLowerCase());
+    Logger.log(`Added guessed vendor domain: ${vendorDomain}`);
+  }
+
+  if (domains.size === 0) {
+    ui.alert('No domains found to search. Add a contact with a company email or update the source field.');
+    return;
+  }
+
+  Logger.log(`=== CONTACT DISCOVERY ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Existing contacts: ${existingContacts.length}`);
+  Logger.log(`Domains to search: ${[...domains].join(', ') || '(none - searching specific emails)'}`);
+  Logger.log(`Existing emails: ${[...existingEmails].join(', ')}`);
+
+  // Search Gmail for emails from these domains
+  const potentialNewContacts = [];
+  const potentialUpdates = [];
+  const emailsSearched = new Set();
+
+  // If we have company domains, search by domain
+  // Helper to extract all emails from a header field (handles "Name <email>, Name2 <email2>" format)
+  const extractEmailsFromField = (field) => {
+    if (!field) return [];
+    const results = [];
+
+    // Preprocess: normalize whitespace (replace newlines, tabs, multiple spaces with single space)
+    const normalized = field.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+
+    // Split by comma (but be careful of commas in quoted names)
+    const parts = normalized.split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/);
+
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+
+      // Try to match "Name" <email> or Name <email> format
+      const angleMatch = trimmed.match(/^(?:"?([^"<]+)"?\s*)?<([^>]+)>$/);
+      if (angleMatch) {
+        let name = angleMatch[1] ? angleMatch[1].trim() : '';
+        const email = angleMatch[2].toLowerCase().trim();
+
+        // Validate email has proper format (at least 2 chars before @, valid domain)
+        if (email.includes('@')) {
+          const [localPart, domain] = email.split('@');
+          // Skip if local part is too short (likely malformed) or domain looks incomplete
+          if (localPart && localPart.length >= 2 && domain && domain.includes('.')) {
+            results.push({ name, email });
+          } else {
+            Logger.log(`Skipping malformed email from header: "${email}" (parsed from: "${trimmed}")`);
+          }
+        }
+        continue;
+      }
+
+      // Try standalone email
+      const emailOnlyMatch = trimmed.match(/^([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/);
+      if (emailOnlyMatch) {
+        const email = emailOnlyMatch[1].toLowerCase();
+        const [localPart] = email.split('@');
+        // Validate local part is reasonable length
+        if (localPart && localPart.length >= 2) {
+          results.push({ name: '', email });
+        } else {
+          Logger.log(`Skipping malformed standalone email: "${email}"`);
+        }
+      }
+    }
+    return results;
+  };
+
+  // Helper to clean contact name - only allow letters, spaces, hyphens, apostrophes
+  const cleanContactName = (name) => {
+    if (!name) return '';
+    // Remove any non-name characters (keep letters, spaces, hyphens, apostrophes)
+    let cleaned = name.replace(/[^a-zA-Z\s\-']/g, '').trim();
+    // Collapse multiple spaces
+    cleaned = cleaned.replace(/\s+/g, ' ');
+    // Capitalize first letter of each word
+    cleaned = cleaned.replace(/\b\w/g, c => c.toUpperCase());
+    return cleaned;
+  };
+
+  for (const domain of domains) {
+    ss.toast(`Searching emails with @${domain}...`, '🔍 Scanning', 3);
+
+    try {
+      // Search for emails involving this domain (from OR to)
+      const query = `{from:@${domain} to:@${domain} cc:@${domain}}`;
+      const threads = GmailApp.search(query, 0, 50); // Get up to 50 threads
+
+      Logger.log(`Found ${threads.length} threads involving @${domain}`);
+
+      for (const thread of threads) {
+        const messages = thread.getMessages();
+
+        for (const message of messages) {
+          const from = message.getFrom() || '';
+          const to = message.getTo() || '';
+          const cc = message.getCc() || '';
+          const body = message.getPlainBody() || '';
+          const date = message.getDate();
+
+          // Extract all email addresses from From, To, and CC fields
+          const allAddresses = [
+            ...extractEmailsFromField(from),
+            ...extractEmailsFromField(to),
+            ...extractEmailsFromField(cc)
+          ];
+
+          for (const addr of allAddresses) {
+            const email = addr.email;
+
+            // Skip if we've already processed this email address
+            if (emailsSearched.has(email)) continue;
+            emailsSearched.add(email);
+
+            // Only consider contacts from the vendor's domains (not internal or other external)
+            const emailDomain = email.split('@')[1];
+            if (!emailDomain || !domains.has(emailDomain.toLowerCase())) continue;
+
+            // Use extracted name or derive from email, then clean it
+            const rawName = addr.name || email.split('@')[0].replace(/[._]/g, ' ');
+            const name = cleanContactName(rawName);
+
+            // Check if this is a new contact
+            if (!existingEmails.has(email)) {
+              // Try to find signature info for this contact (only reliable for senders)
+              let phones = [];
+              let jobTitle = '';
+
+              // If this person sent a message, try to extract from their signature
+              if (from.toLowerCase().includes(email)) {
+                const sigText = getSignatureText_(message);
+                phones = extractPhoneNumbers_(sigText);
+                jobTitle = extractJobTitle_(sigText, name);
+              }
+
+              potentialNewContacts.push({
+                name: name,
+                email: email,
+                phone: phones.length > 0 ? phones[0] : '',
+                jobTitle: jobTitle,
+                lastSeen: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+                domain: domain
+              });
+
+              Logger.log(`Potential new contact: ${name} <${email}> - ${jobTitle || 'no title'}`);
+            } else {
+              // Existing contact - check for phone updates and job title (only from their sent messages)
+              if (!from.toLowerCase().includes(email)) continue;
+
+              const sigText = getSignatureText_(message);
+              Logger.log(`[Discovery] Processing existing contact ${email}, signature text (last 200): "${sigText.slice(-200)}"`);
+              const phones = extractPhoneNumbers_(sigText);
+              Logger.log(`[Discovery] Phones found: ${phones.length > 0 ? phones.join(', ') : 'none'}`);
+              const jobTitle = extractJobTitle_(sigText, name);
+
+              // Check for job title updates
+              const existingContact = existingContacts.find(c =>
+                c.email && c.email.toLowerCase() === email
+              );
+
+              if (existingContact && jobTitle && !existingContact.notes?.includes(jobTitle)) {
+                potentialUpdates.push({
+                  name: existingContact.name,
+                  email: email,
+                  updateType: 'jobTitle',
+                  currentValue: existingContact.notes || '(none)',
+                  newValue: jobTitle,
+                  foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                });
+                Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+              }
+
+              for (const phone of phones) {
+                const normalized = phone.replace(/\D/g, '').slice(-10);
+                if (normalized.length === 10 && !existingPhones.has(normalized)) {
+                  // Found a new phone number for an existing contact
+                  if (existingContact) {
+                    potentialUpdates.push({
+                      name: existingContact.name,
+                      email: email,
+                      updateType: 'phone',
+                      currentValue: existingContact.phone || '(none)',
+                      newValue: phone,
+                      foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                    });
+
+                    Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      Logger.log(`Error searching domain ${domain}: ${e.message}`);
+    }
+  }
+
+  // If no company domains were found, search for specific existing email addresses
+  // This allows us to find updates (job titles, phones) for contacts with generic domains
+  if (domains.size === 0 && existingEmails.size > 0) {
+    ss.toast('Searching for existing contacts in Gmail...', '🔍 Scanning', 3);
+
+    for (const email of existingEmails) {
+      if (emailsSearched.has(email)) continue;
+      emailsSearched.add(email);
+
+      try {
+        // Search for emails from this specific address
+        const query = `from:${email}`;
+        const threads = GmailApp.search(query, 0, 20);
+
+        Logger.log(`Found ${threads.length} threads from ${email}`);
+
+        // Find the existing contact for this email
+        const existingContact = existingContacts.find(c => c.email && c.email.toLowerCase() === email);
+        if (!existingContact) continue;
+
+        for (const thread of threads) {
+          const messages = thread.getMessages();
+
+          for (const message of messages) {
+            const from = message.getFrom() || '';
+            const body = message.getPlainBody() || '';
+            const date = message.getDate();
+
+            // Make sure this message is from the contact we're searching for
+            const msgEmailMatch = from.match(/<([^>]+)>/) || [null, from.trim()];
+            const msgEmail = msgEmailMatch[1].toLowerCase();
+            if (msgEmail !== email) continue;
+
+            // Extract info from signature (try HTML body too for rich signatures)
+            const signature = getSignatureText_(message);
+
+            // Check for job title update
+            if (!existingContact.name?.includes('|')) {
+              const jobTitle = extractJobTitle_(signature, existingContact.name);
+              if (jobTitle && jobTitle.length > 3) {
+                // Check if we already have this update
+                const existingUpdate = potentialUpdates.find(u =>
+                  u.email === email && u.updateType === 'jobTitle'
+                );
+                if (!existingUpdate) {
+                  potentialUpdates.push({
+                    contactId: existingContact.id,
+                    name: existingContact.name,
+                    email: email,
+                    updateType: 'jobTitle',
+                    currentValue: '(none)',
+                    newValue: jobTitle,
+                    foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                  });
+                  Logger.log(`Potential job title update for ${existingContact.name}: ${jobTitle}`);
+                }
+              }
+            }
+
+            // Check for phone update
+            if (!existingContact.phone) {
+              const phones = extractPhoneNumbers_(signature);
+              if (phones.length > 0) {
+                const phone = phones[0];
+                const normalizedNewPhone = phone.replace(/\D/g, '').slice(-10);
+                if (!existingPhones.has(normalizedNewPhone)) {
+                  const existingUpdate = potentialUpdates.find(u =>
+                    u.email === email && u.updateType === 'phone'
+                  );
+                  if (!existingUpdate) {
+                    potentialUpdates.push({
+                      contactId: existingContact.id,
+                      name: existingContact.name,
+                      email: email,
+                      updateType: 'phone',
+                      currentValue: '(none)',
+                      newValue: phone,
+                      foundIn: Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+                    });
+                    Logger.log(`Potential phone update for ${existingContact.name}: ${phone}`);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        Logger.log(`Error searching email ${email}: ${e.message}`);
+      }
+    }
+  }
+
+  // Sort results
+  potentialNewContacts.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen)); // Most recent first
+  potentialUpdates.sort((a, b) => b.foundIn.localeCompare(a.foundIn));
+
+  // Get Monday.com IDs for linking contacts
+  const mondayItemId = contactData.mondayItemId;
+  const boardId = contactData.boardId;
+
+  // Prepare data for the dialog
+  const dialogData = {
+    vendor: vendor,
+    mondayItemId: mondayItemId,
+    boardId: boardId,
+    domains: [...domains],
+    existingContacts: existingContacts,
+    potentialNewContacts: potentialNewContacts.slice(0, 20),
+    potentialUpdates: potentialUpdates.slice(0, 20)
+  };
+
+  // Build results HTML with interactive elements
+  let html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 10px; }
+      h2 { color: #1a73e8; margin-top: 20px; margin-bottom: 10px; }
+      h3 { color: #333; margin-top: 15px; margin-bottom: 8px; }
+      table { border-collapse: collapse; width: 100%; margin-bottom: 15px; }
+      th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+      th { background-color: #f8f9fa; font-weight: bold; }
+      tr:nth-child(even) { background-color: #f9f9f9; }
+      .new-contact { background-color: #e8f5e9; }
+      .update { background-color: #fff3e0; }
+      .none { color: #666; font-style: italic; }
+      .summary { background: #f0f0f0; padding: 10px; border-radius: 5px; margin-bottom: 15px; }
+      .btn { padding: 8px 16px; margin: 5px; cursor: pointer; border: none; border-radius: 4px; font-size: 13px; }
+      .btn-primary { background: #1a73e8; color: white; }
+      .btn-primary:hover { background: #1557b0; }
+      .btn-primary:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-secondary { background: #ff9800; color: white; }
+      .btn-secondary:hover { background: #f57c00; }
+      .btn-secondary:disabled { background: #ccc; cursor: not-allowed; }
+      .checkbox-cell { width: 30px; text-align: center; }
+      .job-title { color: #666; font-size: 12px; }
+      .status-msg { padding: 10px; margin: 10px 0; border-radius: 4px; }
+      .status-success { background: #d4edda; color: #155724; }
+      .status-error { background: #f8d7da; color: #721c24; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
+    </style>
+
+    <h2>📇 Contact Discovery for ${escapeHtml_(vendor)}</h2>
+
+    <div class="summary">
+      <strong>Searched:</strong> ${domains.size > 0 ? [...domains].map(d => '@' + d).join(', ') : 'Specific email addresses (no company domains)'}<br>
+      <strong>Existing contacts:</strong> ${existingContacts.length}<br>
+      <strong>Potential new contacts found:</strong> ${potentialNewContacts.length}<br>
+      <strong>Potential updates found:</strong> ${potentialUpdates.length}
+    </div>
+
+    <div id="statusMsg"></div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+  `;
+
+  // New contacts section with checkboxes
+  html += `<div id="discovery-content">`;
+  html += `<h3>🆕 Potential New Contacts (${potentialNewContacts.length})</h3>`;
+
+  if (potentialNewContacts.length === 0) {
+    html += `<p class="none">No new contacts discovered.</p>`;
+  } else {
+    html += `
+      <div style="margin-bottom: 10px;">
+        <button class="btn btn-primary" onclick="addSelectedContacts()" id="addBtn">➕ Add Selected to Monday.com</button>
+        <label style="margin-left: 15px;"><input type="checkbox" id="selectAll" onchange="toggleSelectAll()"> Select All</label>
+      </div>
+      <table id="newContactsTable">
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Phone</th><th>Job Title</th><th>Last Seen</th></tr>
+    `;
+    for (let i = 0; i < Math.min(potentialNewContacts.length, 20); i++) {
+      const contact = potentialNewContacts[i];
+      html += `
+        <tr class="new-contact">
+          <td class="checkbox-cell"><input type="checkbox" class="contact-cb" data-index="${i}"></td>
+          <td>${escapeHtml_(contact.name)}</td>
+          <td>${escapeHtml_(contact.email)}</td>
+          <td>${contact.phone || '<span class="none">-</span>'}</td>
+          <td class="job-title">${contact.jobTitle ? escapeHtml_(contact.jobTitle) : '<span class="none">-</span>'}</td>
+          <td>${contact.lastSeen}</td>
+        </tr>
+      `;
+    }
+    html += `</table>`;
+    if (potentialNewContacts.length > 20) {
+      html += `<p class="none">...and ${potentialNewContacts.length - 20} more</p>`;
+    }
+  }
+
+  // Updates section (phone and job title)
+  const phoneUpdates = potentialUpdates.filter(u => u.updateType === 'phone');
+  const titleUpdates = potentialUpdates.filter(u => u.updateType === 'jobTitle');
+
+  html += `<h3>📝 Potential Updates (${potentialUpdates.length})</h3>`;
+
+  if (potentialUpdates.length === 0) {
+    html += `<p class="none">No updates discovered.</p>`;
+  } else {
+    html += `
+      <div style="margin-bottom: 10px;">
+        <button class="btn btn-secondary" onclick="applySelectedUpdates()" id="updateBtn">📝 Apply Selected Updates</button>
+        <label style="margin-left: 15px;"><input type="checkbox" id="selectAllUpdates" onchange="toggleSelectAllUpdates()"> Select All</label>
+      </div>
+      <table id="updatesTable">
+        <tr><th class="checkbox-cell"></th><th>Name</th><th>Email</th><th>Field</th><th>Current</th><th>New Value</th><th>Found</th></tr>
+    `;
+    for (let i = 0; i < Math.min(potentialUpdates.length, 20); i++) {
+      const update = potentialUpdates[i];
+      const typeLabel = update.updateType === 'phone' ? '📱 Phone' : '💼 Job Title';
+      html += `
+        <tr class="update">
+          <td class="checkbox-cell"><input type="checkbox" class="update-cb" data-index="${i}"></td>
+          <td>${escapeHtml_(update.name)}</td>
+          <td>${escapeHtml_(update.email)}</td>
+          <td>${typeLabel}</td>
+          <td>${escapeHtml_(update.currentValue)}</td>
+          <td><strong>${escapeHtml_(update.newValue)}</strong></td>
+          <td>${update.foundIn}</td>
+        </tr>
+      `;
+    }
+    html += `</table>`;
+    if (potentialUpdates.length > 20) {
+      html += `<p class="none">...and ${potentialUpdates.length - 20} more</p>`;
+    }
+  }
+
+  html += `
+    <h3>👤 Existing Contacts</h3>
+    <table>
+      <tr><th>Name</th><th>Email</th><th>Phone</th><th>Type</th><th>Status</th></tr>
+  `;
+  for (const contact of existingContacts) {
+    html += `
+      <tr>
+        <td>${escapeHtml_(contact.name || '')}</td>
+        <td>${escapeHtml_(contact.email || '')}</td>
+        <td>${escapeHtml_(contact.phone || '')}</td>
+        <td>${escapeHtml_(contact.contactType || '')}</td>
+        <td>${escapeHtml_(contact.status || '')}</td>
+      </tr>
+    `;
+  }
+  html += `</table>`;
+  html += `</div>`; // close #discovery-content
+
+  // Add Done button for hard refresh
+  html += `
+    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
+      <button id="done-btn" class="btn btn-primary" style="padding: 10px 30px;">
+        ✓ Done - Refresh View
+      </button>
+    </div>
+  `;
+
+  // Add JavaScript for interactivity
+  html += `
+    <script>
+      const dialogData = ${JSON.stringify(dialogData)};
+
+      function copyContent() {
+        var el = document.getElementById('discovery-content');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
+
+      function toggleSelectAll() {
+        const selectAll = document.getElementById('selectAll').checked;
+        document.querySelectorAll('.contact-cb').forEach(cb => cb.checked = selectAll);
+      }
+
+      function addSelectedContacts() {
+        const selected = [];
+        document.querySelectorAll('.contact-cb:checked').forEach(cb => {
+          const idx = parseInt(cb.dataset.index);
+          selected.push(dialogData.potentialNewContacts[idx]);
+        });
+
+        if (selected.length === 0) {
+          alert('Please select at least one contact to add.');
+          return;
+        }
+
+        document.getElementById('addBtn').disabled = true;
+        document.getElementById('addBtn').textContent = 'Adding...';
+        document.getElementById('statusMsg').innerHTML = '<div class="status-msg">Adding ' + selected.length + ' contact(s)...</div>';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-success">' + result + '</div>';
+            document.getElementById('addBtn').textContent = '✓ Done';
+            // Uncheck added contacts
+            document.querySelectorAll('.contact-cb:checked').forEach(cb => {
+              cb.checked = false;
+              cb.closest('tr').style.opacity = '0.5';
+            });
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-error">Error: ' + error.message + '</div>';
+            document.getElementById('addBtn').disabled = false;
+            document.getElementById('addBtn').textContent = '➕ Add Selected to Monday.com';
+          })
+          .addContactsToMonday(selected, dialogData.mondayItemId, dialogData.boardId);
+      }
+
+      function toggleSelectAllUpdates() {
+        const selectAll = document.getElementById('selectAllUpdates').checked;
+        document.querySelectorAll('.update-cb').forEach(cb => cb.checked = selectAll);
+      }
+
+      function applySelectedUpdates() {
+        const selected = [];
+        document.querySelectorAll('.update-cb:checked').forEach(cb => {
+          const idx = parseInt(cb.dataset.index);
+          selected.push(dialogData.potentialUpdates[idx]);
+        });
+
+        if (selected.length === 0) {
+          alert('Please select at least one update to apply.');
+          return;
+        }
+
+        document.getElementById('updateBtn').disabled = true;
+        document.getElementById('updateBtn').textContent = 'Applying...';
+        document.getElementById('statusMsg').innerHTML = '<div class="status-msg">Applying ' + selected.length + ' update(s)...</div>';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-success">' + result + '</div>';
+            document.getElementById('updateBtn').textContent = '✓ Done';
+            // Uncheck applied updates
+            document.querySelectorAll('.update-cb:checked').forEach(cb => {
+              cb.checked = false;
+              cb.closest('tr').style.opacity = '0.5';
+            });
+          })
+          .withFailureHandler(function(error) {
+            document.getElementById('statusMsg').innerHTML = '<div class="status-msg status-error">Error: ' + error.message + '</div>';
+            document.getElementById('updateBtn').disabled = false;
+            document.getElementById('updateBtn').textContent = '📝 Apply Selected Updates';
+          })
+          .applyContactUpdates(selected, dialogData.existingContacts);
+      }
+
+      // Done button - trigger hard refresh and close dialog
+      document.getElementById('done-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = '⏳ Refreshing...';
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(e) {
+            alert('Refresh failed: ' + e.message);
+            google.script.host.close();
+          })
+          .battleStationHardRefresh();
+      });
+    </script>
+  `;
+
+  // Show dialog
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(900)
+    .setHeight(700);
+
+  ui.showModalDialog(htmlOutput, '📇 Contact Discovery');
+
+  // Store the last run date for this vendor
+  const props = PropertiesService.getScriptProperties();
+  const lastRunKey = `BS_CONTACT_DISCOVERY_${vendor.replace(/[^a-zA-Z0-9]/g, '_')}`;
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  props.setProperty(lastRunKey, today);
+
+  Logger.log(`Contact discovery complete: ${potentialNewContacts.length} new, ${potentialUpdates.length} updates`);
+}
+
+/**
+ * Add contacts to Monday.com from the Contact Discovery dialog
+ * @param {Array} contacts - Array of contact objects with name, email, phone, jobTitle
+ * @param {string} vendorItemId - Monday.com item ID of the vendor
+ * @param {string} vendorBoardId - Monday.com board ID of the vendor (Buyers or Affiliates)
+ * @returns {string} Success message
+ */
+function addContactsToMonday(contacts, vendorItemId, vendorBoardId) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const contactsBoardId = BS_CFG.CONTACTS_BOARD_ID;
+
+  Logger.log(`=== ADDING CONTACTS TO MONDAY.COM ===`);
+  Logger.log(`Adding ${contacts.length} contact(s)`);
+  Logger.log(`Vendor item: ${vendorItemId} on board ${vendorBoardId}`);
+
+  const createdContactIds = [];
+  const errors = [];
+
+  for (const contact of contacts) {
+    try {
+      // Build column values JSON - Monday.com requires specific formats for each column type
+      const columnValues = {};
+
+      // Email column - Monday.com email column format
+      if (contact.email) {
+        columnValues['email_mkrk53z4'] = { email: contact.email, text: contact.email };
+      }
+
+      // Phone column - Monday.com phone column format
+      if (contact.phone) {
+        const phoneDigits = contact.phone.replace(/\D/g, '');
+        if (phoneDigits.length >= 10) {
+          columnValues['phone_mkrkzxq2'] = { phone: phoneDigits, countryShortName: 'US' };
+        }
+      }
+
+      // Job Title column - text field
+      if (contact.jobTitle) {
+        columnValues['text_mkz5rj9h'] = contact.jobTitle;
+      }
+
+      const columnValuesJson = JSON.stringify(JSON.stringify(columnValues));
+
+      // Create the contact item
+      const createMutation = `
+        mutation {
+          create_item (
+            board_id: ${contactsBoardId},
+            item_name: "${contact.name.replace(/"/g, '\\"')}",
+            column_values: ${columnValuesJson}
+          ) {
+            id
+            name
+          }
+        }
+      `;
+
+      Logger.log(`Creating contact: ${contact.name}`);
+
+      const createResult = mondayApiRequest_(createMutation, apiToken);
+
+      if (createResult.errors && createResult.errors.length > 0) {
+        Logger.log(`Error creating contact ${contact.name}: ${createResult.errors[0].message}`);
+        errors.push(`${contact.name}: ${createResult.errors[0].message}`);
+        continue;
+      }
+
+      if (createResult.data?.create_item?.id) {
+        const newContactId = createResult.data.create_item.id;
+        createdContactIds.push(newContactId);
+        Logger.log(`Created contact ${contact.name} with ID: ${newContactId}`);
+      }
+
+    } catch (e) {
+      Logger.log(`Exception creating contact ${contact.name}: ${e.message}`);
+      errors.push(`${contact.name}: ${e.message}`);
+    }
+  }
+
+  // Link created contacts to the vendor item
+  if (createdContactIds.length > 0 && vendorItemId && vendorBoardId) {
+    try {
+      // Determine which contacts column to use based on vendor board
+      const contactsColumnId = vendorBoardId === BS_CFG.BUYERS_BOARD_ID
+        ? BS_CFG.BUYERS_CONTACTS_COLUMN
+        : BS_CFG.AFFILIATES_CONTACTS_COLUMN;
+
+      // Get existing linked contacts first
+      const existingQuery = `
+        query {
+          items(ids: [${vendorItemId}]) {
+            column_values(ids: ["${contactsColumnId}"]) {
+              ... on BoardRelationValue {
+                linked_item_ids
+              }
+            }
+          }
+        }
+      `;
+
+      const existingResult = mondayApiRequest_(existingQuery, apiToken);
+      let existingIds = [];
+
+      if (existingResult.data?.items?.[0]?.column_values?.[0]?.linked_item_ids) {
+        existingIds = existingResult.data.items[0].column_values[0].linked_item_ids;
+      }
+
+      // Combine existing and new contact IDs
+      const allContactIds = [...existingIds, ...createdContactIds];
+
+      // Update the board relation column with all contact IDs
+      const linkValue = JSON.stringify({ item_ids: allContactIds });
+      const escapedLinkValue = linkValue.replace(/"/g, '\\"');
+
+      const linkMutation = `
+        mutation {
+          change_column_value (
+            board_id: ${vendorBoardId},
+            item_id: ${vendorItemId},
+            column_id: "${contactsColumnId}",
+            value: "${escapedLinkValue}"
+          ) { id }
+        }
+      `;
+
+      Logger.log(`Linking ${createdContactIds.length} new contacts to vendor`);
+      const linkResult = mondayApiRequest_(linkMutation, apiToken);
+
+      if (linkResult.errors && linkResult.errors.length > 0) {
+        Logger.log(`Error linking contacts: ${linkResult.errors[0].message}`);
+        errors.push(`Linking: ${linkResult.errors[0].message}`);
+      } else {
+        Logger.log(`Successfully linked contacts to vendor`);
+      }
+
+    } catch (e) {
+      Logger.log(`Exception linking contacts: ${e.message}`);
+      errors.push(`Linking: ${e.message}`);
+    }
+  }
+
+  // Build result message
+  if (errors.length > 0) {
+    if (createdContactIds.length > 0) {
+      return `Added ${createdContactIds.length} contact(s) with ${errors.length} error(s): ${errors.join('; ')}`;
+    } else {
+      throw new Error(`Failed to add contacts: ${errors.join('; ')}`);
+    }
+  }
+
+  return `Successfully added ${createdContactIds.length} contact(s) to Monday.com and linked to vendor!`;
+}
+
+/**
+ * Apply updates to existing contacts in Monday.com
+ * @param {Array} updates - Array of update objects with name, email, updateType, newValue
+ * @param {Array} existingContacts - Array of existing contact objects to find contact IDs
+ * @returns {string} Success message
+ */
+function applyContactUpdates(updates, existingContacts) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const contactsBoardId = BS_CFG.CONTACTS_BOARD_ID;
+
+  Logger.log(`=== APPLYING CONTACT UPDATES ===`);
+  Logger.log(`Applying ${updates.length} update(s)`);
+
+  // First, we need to find the contact item IDs by searching the contacts board
+  // Query contacts board to get item IDs for matching emails
+  const emails = updates.map(u => u.email.toLowerCase());
+  const uniqueEmails = [...new Set(emails)];
+
+  Logger.log(`Looking up contacts for emails: ${uniqueEmails.join(', ')}`);
+
+  // Query to find contact items
+  const searchQuery = `
+    query {
+      boards(ids: [${contactsBoardId}]) {
+        items_page(limit: 500) {
+          items {
+            id
+            name
+            column_values(ids: ["email_mkrk53z4", "phone_mkrkzxq2"]) {
+              id
+              text
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const searchResult = mondayApiRequest_(searchQuery, apiToken);
+  const contactMap = new Map(); // email -> { id, name, phone }
+
+  if (searchResult.data?.boards?.[0]?.items_page?.items) {
+    for (const item of searchResult.data.boards[0].items_page.items) {
+      const emailCol = item.column_values.find(c => c.id === 'email_mkrk53z4');
+      const phoneCol = item.column_values.find(c => c.id === 'phone_mkrkzxq2');
+      if (emailCol?.text) {
+        contactMap.set(emailCol.text.toLowerCase(), {
+          id: item.id,
+          name: item.name,
+          phone: phoneCol?.text || ''
+        });
+      }
+    }
+  }
+
+  Logger.log(`Found ${contactMap.size} contacts in Monday.com`);
+
+  const successCount = { phone: 0, jobTitle: 0 };
+  const errors = [];
+
+  for (const update of updates) {
+    const contact = contactMap.get(update.email.toLowerCase());
+    if (!contact) {
+      Logger.log(`Contact not found for email: ${update.email}`);
+      errors.push(`${update.name}: contact not found`);
+      continue;
+    }
+
+    try {
+      if (update.updateType === 'phone') {
+        // Update phone column - Monday.com requires JSON format for phone columns
+        const phoneDigits = update.newValue.replace(/\D/g, '');
+        const phoneJson = JSON.stringify({ phone: phoneDigits, countryShortName: 'US' });
+
+        const mutation = `
+          mutation {
+            change_column_value (
+              board_id: ${contactsBoardId},
+              item_id: ${contact.id},
+              column_id: "phone_mkrkzxq2",
+              value: ${JSON.stringify(phoneJson)}
+            ) { id }
+          }
+        `;
+
+        Logger.log(`Updating phone for ${update.name} (${contact.id}): ${phoneDigits}`);
+        const result = mondayApiRequest_(mutation, apiToken);
+
+        if (result.errors && result.errors.length > 0) {
+          Logger.log(`Error updating phone: ${result.errors[0].message}`);
+          errors.push(`${update.name} phone: ${result.errors[0].message}`);
+        } else {
+          successCount.phone++;
+          Logger.log(`Successfully updated phone for ${update.name}`);
+        }
+
+      } else if (update.updateType === 'jobTitle') {
+        // Update the dedicated Job Title column (text_mkz5rj9h)
+        let titleOnly = update.newValue;
+        if (titleOnly.includes('|')) {
+          titleOnly = titleOnly.split('|').pop().trim();
+        }
+        // Strip any leading/trailing asterisks or special chars from signatures
+        titleOnly = titleOnly.replace(/^[\*\s]+|[\*\s]+$/g, '').trim();
+
+        const escapedTitle = titleOnly.replace(/"/g, '\\"');
+
+        const mutation = `
+          mutation {
+            change_column_value (
+              board_id: ${contactsBoardId},
+              item_id: ${contact.id},
+              column_id: "text_mkz5rj9h",
+              value: "\\"${escapedTitle}\\""
+            ) { id }
+          }
+        `;
+
+        Logger.log(`Updating job title for ${update.name} (${contact.id}): ${titleOnly}`);
+        const result = mondayApiRequest_(mutation, apiToken);
+
+        if (result.errors && result.errors.length > 0) {
+          Logger.log(`Error updating job title: ${result.errors[0].message}`);
+          errors.push(`${update.name} title: ${result.errors[0].message}`);
+        } else {
+          successCount.jobTitle++;
+          Logger.log(`Successfully updated job title for ${update.name}`);
+        }
+      }
+
+    } catch (e) {
+      Logger.log(`Exception updating ${update.name}: ${e.message}`);
+      errors.push(`${update.name}: ${e.message}`);
+    }
+  }
+
+  // Build result message
+  const parts = [];
+  if (successCount.phone > 0) parts.push(`${successCount.phone} phone update(s)`);
+  if (successCount.jobTitle > 0) parts.push(`${successCount.jobTitle} job title update(s)`);
+
+  if (errors.length > 0) {
+    if (parts.length > 0) {
+      return `Applied ${parts.join(', ')} with ${errors.length} error(s): ${errors.slice(0, 3).join('; ')}`;
+    } else {
+      throw new Error(`Failed to apply updates: ${errors.join('; ')}`);
+    }
+  }
+
+  return `Successfully applied ${parts.join(' and ')}!`;
+}
+
+/**
+ * Check if an email sender is a system/bounce message (not a real person)
+ */
+function isSystemOrBounceEmail_(sender) {
+  if (!sender) return false;
+  const lowerSender = sender.toLowerCase();
+
+  // Common system/bounce email patterns
+  const systemPatterns = [
+    'mailer-daemon',
+    'postmaster',
+    'mail delivery subsystem',
+    'noreply',
+    'no-reply',
+    'do-not-reply',
+    'donotreply',
+    'bounce',
+    'auto-reply',
+    'autoreply',
+    'automated',
+    'notification@',
+    'notifications@',
+    'alert@',
+    'alerts@',
+    'system@',
+    'daemon@'
+  ];
+
+  return systemPatterns.some(pattern => lowerSender.includes(pattern));
+}
+
+/**
+ * Check if a domain is a generic email provider (not company-specific)
+ */
+function isGenericDomain_(domain) {
+  const genericDomains = [
+    'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com',
+    'icloud.com', 'me.com', 'mac.com', 'msn.com', 'live.com',
+    'protonmail.com', 'proton.me', 'zoho.com', 'ymail.com',
+    'mail.com', 'email.com', 'inbox.com', 'fastmail.com'
+  ];
+  return genericDomains.includes(domain.toLowerCase());
+}
+
+/**
+ * Extract domain from a source/website field
+ * Handles: URLs, domains with www, plain domains
+ */
+function extractDomainFromSource_(source) {
+  if (!source) return null;
+
+  // Ensure source is a string (could be Date, Number, etc. from spreadsheet)
+  const sourceStr = String(source);
+  if (!sourceStr || sourceStr === 'undefined' || sourceStr === 'null') return null;
+
+  let domain = sourceStr.trim().toLowerCase();
+
+  // Remove protocol (http://, https://)
+  domain = domain.replace(/^https?:\/\//, '');
+
+  // Remove www.
+  domain = domain.replace(/^www\./, '');
+
+  // Remove path and query string (everything after first /)
+  domain = domain.split('/')[0];
+
+  // Remove port if present
+  domain = domain.split(':')[0];
+
+  // Basic validation: should have at least one dot and no spaces
+  if (!domain.includes('.') || domain.includes(' ')) {
+    return null;
+  }
+
+  return domain;
+}
+
+/**
+ * Try to guess a company domain from the vendor name
+ * e.g., "HomeFix" -> "homefix.com", "ABC Supply" -> "abcsupply.com"
+ */
+function guessVendorDomain_(vendor) {
+  if (!vendor) return null;
+
+  // Remove common suffixes like LLC, Inc, Corp, etc.
+  let cleaned = vendor
+    .replace(/,?\s*(LLC|Inc\.?|Corp\.?|Co\.?|Ltd\.?|Limited|Corporation|Company)$/i, '')
+    .trim();
+
+  // Remove special characters and spaces, convert to lowercase
+  cleaned = cleaned
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toLowerCase();
+
+  if (cleaned.length < 2) return null;
+
+  return cleaned + '.com';
+}
+
+/**
+ * Extract phone numbers from text (signature, body, etc.)
+ */
+/**
+ * Extract signature text from a Gmail message
+ * Tries plain body first, falls back to HTML body with tags stripped
+ * for rich HTML signatures (images, styled text) that getPlainBody() mangles
+ */
+function getSignatureText_(message) {
+  // Try plain body first - last 1000 chars to capture signatures after short messages
+  const plainBody = message.getPlainBody() || '';
+  const plainSig = plainBody.slice(-1000);
+
+  // Also get HTML body, strip tags, and extract last 1000 chars
+  const htmlBody = message.getBody() || '';
+  const strippedHtml = htmlBody
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(p|div|tr|td|th|li)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#\d+;/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const htmlSig = strippedHtml.slice(-1000);
+
+  // Return both combined so extractors can find data in either
+  return plainSig + '\n' + htmlSig;
+}
+
+function extractPhoneNumbers_(text) {
+  if (!text) return [];
+
+  // Blacklisted phone numbers (our company numbers - should not be picked up as contact info)
+  const blacklistedPhones = [
+    '5550001234',  // Your main line
+    '15550001234', // With country code
+  ];
+
+  // Regex patterns for various phone formats
+  const patterns = [
+    /\b(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})\b/g,           // 123-456-7890, 123.456.7890, 123 456 7890
+    /\b\((\d{3})\)\s*(\d{3})[-.\s]?(\d{4})\b/g,       // (123) 456-7890
+    /\b(\d{3})[-.\s](\d{4})\b/g,                       // 456-7890 (7 digit)
+    /\+1[-.\s]?(\d{3})[-.\s]?(\d{3})[-.\s]?(\d{4})\b/g // +1 123-456-7890
+  ];
+
+  const phones = new Set();
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      // Normalize to just digits
+      const digits = match[0].replace(/\D/g, '');
+      if (digits.length >= 10) {
+        const last10 = digits.slice(-10);
+
+        // Skip blacklisted numbers
+        if (blacklistedPhones.includes(last10) || blacklistedPhones.includes(digits)) {
+          continue;
+        }
+
+        // Format nicely
+        const formatted = `(${last10.slice(0,3)}) ${last10.slice(3,6)}-${last10.slice(6)}`;
+        phones.add(formatted);
+      }
+    }
+  }
+
+  return [...phones];
+}
+
+/**
+ * Extract job title from email signature
+ * Looks for common job title patterns near the person's name
+ */
+function extractJobTitle_(text, name) {
+  if (!text || !name) return '';
+
+  // Common job title keywords - these should START the title or be key parts
+  const titleKeywords = [
+    'Director', 'Manager', 'President', 'VP', 'Vice President', 'CEO', 'CFO', 'COO', 'CTO', 'CMO',
+    'Owner', 'Partner', 'Principal', 'Founder', 'Co-Founder',
+    'Coordinator', 'Specialist', 'Analyst', 'Associate',
+    'Executive', 'Administrator', 'Supervisor', 'Lead', 'Head',
+    'Representative', 'Consultant', 'Advisor', 'Counsel',
+    'Engineer', 'Developer', 'Architect', 'Designer',
+    'Regional', 'National', 'Senior', 'Junior', 'Chief'
+  ];
+
+  // Phrases that indicate this is NOT a job title (confidentiality notices, email content, etc.)
+  const excludePhrases = [
+    'responsible for delivery',
+    'intended recipient',
+    'confidential',
+    'dissemination',
+    'strictly prohibited',
+    'received this',
+    'notify us',
+    'delete it',
+    'phone call',
+    'let me know',
+    'ready to',
+    'buying from',
+    'get started',
+    'employee or agent',
+    'click here',
+    'unsubscribe',
+    'view in browser'
+  ];
+
+  // Helper function to check if line is valid job title candidate
+  const isValidTitleLine = (line) => {
+    const lowerLine = line.toLowerCase();
+
+    // Skip empty or too long lines (real job titles are usually under 50 chars)
+    if (!line || line.length > 50 || line.length < 5) return false;
+
+    // Skip lines starting with quote markers, bullets, or asterisks
+    if (/^[>\*\-•\[]/.test(line.trim())) return false;
+
+    // Skip lines with email addresses, URLs, or phone patterns in context
+    if (line.includes('@') || line.includes('http') || line.includes('www.')) return false;
+
+    // Skip lines containing exclusion phrases
+    for (const phrase of excludePhrases) {
+      if (lowerLine.includes(phrase)) return false;
+    }
+
+    // Must contain at least one title keyword
+    let hasKeyword = false;
+    for (const keyword of titleKeywords) {
+      if (lowerLine.includes(keyword.toLowerCase())) {
+        hasKeyword = true;
+        break;
+      }
+    }
+    if (!hasKeyword) return false;
+
+    // Title should be mostly letters and spaces (at least 85% alphanumeric)
+    const alphaRatio = (line.match(/[a-zA-Z\s,&]/g) || []).length / line.length;
+    if (alphaRatio < 0.85) return false;
+
+    return true;
+  };
+
+  const firstName = name.split(/\s+/)[0];
+  const lines = text.split(/[\n\r]+/);
+
+  // First pass: look for title right after the person's name
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    // If this line contains the person's name
+    if (line.toLowerCase().includes(firstName.toLowerCase()) && line.length < 100) {
+      // Check if there's a pipe separator with title after name (e.g., "John Smith | Director of Sales")
+      if (line.includes('|')) {
+        const parts = line.split('|');
+        for (let j = 1; j < parts.length; j++) {
+          const part = parts[j].trim();
+          if (isValidTitleLine(part)) {
+            return part;
+          }
+        }
+      }
+
+      // Check the next line for a title
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim();
+        if (isValidTitleLine(nextLine)) {
+          return nextLine;
+        }
+      }
+    }
+  }
+
+  // Second pass: look for standalone title lines near the top (signature block area)
+  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+    const line = lines[i].trim();
+    if (isValidTitleLine(line)) {
+      return line;
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Escape HTML special characters
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/************************************************************
+ * TASK STATUS ANALYSIS FROM EMAILS
+ * Uses Claude to analyze emails and suggest task status updates
+ ************************************************************/
+
+/**
+ * Analyze emails to suggest task status updates
+ * Uses AI to determine if tasks should be updated based on email content
+ */
+function analyzeTasksFromEmails() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const claudeApiKey = getClaudeApiKey_();
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+  const source = listSh.getRange(listRow, 2).getValue() || '';
+
+  ss.toast('Fetching emails and tasks...', '🤖 Task Analysis', 3);
+
+  // Get vendor info including status
+  const contactData = getVendorContacts_(vendor, listRow);
+  const vendorStatus = contactData.liveStatus || 'Unknown';
+  const hasContacts = (contactData.contacts || []).length > 0;
+  const hasPhonexaLink = !!contactData.phonexaLink;
+
+  // Get ALL emails from vendor's Gmail sublabel (not filtered search)
+  // This gives full context including processed/dealt-with emails
+  const emails = getAllEmailsFromVendorLabel_(listRow, 50);
+  if (!emails || emails.length === 0) {
+    ui.alert('No emails found in vendor label.');
+    return;
+  }
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow);
+  const openTasks = tasks.filter(t => !t.isDone);
+
+  if (openTasks.length === 0) {
+    ui.alert('No open tasks found for this vendor.');
+    return;
+  }
+
+  ss.toast('Analyzing with Claude AI...', '🤖 Task Analysis', 5);
+
+  // Get task analysis settings from Settings sheet
+  const taskSettings = getTaskAnalysisSettings_();
+
+  // Build email summaries with content snippets (most recent first, limit to 25 for full context)
+  // Also build a map of email index to thread ID for linking
+  const emailThreadMap = {};
+  const emailSummaries = emails.slice(0, 25).map((e, i) => {
+    // Handle labels - could be array or string
+    const labelsStr = Array.isArray(e.labels) ? e.labels.join(', ') : (e.labels || '');
+    // Include snippet for context (truncate if too long)
+    const snippet = (e.snippet || '').substring(0, 300);
+    const msgCount = e.messageCount ? ` [${e.messageCount} msgs in thread]` : '';
+    // Store thread ID for linking
+    emailThreadMap[i + 1] = e.threadId;
+    return `EMAIL ${i + 1} (${e.date})${msgCount}:
+Subject: ${e.subject}
+From: ${e.from || 'Unknown'}
+Labels: ${labelsStr}
+Preview: ${snippet}
+---`;
+  }).join('\n\n');
+
+  // Build task list with custom instructions from settings
+  const taskList = openTasks.map((t, i) => {
+    // Extract base task name (without vendor suffix) for matching settings
+    const baseTaskName = t.subject.replace(/ - [^-]+$/, '').trim().toLowerCase();
+    const customInstruction = taskSettings.taskInstructions[baseTaskName] || '';
+    const instructionNote = customInstruction ? `\n   [LOOK FOR: ${customInstruction}]` : '';
+    return `${i + 1}. "${t.subject}" - Status: ${t.status}${t.taskDate ? ` (Date: ${t.taskDate})` : ''}${instructionNote}`;
+  }).join('\n');
+
+  // Build general instructions section
+  let customGuidance = '';
+  if (taskSettings.generalInstructions) {
+    customGuidance = `\nCUSTOM GUIDANCE FROM USER:\n${taskSettings.generalInstructions}\n`;
+  }
+
+  // Build the prompt
+  const prompt = `You are analyzing a vendor's email thread and their monday.com onboarding tasks to suggest status updates.
+
+VENDOR: ${vendor}
+VENDOR STATUS: ${vendorStatus}
+HAS CONTACTS IN MONDAY.COM: ${hasContacts ? 'Yes' : 'No'}
+HAS PHONEXA LINK: ${hasPhonexaLink ? 'Yes' : 'No'}
+
+CURRENT OPEN TASKS:
+${taskList}
+
+POSSIBLE TASK STATUSES:
+- "Waiting on Profitise" - We need to do something
+- "Waiting on Client" - We're waiting for them to do something
+- "Waiting on Phonexa" - We're waiting for Phonexa (our platform team) to do something
+- "Done" - Task is complete
+
+RECENT EMAILS (most recent first):
+${emailSummaries}
+${customGuidance}
+IMPORTANT CONTEXT:
+- Pay close attention to any [LOOK FOR: ...] notes on tasks - these are custom instructions from the user
+- Onboarding tasks are typically done in a linear sequence
+- If later tasks are being worked on, earlier tasks may already be complete
+- Look for evidence in emails that suggests task status changes:
+  * If we sent them something and are waiting for response → "Waiting on Client"
+  * If they requested something and we haven't done it → "Waiting on Profitise"
+  * If we mention Phonexa needs to do something → "Waiting on Phonexa"
+  * If something is confirmed done in emails → "Done"
+
+Analyze the emails and provide your recommendations in this EXACT format:
+
+TASK UPDATES:
+[For each task that should change status, use this format:]
+- "Task Name" → New Status
+  Reason: [Brief explanation based on email evidence]
+
+NO CHANGE NEEDED:
+[List any tasks where current status seems correct]
+
+SUMMARY:
+[2-3 sentences summarizing what's happening with this vendor based on emails]`;
+
+  // Call Claude API
+  const response = callClaudeAPI_(prompt, claudeApiKey);
+
+  if (response.error) {
+    ui.alert(`Claude API Error: ${response.error}`);
+    return;
+  }
+
+  Logger.log(`=== TASK ANALYSIS ===`);
+  Logger.log(`Vendor: ${vendor}`);
+  Logger.log(`Open tasks: ${openTasks.length}`);
+  Logger.log(`Emails analyzed: ${Math.min(emails.length, 15)}`);
+  Logger.log(`Claude response: ${response.content}`);
+
+  // Parse Claude's response to extract suggested updates
+  let suggestedUpdates = parseTaskSuggestions_(response.content, openTasks);
+  Logger.log(`Parsed ${suggestedUpdates.length} suggested updates (before filtering)`);
+
+  // Filter out suggestions where status isn't actually changing
+  suggestedUpdates = suggestedUpdates.filter(u => u.currentStatus !== u.newStatus);
+  Logger.log(`After filtering same-status: ${suggestedUpdates.length} updates`);
+
+  // Store task data for the dialog to use
+  const taskDataForDialog = openTasks.map(t => ({
+    itemId: t.itemId,
+    statusColumnId: t.statusColumnId,
+    subject: t.subject,
+    currentStatus: t.status
+  }));
+  PropertiesService.getUserProperties().setProperty('taskAnalysisData', JSON.stringify(taskDataForDialog));
+
+  // Build suggested updates HTML with Apply buttons
+  const allStatuses = ['Waiting on Profitise', 'Waiting on Client', 'Waiting on Phonexa', 'Done', 'Abandoned'];
+
+  // Helper to linkify "EMAIL X" references in reason text
+  const linkifyEmailRefs = (text) => {
+    return escapeHtml_(text).replace(/EMAIL\s*(\d+)/gi, (match, num) => {
+      const threadId = emailThreadMap[parseInt(num)];
+      if (threadId) {
+        return `<a href="https://mail.google.com/mail/u/0/#inbox/${threadId}" target="_blank" style="color: #1a73e8;">EMAIL ${num}</a>`;
+      }
+      return match;
+    });
+  };
+
+  let updatesHtml = '';
+  if (suggestedUpdates.length > 0) {
+    updatesHtml = '<h3 style="color: #1a73e8; margin-top: 15px;">📋 SUGGESTED UPDATES:</h3>';
+    for (const update of suggestedUpdates) {
+      const taskLink = `https://profitise-company.monday.com/boards/${BS_CFG.TASKS_BOARD_ID}?term=${encodeURIComponent(update.taskName)}${BS_CFG.MONDAY_TERM_COLUMNS}`;
+      const statusBg = getStatusColor_(update.newStatus);
+
+      // Build alternative status buttons (exclude current and suggested)
+      const altStatuses = allStatuses.filter(s =>
+        s !== update.currentStatus && s !== update.newStatus
+      );
+      const escapedTaskName = escapeHtml_(update.taskName).replace(/'/g, "\\'");
+      const altButtonsHtml = altStatuses.map(s => {
+        const bg = getStatusColor_(s);
+        return `<button class="alt-btn" style="background: ${bg};" onclick="applyOverride('${update.itemId}', '${update.statusColumnId}', '${s}', '${escapedTaskName}', this)">${s}</button>`;
+      }).join('');
+
+      updatesHtml += `
+        <div class="update-row" id="update-${update.itemId}">
+          <div class="update-task">
+            <a href="${taskLink}" target="_blank" class="task-link">🔗 ${escapeHtml_(update.taskName)}</a>
+          </div>
+          <div class="update-change">
+            <span class="old-status">${escapeHtml_(update.currentStatus)}</span> →
+            <span style="background: ${statusBg}; padding: 2px 6px; border-radius: 3px;">${escapeHtml_(update.newStatus)}</span>
+          </div>
+          <div class="update-reason"><em>Reason:</em> ${linkifyEmailRefs(update.reason)}</div>
+          <div class="update-actions">
+            <button class="apply-btn" onclick="applyUpdate('${update.itemId}', '${update.statusColumnId}', '${escapeHtml_(update.newStatus)}', this)">✓ Apply</button>
+            <button class="skip-btn" onclick="skipUpdate('${escapedTaskName}', '${escapeHtml_(update.currentStatus)}', this)">✗ Skip</button>
+            ${altButtonsHtml}
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    updatesHtml = '<h3 style="color: #666; margin-top: 15px;">✓ No status changes suggested</h3><p style="color: #888; font-size: 13px;">All tasks appear to have appropriate statuses based on the email history.</p>';
+  }
+
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 10px; }
+      h3 { margin-top: 20px; margin-bottom: 10px; }
+      .summary-box { background: #f8f9fa; padding: 12px; border-radius: 5px; margin-bottom: 15px; }
+      .update-row { background: #fff; border: 1px solid #ddd; padding: 12px; margin-bottom: 10px; border-radius: 5px; }
+      .update-row.applied { background: #e8f5e9; border-color: #4caf50; }
+      .update-row.skipped { background: #f5f5f5; opacity: 0.6; }
+      .update-task { font-weight: bold; margin-bottom: 5px; }
+      .update-change { margin-bottom: 5px; }
+      .update-reason { color: #666; font-size: 12px; margin-bottom: 8px; }
+      .update-actions { display: flex; gap: 8px; }
+      .apply-btn { background: #4caf50; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+      .apply-btn:hover { background: #45a049; }
+      .apply-btn:disabled { background: #ccc; cursor: not-allowed; }
+      .skip-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
+      .skip-btn:hover { background: #eee; }
+      .alt-btn { color: #333; border: 1px solid #ccc; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+      .alt-btn:hover { opacity: 0.8; }
+      .alt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .old-status { color: #666; text-decoration: line-through; }
+      .task-link { color: #1a73e8; text-decoration: none; }
+      .task-link:hover { text-decoration: underline; }
+      .task-list { background: #fafafa; padding: 10px; margin-top: 15px; border-radius: 5px; }
+      .task-item { padding: 5px 0; border-bottom: 1px solid #eee; }
+      .summary-section { background: #f0f7ff; padding: 12px; border-radius: 5px; margin-top: 15px; }
+      .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; }
+      .status-msg.success { background: #e8f5e9; color: #2e7d32; display: block; }
+      .status-msg.error { background: #ffebee; color: #c62828; display: block; }
+      .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+      .copy-btn:hover { background: #1557b0; }
+      .copied { background: #4caf50 !important; }
+    </style>
+
+    <h2>🤖 Task Status Analysis for ${escapeHtml_(vendor)}</h2>
+
+    <div class="summary-box">
+      <strong>Analyzed:</strong> ${Math.min(emails.length, 25)} emails from label (${emails.length} total), ${openTasks.length} open tasks
+    </div>
+    <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+
+    <div id="task-analysis-content">
+    <div id="status-message" class="status-msg"></div>
+
+    ${updatesHtml}
+    </div>
+
+    <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; text-align: center;">
+      <button id="done-btn" style="background: #1a73e8; color: white; border: none; padding: 10px 30px; border-radius: 5px; font-size: 14px; cursor: pointer;">
+        ✓ Done - Refresh View
+      </button>
+    </div>
+
+    <script>
+      function copyContent() {
+        var el = document.getElementById('task-analysis-content');
+        var text = el.innerText || el.textContent;
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        var btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+      }
+
+      function applyUpdate(itemId, statusColumnId, newStatus, btn) {
+        btn.disabled = true;
+        btn.textContent = '⏳ Updating...';
+
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              btn.textContent = '✓ Applied';
+              btn.parentElement.parentElement.classList.add('applied');
+              showStatus('Updated: ' + newStatus, 'success');
+            } else {
+              btn.textContent = '✗ Failed';
+              btn.disabled = false;
+              showStatus('Error: ' + result.error, 'error');
+            }
+          })
+          .withFailureHandler(function(error) {
+            btn.textContent = '✗ Failed';
+            btn.disabled = false;
+            showStatus('Error: ' + error.message, 'error');
+          })
+          .updateTaskStatus(itemId, statusColumnId, newStatus);
+      }
+
+      function skipUpdate(taskName, currentStatus, btn) {
+        var reason = prompt('Why are you skipping this suggestion?\\n\\nThis will be saved to Settings for future reference.');
+        if (reason === null) return; // Cancelled
+
+        // Save skip reason to Settings
+        if (reason && reason.trim() !== '') {
+          google.script.run
+            .withFailureHandler(function(e) { console.log('Failed to save skip reason: ' + e); })
+            .saveStatusOverride(taskName, 'SKIP (keep ' + currentStatus + ')', reason);
+        }
+
+        btn.parentElement.parentElement.classList.add('skipped');
+        btn.parentElement.innerHTML = '<em>Skipped</em>';
+      }
+
+      function applyOverride(itemId, statusColumnId, newStatus, taskName, btn) {
+        var comment = prompt('Why is "' + newStatus + '" more appropriate?\\n\\nThis will be saved to Settings for future reference.');
+        if (comment === null) return; // Cancelled
+
+        btn.disabled = true;
+        btn.textContent = '⏳...';
+
+        // First save the override comment to Settings
+        if (comment && comment.trim() !== '') {
+          google.script.run
+            .withFailureHandler(function(e) { console.log('Failed to save override: ' + e); })
+            .saveStatusOverride(taskName, newStatus, comment);
+        }
+
+        // Then apply the status update
+        google.script.run
+          .withSuccessHandler(function(result) {
+            if (result.success) {
+              btn.textContent = '✓ Applied';
+              btn.parentElement.parentElement.classList.add('applied');
+              showStatus('Override applied: ' + newStatus, 'success');
+            } else {
+              btn.textContent = '✗ Failed';
+              btn.disabled = false;
+              showStatus('Error: ' + result.error, 'error');
+            }
+          })
+          .withFailureHandler(function(error) {
+            btn.textContent = '✗ Failed';
+            btn.disabled = false;
+            showStatus('Error: ' + error.message, 'error');
+          })
+          .updateTaskStatus(itemId, statusColumnId, newStatus);
+      }
+
+      function showStatus(message, type) {
+        var el = document.getElementById('status-message');
+        el.textContent = message;
+        el.className = 'status-msg ' + type;
+        setTimeout(function() { el.className = 'status-msg'; }, 5000);
+      }
+
+      // Done button - trigger hard refresh and close dialog
+      document.getElementById('done-btn').addEventListener('click', function() {
+        this.disabled = true;
+        this.textContent = '⏳ Refreshing...';
+        google.script.run
+          .withSuccessHandler(function() {
+            google.script.host.close();
+          })
+          .withFailureHandler(function(e) {
+            alert('Refresh failed: ' + e.message);
+            google.script.host.close();
+          })
+          .battleStationHardRefresh();
+      });
+    </script>
+  `;
+
+  // Show dialog
+  const htmlOutput = HtmlService.createHtmlOutput(html)
+    .setWidth(850)
+    .setHeight(750);
+
+  ui.showModalDialog(htmlOutput, '🤖 Task Status Analysis');
+}
+
+/**
+ * Parse Claude's response to extract task update suggestions
+ */
+function parseTaskSuggestions_(claudeResponse, openTasks) {
+  const suggestions = [];
+
+  // Match patterns like: - "Task Name" → New Status
+  const updatePattern = /-\s*"([^"]+)"\s*→\s*(Waiting on Client|Waiting on Profitise|Waiting on Phonexa|Done)/gi;
+
+  // Also capture the reason that follows
+  const lines = claudeResponse.split('\n');
+  let currentUpdate = null;
+
+  for (const line of lines) {
+    const match = line.match(/-\s*"([^"]+)"\s*→\s*(Waiting on Client|Waiting on Profitise|Waiting on Phonexa|Done)/i);
+    if (match) {
+      // Find the matching task to get itemId and statusColumnId
+      const taskName = match[1];
+      const newStatus = match[2];
+
+      const matchingTask = openTasks.find(t =>
+        t.subject.toLowerCase().includes(taskName.toLowerCase()) ||
+        taskName.toLowerCase().includes(t.subject.replace(/ - [^-]+$/, '').toLowerCase())
+      );
+
+      if (matchingTask) {
+        currentUpdate = {
+          taskName: matchingTask.subject,
+          itemId: matchingTask.itemId,
+          statusColumnId: matchingTask.statusColumnId,
+          currentStatus: matchingTask.status,
+          newStatus: newStatus,
+          reason: ''
+        };
+        suggestions.push(currentUpdate);
+      }
+    } else if (currentUpdate && line.toLowerCase().includes('reason:')) {
+      // Extract reason
+      currentUpdate.reason = line.replace(/.*reason:\s*/i, '').trim();
+    }
+  }
+
+  return suggestions;
+}
+
+/**
+ * Get background color for a status
+ */
+function getStatusColor_(status) {
+  const statusLower = (status || '').toLowerCase();
+  if (statusLower.includes('client')) return '#fff2cc';
+  if (statusLower.includes('profitise')) return '#e3f2fd';
+  if (statusLower.includes('phonexa')) return '#ffcdd2';
+  if (statusLower === 'done') return '#c8e6c9';
+  if (statusLower === 'abandoned') return '#d7ccc8';
+  return '#f5f5f5';
+}
+
+/**
+ * Update a task's status in Monday.com (called from dialog)
+ */
+function updateTaskStatus(itemId, statusColumnId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  Logger.log(`Updating task ${itemId} status to: ${newStatus}`);
+
+  // Monday.com status columns use label values, need to format as JSON
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value (
+        board_id: ${boardId},
+        item_id: ${itemId},
+        column_id: "${statusColumnId}",
+        value: "${escapedValue}"
+      ) { id }
+    }
+  `;
+
+  try {
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': apiToken },
+      payload: JSON.stringify({ query: mutation }),
+      muteHttpExceptions: true
+    };
+
+    const response = UrlFetchApp.fetch('https://api.monday.com/v2', options);
+    const result = JSON.parse(response.getContentText());
+
+    Logger.log(`Monday.com response: ${JSON.stringify(result)}`);
+
+    if (result.errors && result.errors.length > 0) {
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Save a status override comment to Settings sheet columns S and T (Task Analysis Settings)
+ * Appends the feedback to the existing "What to Look For" value for the matching task
+ */
+function saveStatusOverride(taskName, chosenStatus, comment) {
+  const ss = SpreadsheetApp.getActive();
+  const settingsSh = ss.getSheetByName('Settings');
+
+  if (!settingsSh) {
+    Logger.log('Settings sheet not found, cannot save override');
+    return;
+  }
+
+  // Column S = 19 (Task Name), Column T = 20 (What to Look For)
+  const colS = 19;
+  const colT = 20;
+
+  const data = settingsSh.getDataRange().getValues();
+  const taskNameLower = taskName.toLowerCase();
+  let matchedRow = -1;
+  let inSection = false;
+
+  // Find the task row in "Task Analysis Settings" section
+  for (let i = 0; i < data.length; i++) {
+    const cellS = String(data[i][colS - 1] || '').trim();
+
+    // Check for section header
+    if (cellS.toLowerCase() === 'task analysis settings') {
+      inSection = true;
+      continue;
+    }
+
+    if (!inSection) continue;
+
+    // Skip column header row
+    if (cellS.toLowerCase() === 'task name') continue;
+
+    // Exit section on empty row
+    if (cellS === '' && String(data[i][colT - 1] || '').trim() === '') {
+      break;
+    }
+
+    // Check if this row matches our task (partial match)
+    if (cellS !== '' && taskNameLower.includes(cellS.toLowerCase())) {
+      matchedRow = i + 1; // 1-indexed
+      break;
+    }
+  }
+
+  if (matchedRow === -1) {
+    Logger.log(`Task not found in Settings: ${taskName}`);
+    return;
+  }
+
+  // Append feedback to existing value in column T
+  const existingValue = String(settingsSh.getRange(matchedRow, colT).getValue() || '');
+  const timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MM/dd');
+  const feedback = `[${timestamp}: ${chosenStatus}] ${comment}`;
+
+  const newValue = existingValue
+    ? `${existingValue}; ${feedback}`
+    : feedback;
+
+  settingsSh.getRange(matchedRow, colT).setValue(newValue);
+
+  Logger.log(`Appended override feedback to row ${matchedRow}: "${feedback}"`);
+}
+
+/************************************************************
+ * TASK STATUS UPDATE FUNCTIONS
+ * Update monday.com task statuses directly from the interface
+ ************************************************************/
+
+/**
+ * Task status options for monday.com
+ */
+const TASK_STATUS_OPTIONS = [
+  { label: 'Waiting on Profitise', value: 'Waiting on Profitise' },
+  { label: 'Waiting on Phonexa', value: 'Waiting on Phonexa' },
+  { label: 'Waiting on Client', value: 'Waiting on Client' },
+  { label: 'Done', value: 'Done' },
+  { label: 'Abandoned', value: 'Abandoned' }
+];
+
+/**
+ * Open dialog to select tasks and update their status
+ */
+function openTaskStatusDialog() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 3);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done/Abandoned tasks by default (but show all in dialog)
+  const activeTasks = tasks.filter(t => t.status !== 'Done' && t.status !== 'Abandoned');
+
+  // Build HTML dialog
+  const htmlContent = buildTaskStatusDialogHtml_(vendor, tasks);
+
+  const htmlOutput = HtmlService.createHtmlOutput(htmlContent)
+    .setWidth(600)
+    .setHeight(750);
+
+  ui.showModalDialog(htmlOutput, `📋 Update Task Status - ${vendor}`);
+}
+
+/**
+ * Build HTML for task status dialog
+ */
+function buildTaskStatusDialogHtml_(vendor, tasks) {
+  const taskRows = tasks.map((task, idx) => {
+    const isDone = task.status === 'Done' || task.status === 'Abandoned';
+    const rowClass = isDone ? 'task-done' : '';
+
+    return `
+      <tr class="${rowClass}">
+        <td><input type="checkbox" name="task_${idx}" value="${task.itemId}"></td>
+        <td class="task-name">${escapeHtml_(task.subject)}</td>
+        <td class="task-status">${escapeHtml_(task.status || 'No status')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const statusOptions = TASK_STATUS_OPTIONS.map(opt =>
+    `<option value="${opt.value}">${opt.label}</option>`
+  ).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <base target="_top">
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; }
+        h3 { margin-top: 0; color: #1a73e8; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 15px; }
+        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f3f3f3; font-weight: bold; }
+        .task-done { color: #999; }
+        .task-done td { text-decoration: line-through; }
+        .task-name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .task-status { font-size: 12px; color: #666; }
+        .controls { margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd; }
+        select { padding: 8px; font-size: 14px; width: 200px; }
+        button { padding: 10px 20px; font-size: 14px; cursor: pointer; margin-right: 10px; }
+        .btn-primary { background: #1a73e8; color: white; border: none; border-radius: 4px; }
+        .btn-primary:hover { background: #1557b0; }
+        .btn-secondary { background: #f1f3f4; color: #333; border: 1px solid #ddd; border-radius: 4px; }
+        .btn-select { font-size: 12px; padding: 4px 8px; margin-right: 5px; }
+        .selection-controls { margin-bottom: 10px; }
+        .status-label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .info { color: #666; font-size: 12px; margin-bottom: 15px; }
+      </style>
+    </head>
+    <body>
+      <h3>Select Tasks to Update</h3>
+      <p class="info">Select the tasks you want to update, then choose a new status.</p>
+
+      <div class="selection-controls">
+        <button type="button" class="btn-select btn-secondary" onclick="selectAll()">Select All</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectNone()">Select None</button>
+        <button type="button" class="btn-select btn-secondary" onclick="selectActive()">Select Active Only</button>
+      </div>
+
+      <form id="taskForm">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 30px;"></th>
+              <th>Task</th>
+              <th style="width: 150px;">Current Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${taskRows}
+          </tbody>
+        </table>
+
+        <div class="controls">
+          <label class="status-label">New Status:</label>
+          <select id="newStatus" name="newStatus">
+            ${statusOptions}
+          </select>
+        </div>
+
+        <div class="controls">
+          <button type="button" class="btn-primary" onclick="submitForm()">Update Selected Tasks</button>
+          <button type="button" class="btn-secondary" onclick="google.script.host.close()">Cancel</button>
+        </div>
+      </form>
+
+      <script>
+        function selectAll() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        }
+
+        function selectNone() {
+          document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+        }
+
+        function selectActive() {
+          document.querySelectorAll('tr').forEach(row => {
+            const cb = row.querySelector('input[type="checkbox"]');
+            if (cb) {
+              cb.checked = !row.classList.contains('task-done');
+            }
+          });
+        }
+
+        function submitForm() {
+          const selectedTaskIds = [];
+          document.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+            selectedTaskIds.push(cb.value);
+          });
+
+          if (selectedTaskIds.length === 0) {
+            alert('Please select at least one task to update.');
+            return;
+          }
+
+          const newStatus = document.getElementById('newStatus').value;
+
+          // Close dialog immediately, update happens in background
+          google.script.host.close();
+
+          // Fire and forget - update runs in background
+          google.script.run.updateTaskStatusesFromDialog(selectedTaskIds, newStatus);
+        }
+      </script>
+    </body>
+    </html>
+  `;
+}
+
+/**
+ * Helper to escape HTML
+ */
+function escapeHtml_(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Called from dialog to update multiple task statuses
+ */
+function updateTaskStatusesFromDialog(taskIds, newStatus) {
+  const ss = SpreadsheetApp.getActive();
+
+  ss.toast(`Updating ${taskIds.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+  const errors = [];
+
+  for (const taskId of taskIds) {
+    const result = updateMondayTaskStatus_(taskId, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+      errors.push(result.error);
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s)`, '✅ Done', 3);
+
+    // Hard refresh to capture the changes
+    Utilities.sleep(1000);
+    battleStationHardRefresh();
+
+    return { success: true };
+  } else {
+    const errorMsg = `Updated ${successCount} task(s), ${errorCount} failed: ${errors.slice(0, 3).join(', ')}`;
+    return { success: false, error: errorMsg };
+  }
+}
+
+/**
+ * Update a single monday.com task's status
+ * @param {string} taskId - The monday.com item ID
+ * @param {string} newStatus - The new status label
+ * @returns {object} { success: boolean, error?: string }
+ */
+function updateMondayTaskStatus_(taskId, newStatus) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+  const boardId = BS_CFG.TASKS_BOARD_ID;
+
+  // Status column value must be JSON with "label" key
+  const statusValue = JSON.stringify({ label: newStatus });
+  const escapedValue = statusValue.replace(/"/g, '\\"');
+
+  const mutation = `
+    mutation {
+      change_column_value(
+        board_id: ${boardId},
+        item_id: ${taskId},
+        column_id: "status",
+        value: "${escapedValue}"
+      ) {
+        id
+      }
+    }
+  `;
+
+  try {
+    const result = mondayApiRequest_(mutation, apiToken);
+
+    if (result.errors && result.errors.length > 0) {
+      Logger.log(`Monday API error for task ${taskId}: ${result.errors[0].message}`);
+      return { success: false, error: result.errors[0].message };
+    }
+
+    if (result.data?.change_column_value?.id) {
+      Logger.log(`Successfully updated task ${taskId} to "${newStatus}"`);
+      return { success: true };
+    }
+
+    return { success: false, error: 'Unexpected API response' };
+
+  } catch (e) {
+    Logger.log(`Error updating task ${taskId}: ${e.message}`);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Phonexa"
+ */
+function setTaskStatusWaitingPhonexa() {
+  setAllActiveTasksToStatus_('Waiting on Phonexa');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Client"
+ */
+function setTaskStatusWaitingClient() {
+  setAllActiveTasksToStatus_('Waiting on Client');
+}
+
+/**
+ * Quick action: Set all active tasks to "Waiting on Profitise"
+ */
+function setTaskStatusWaitingProfitise() {
+  setAllActiveTasksToStatus_('Waiting on Profitise');
+}
+
+/**
+ * Quick action: Set all active tasks to "Done"
+ */
+function setTaskStatusDone() {
+  setAllActiveTasksToStatus_('Done');
+}
+
+/**
+ * Set all active (non-Done) tasks for current vendor to a specific status
+ */
+function setAllActiveTasksToStatus_(newStatus) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Error', 'List sheet not found.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const currentIdx = getCurrentVendorIndex_();
+  if (!currentIdx) {
+    ui.alert('Error', 'No vendor currently loaded. Please load a vendor first.', ui.ButtonSet.OK);
+    return;
+  }
+
+  const listRow = currentIdx + 1;
+  const vendor = listSh.getRange(listRow, 1).getValue();
+
+  ss.toast(`Loading tasks for ${vendor}...`, '📋 Tasks', 2);
+
+  // Get tasks for this vendor
+  const tasks = getTasksForVendor_(vendor, listRow) || [];
+
+  if (tasks.length === 0) {
+    ui.alert('No Tasks', `No monday.com tasks found for "${vendor}".`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Filter to non-Done/Abandoned tasks
+  const activeTasks = tasks.filter(t => t.status !== 'Done' && t.status !== 'Abandoned');
+
+  if (activeTasks.length === 0) {
+    ui.alert('No Active Tasks', `All tasks for "${vendor}" are already Done or Abandoned.`, ui.ButtonSet.OK);
+    return;
+  }
+
+  // No confirmation - just do the update
+  ss.toast(`Updating ${activeTasks.length} task(s) to "${newStatus}"...`, '📋 Updating', -1);
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const task of activeTasks) {
+    const result = updateMondayTaskStatus_(task.itemId, newStatus);
+    if (result.success) {
+      successCount++;
+    } else {
+      errorCount++;
+    }
+  }
+
+  ss.toast('');
+
+  if (errorCount === 0) {
+    ss.toast(`Successfully updated ${successCount} task(s) to "${newStatus}"`, '✅ Done', 3);
+  } else {
+    ui.alert('Partial Update', `Updated ${successCount} task(s), ${errorCount} failed.`, ui.ButtonSet.OK);
+  }
+
+  // Hard refresh to capture the changes
+  Utilities.sleep(1000);
+  battleStationHardRefresh();
+}
+
+/************************************************************
+ * GOALS TRACKING
+ * Short/Medium/Long-term goals for alignment across sessions
+ ************************************************************/
+
+/**
+ * Get or create the Goals sheet
+ */
+function getGoalsSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('BS_Goals');
+
+  if (!sh) {
+    sh = ss.insertSheet('BS_Goals');
+
+    // Instructions row
+    sh.getRange(1, 1, 1, 5).merge()
+      .setValue('🎯 GOALS - Short/Medium/Long-term goals that A(I)DEN uses for context when generating insights and briefings')
+      .setBackground('#e8f0fe')
+      .setFontWeight('bold')
+      .setWrap(true);
+    sh.setRowHeight(1, 36);
+
+    // Headers
+    sh.getRange(2, 1, 1, 5).setValues([[
+      'Goal', 'Timeframe', 'Priority', 'Status', 'Notes'
+    ]]);
+    sh.getRange(2, 1, 1, 5).setFontWeight('bold').setBackground('#f3f3f3');
+
+    // Example goals
+    sh.getRange(3, 1, 8, 5).setValues([
+      ['Run Weekly Report every Friday afternoon', 'Short (Weekly)', 'High', 'Recurring', 'Needs to be done by EOD Friday'],
+      ['Identify buyers who will buy inbound calls', 'Medium (1-3 months)', 'High', 'In Progress', 'Cross-reference with Phonexa data'],
+      ['Grow Home Services vertical revenue 20%', 'Long (6+ months)', 'High', 'In Progress', ''],
+      ['Onboard 5 new Solar affiliates', 'Medium (1-3 months)', 'Medium', 'Not Started', ''],
+      ['Reduce vendor churn rate', 'Long (6+ months)', 'High', 'In Progress', 'Focus on communication cadence'],
+      ['Clean up stale monday.com tasks', 'Short (This Week)', 'Low', 'Not Started', 'Archive done tasks older than 30 days'],
+      ['Set up automated invoice tracking', 'Medium (1-3 months)', 'Medium', 'Not Started', 'Connect Airtable contracts to accounting'],
+      ['Build vendor scorecards', 'Long (6+ months)', 'Medium', 'Not Started', 'TTL, response time, contract compliance']
+    ]);
+
+    // Formatting
+    sh.setColumnWidth(1, 350);
+    sh.setColumnWidth(2, 160);
+    sh.setColumnWidth(3, 100);
+    sh.setColumnWidth(4, 120);
+    sh.setColumnWidth(5, 300);
+
+    // Color code timeframes
+    for (let i = 3; i <= 10; i++) {
+      const timeframe = String(sh.getRange(i, 2).getValue());
+      if (timeframe.startsWith('Short')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#e8f5e9'); // Green for short
+      } else if (timeframe.startsWith('Medium')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#fff3e0'); // Orange for medium
+      } else if (timeframe.startsWith('Long')) {
+        sh.getRange(i, 1, 1, 5).setBackground('#e3f2fd'); // Blue for long
+      }
+    }
+
+    // Add data validation for Timeframe
+    const timeframeRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Short (This Week)', 'Short (Weekly)', 'Medium (1-3 months)', 'Long (6+ months)'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 2, 50, 1).setDataValidation(timeframeRule);
+
+    // Add data validation for Priority
+    const priorityRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['High', 'Medium', 'Low'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 3, 50, 1).setDataValidation(priorityRule);
+
+    // Add data validation for Status
+    const statusRule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(['Not Started', 'In Progress', 'Recurring', 'Done', 'Blocked'])
+      .setAllowInvalid(true)
+      .build();
+    sh.getRange(3, 4, 50, 1).setDataValidation(statusRule);
+  }
+
+  return sh;
+}
+
+/**
+ * Open the Goals sheet for editing
+ */
+function battleStationManageGoals() {
+  const sh = getGoalsSheet_();
+  SpreadsheetApp.getActive().setActiveSheet(sh);
+  SpreadsheetApp.getActive().toast('Edit your goals here. A(I)DEN uses these for context in Smart Briefing and Insights.', '🎯 Goals', 5);
+}
+
+/**
+ * Read goals as context text for Claude prompts
+ */
+function getGoalsContext_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName('BS_Goals');
+  if (!sh) return '';
+
+  const data = sh.getDataRange().getValues();
+  if (data.length <= 2) return ''; // Only headers
+
+  const goals = [];
+  for (let i = 2; i < data.length; i++) {
+    const goal = data[i][0];
+    const timeframe = data[i][1];
+    const priority = data[i][2];
+    const status = data[i][3];
+    const notes = data[i][4];
+    if (!goal) continue;
+
+    goals.push(`- [${priority}] [${timeframe}] ${goal} (${status})${notes ? ' - ' + notes : ''}`);
+  }
+
+  if (goals.length === 0) return '';
+  return `\n\nAndy's current goals:\n${goals.join('\n')}`;
+}
+
+/************************************************************
+ * INSIGHTS GENERATOR
+ * OpenClaw-style deep analysis and creative idea generation
+ ************************************************************/
+
+/**
+ * Generate strategic insights for the current vendor using Claude
+ * Goes beyond Crystal Ball - suggests creative plays, cross-sell opportunities,
+ * relationship strategies, and actions aligned with goals
+ */
+function battleStationGenerateInsights() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+
+  ss.toast(`Generating insights for ${vendor}...`, '💡 Thinking', 10);
+
+  // Gather rich context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for deeper analysis
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 8)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nFrom: ${latest.getFrom()}\nContent: ${latest.getPlainBody().substring(0, 800)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // Get tasks
+  let tasks = [];
+  try {
+    tasks = getTasksForVendor_(vendor, listRow);
+  } catch (e) { /* skip if fails */ }
+  const taskContext = tasks.slice(0, 10).map(t =>
+    `- ${t.subject} [${t.status}] (${t.project})`
+  ).join('\n');
+
+  // Get goals and AI instructions for alignment
+  const goalsContext = getGoalsContext_();
+  const aiInstructions = getAiInstructions_();
+
+  // TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
+  const prompt = `You are A(I)DEN, an AI strategic advisor for the relationship manager at your company, a lead generation company in Home Services and Solar verticals.
+${aiInstructions}
+Analyze this vendor deeply and generate STRATEGIC INSIGHTS - creative ideas, opportunities, and plays that Andy might not see just from reading emails.
+
+## Vendor Profile
+Name: ${vendor}
+Type: ${source}
+Status: ${status}
+Live Verticals: ${contactData.liveVerticals || '(none)'}
+Other Verticals: ${contactData.otherVerticals || '(none)'}
+Live Modalities: ${contactData.liveModalities || '(none)'}
+States: ${contactData.states || '(none)'}
+Notes: ${notes || '(none)'}
+
+## Contacts (${contactData.contacts.length})
+${contactData.contacts.slice(0, 5).map(c => `- ${c.name} (${c.contactType}, ${c.status}) ${c.email || ''}`).join('\n')}
+
+## Recent Emails (${unsnoozed.length} active, ${overdue.length} overdue)
+${emailContext || '(no emails)'}
+
+## Active Tasks
+${taskContext || '(no tasks)'}
+${goalsContext}
+
+Generate insights in these categories:
+
+## 💡 STRATEGIC INSIGHTS
+[3-5 non-obvious observations about this vendor relationship. What patterns do you see? What's the trajectory? What signals are in the emails?]
+
+## 🚀 GROWTH PLAYS
+[2-3 specific actions to grow revenue or deepen the relationship. Be creative - cross-sell to new verticals? Expand to new states? Increase volume?]
+
+## ⚠️ WATCH OUT FOR
+[1-2 risks or warning signs. Is the vendor going cold? Are there red flags in the communication?]
+
+## 🎯 GOAL ALIGNMENT
+[How does this vendor connect to Andy's goals? What actions on this vendor move the needle on the bigger picture?]
+
+## ✅ NEXT BEST ACTION
+[The single most impactful thing Andy should do RIGHT NOW with this vendor. Be specific.]
+
+Be bold, be creative, be specific. Reference actual email content and data points.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #2e7d32; margin-top: 0; }
+        h3 { color: #2e7d32; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #4caf50; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 12px; }
+        .vendor-card { background: #e8f5e9; padding: 8px 12px; border-radius: 4px; margin-bottom: 12px; }
+        .vendor-card strong { color: #2e7d32; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
+      </style>
+      <h2>💡 Insights: ${vendor}</h2>
+      <div class="vendor-card">
+        <strong>${source}</strong> | ${status} | ${unsnoozed.length} active emails, ${overdue.length} overdue
+      </div>
+      <p class="meta">${new Date().toLocaleString()}</p>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
+    ui.showModalDialog(html, `💡 A(I)DEN Insights: ${vendor}`);
+    ss.toast('Insights ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Generate cross-vendor insights aligned with goals (batch mode)
+ * Like Smart Briefing but focused on strategic opportunities, not just urgency
+ */
+function battleStationGoalInsights() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const goalsContext = getGoalsContext_();
+  if (!goalsContext) {
+    const create = ui.alert('No Goals Found', 'You haven\'t set up any goals yet.\n\nWould you like to open the Goals sheet now?', ui.ButtonSet.YES_NO);
+    if (create === ui.Button.YES) {
+      battleStationManageGoals();
+    }
+    return;
+  }
+
+  ss.toast('Scanning vendors against your goals...', '🎯 Analyzing', 10);
+
+  const allVendors = listSh.getRange(2, 1, listSh.getLastRow() - 1, 8).getValues();
+  const vendorSnapshots = [];
+
+  for (let i = 0; i < Math.min(allVendors.length, 30); i++) {
+    const vendor = allVendors[i][BS_CFG.L_VENDOR];
+    const ttl = allVendors[i][BS_CFG.L_TTL_USD] || 0;
+    const source = allVendors[i][BS_CFG.L_SOURCE] || '';
+    const status = allVendors[i][BS_CFG.L_STATUS] || '';
+    const notes = allVendors[i][BS_CFG.L_NOTES] || '';
+
+    if (!vendor) continue;
+
+    // vendorSnapshots.push(`${vendor} | ${source} | ${status} | TTL: $${Number(ttl).toLocaleString()} | Notes: ${(notes || '').substring(0, 150)}`); // TODO: Re-enable TTL when actively used
+    vendorSnapshots.push(`${vendor} | ${source} | ${status} | Notes: ${(notes || '').substring(0, 150)}`);
+  }
+
+  ss.toast(`Generating goal-aligned insights for ${vendorSnapshots.length} vendors...`, '🎯 Processing', 15);
+
+  const aiInstructions = getAiInstructions_();
+
+  const prompt = `You are A(I)DEN, a strategic AI advisor for the relationship manager at your company (lead generation, Home Services and Solar).
+${aiInstructions}
+Here are Andy's vendors (${vendorSnapshots.length}):
+${vendorSnapshots.join('\n')}
+${goalsContext}
+
+Based on Andy's GOALS and his vendor portfolio, provide a GOAL-ALIGNED INSIGHT REPORT:
+
+## 🎯 GOAL PROGRESS CHECK
+[For each of Andy's active goals: What's the status? Which vendors are relevant? What's the next action?]
+
+## 💡 STRATEGIC OPPORTUNITIES
+[3-5 creative plays that connect specific vendors to specific goals. Be specific: "Vendor X could help with Goal Y by doing Z."]
+
+## 📊 THIS WEEK'S FOCUS
+[Given the goals and vendor landscape, what should Andy prioritize THIS WEEK? Give 3-5 concrete actions with vendor names.]
+
+## 🔮 30-DAY OUTLOOK
+[Where will things be in 30 days if Andy executes well? What risks could derail progress?]
+
+Be specific, reference actual vendor names and goals, and give actionable recommendations.`;
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 3000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #e65100; margin-top: 0; }
+        h3 { color: #e65100; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #ff9800; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 10px; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
+      </style>
+      <h2>🎯 Goal-Aligned Insights</h2>
+      <p class="meta">Analyzed ${vendorSnapshots.length} vendors against your goals | ${new Date().toLocaleString()}</p>
+      <button class="copy-btn" onclick="copyContent()">Copy to Clipboard</button>
+      <div id="goal-insights-content">${content}</div>
+      <script>
+        function copyContent() {
+          var el = document.getElementById('goal-insights-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = 'Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = 'Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+      </script>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(800).setHeight(700);
+    ui.showModalDialog(html, '🎯 A(I)DEN - Goal-Aligned Insights');
+    ss.toast('Goal insights ready!', '✅ Done', 3);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/************************************************************
+ * VENDOR BRIEFING - Full Intelligence Report
+ * Aggregates ALL vendor data sources into a comprehensive
+ * briefing with actionable bullet points for meetings/calls
+ ************************************************************/
+
+/**
+ * Generate a comprehensive vendor intelligence briefing.
+ * Aggregates: emails, documents, tasks, notes, blockers, contracts,
+ * helpful links, meetings, Google Drive, Box docs, and relationship context.
+ * Outputs actionable bullet points for vendor meetings.
+ */
+function battleStationVendorBriefing() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ A(I)DEN → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendorData = listSh.getRange(listRow, 1, 1, 8).getValues()[0];
+  const vendor = String(vendorData[BS_CFG.L_VENDOR] || '').trim();
+  const ttlUsd = vendorData[BS_CFG.L_TTL_USD] || 0;
+  const source = vendorData[BS_CFG.L_SOURCE] || '';
+  const status = vendorData[BS_CFG.L_STATUS] || '';
+  const notes = vendorData[BS_CFG.L_NOTES] || '';
+
+  if (!vendor) {
+    ui.alert('Could not determine vendor name.');
+    return;
+  }
+
+  ss.toast(`Building full intelligence briefing for ${vendor}...`, '📋 Vendor Briefing', 15);
+
+  // ─── 1. VENDOR PROFILE (monday.com) ───
+  let contactData = { contacts: [], notes: '', blockers: '', liveVerticals: '', otherVerticals: '', liveModalities: '', states: '', deadStates: '', phonexaLink: '', liveStatus: '' };
+  try { contactData = getVendorContacts_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Contact error: ${e.message}`); }
+
+  // ─── 2. EMAILS ───
+  let emails = [];
+  try { emails = getEmailsForVendor_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Email error: ${e.message}`); }
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for the most important threads
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 10)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        const labels = Array.isArray(email.labels) ? email.labels : (email.labels || '').split(',');
+        const isOverdue = overdue.some(o => o.threadId === email.threadId);
+        emailContext += `\n[${isOverdue ? '🔴 OVERDUE' : '📧'}] Subject: ${email.subject}\n  Date: ${email.date}\n  Labels: ${labels.join(', ')}\n  From: ${latest.getFrom()}\n  Content: ${latest.getPlainBody().substring(0, 600)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\n📧 ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // ─── 3. TASKS ───
+  let tasks = [];
+  try { tasks = getTasksForVendor_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Tasks error: ${e.message}`); }
+  const openTasks = tasks.filter(t => !t.isDone);
+  const completedTasks = tasks.filter(t => t.isDone);
+  const blockerTasks = tasks.filter(t => t.isBlocker && !t.isDone);
+
+  // ─── 4. CONTRACTS (Airtable) ───
+  let contracts = { contracts: [], hasContracts: false };
+  try { contracts = getVendorContracts_(vendor); } catch (e) { Logger.log(`[Briefing] Contracts error: ${e.message}`); }
+
+  // ─── 5. HELPFUL LINKS ───
+  let helpfulLinks = [];
+  try { helpfulLinks = getHelpfulLinksForVendor_(vendor, listRow); } catch (e) { Logger.log(`[Briefing] Links error: ${e.message}`); }
+
+  // ─── 6. MEETINGS (Google Calendar) ───
+  let meetings = [];
+  try {
+    const contactEmails = (contactData.contacts || []).map(c => c.email).filter(e => e && e.includes('@'));
+    const meetingsResult = getUpcomingMeetingsForVendor_(vendor, contactEmails);
+    meetings = meetingsResult.meetings || [];
+  } catch (e) { Logger.log(`[Briefing] Meetings error: ${e.message}`); }
+
+  // ─── 7. GOOGLE DRIVE DOCS ───
+  let gDriveFiles = [];
+  try {
+    const gDriveResult = getGDriveFilesForVendor_(vendor);
+    gDriveFiles = Array.isArray(gDriveResult) ? gDriveResult : (gDriveResult && gDriveResult.files ? gDriveResult.files : []);
+  } catch (e) { Logger.log(`[Briefing] GDrive error: ${e.message}`); }
+
+  // ─── 8. BOX DOCUMENTS ───
+  let boxDocs = [];
+  try {
+    const boxResult = searchBoxForVendor(vendor);
+    boxDocs = Array.isArray(boxResult) ? boxResult : [];
+  } catch (e) { Logger.log(`[Briefing] Box error: ${e.message}`); }
+
+  // ─── 9. GOALS & AI INSTRUCTIONS ───
+  const goalsContext = getGoalsContext_();
+  const aiInstructions = getAiInstructions_();
+
+  // ─── 10. GOOGLE SHEET CONTEXT ───
+  // Pull the vendor's row data from the List sheet for extra context
+  const tranche = listSh.getRange(listRow, 9).getValue() || '(none)';
+
+  ss.toast('Analyzing all data with Claude...', '🤖 Thinking', 15);
+
+  // ─── BUILD THE MEGA-PROMPT ───
+  const tasksContext = openTasks.map(t =>
+    `- [${t.status}] ${t.subject} (Project: ${t.project || 'N/A'}${t.notes ? ', Notes: ' + t.notes.substring(0, 100) : ''})`
+  ).join('\n') || '(no open tasks)';
+
+  const completedTasksContext = completedTasks.slice(0, 8).map(t =>
+    `- ✅ ${t.subject} (${t.status})`
+  ).join('\n') || '(none)';
+
+  const blockerContext = blockerTasks.map(t =>
+    `- 🚧 ${t.subject} (${t.status}${t.notes ? ' - ' + t.notes.substring(0, 100) : ''})`
+  ).join('\n') || '(none)';
+
+  const contractsContext = contracts.contracts.map(c =>
+    `- ${c.contractType || 'Contract'}: ${c.status || 'Unknown'} (${c.vertical || 'N/A'}) ${c.notes ? '- ' + c.notes.substring(0, 100) : ''} [${c.createdDate || ''}]`
+  ).join('\n') || '(no contracts)';
+
+  const linksContext = helpfulLinks.map(l =>
+    `- ${l.name || l.title || 'Link'}: ${l.url || l.link || '(no URL)'}`
+  ).join('\n') || '(none)';
+
+  const meetingsContext = meetings.map(m =>
+    `- ${m.isPast ? '(PAST)' : '(UPCOMING)'} ${m.title} - ${m.date} ${m.time || ''}${m.attendees ? ' [' + m.attendees.join(', ') + ']' : ''}`
+  ).join('\n') || '(no meetings)';
+
+  const docsContext = [
+    ...gDriveFiles.map(f => `- [GDrive] ${f.name} (Modified: ${f.modified || 'N/A'})`),
+    ...boxDocs.map(f => `- [Box] ${f.name} (${f.type || 'file'}, Modified: ${f.modified || 'N/A'})`)
+  ].join('\n') || '(no documents)';
+
+  const contactsContext = contactData.contacts.slice(0, 10).map(c =>
+    `- ${c.name} (${c.contactType || 'Unknown'}, ${c.status || 'N/A'}) ${c.email || ''} ${c.phone || ''}`
+  ).join('\n') || '(no contacts)';
+
+  // - TTL (Lifetime Value): $${Number(ttlUsd).toLocaleString()} // TODO: Re-enable TTL when actively used
+  let prompt = `You are A(I)DEN, the company's AI vendor intelligence system. Generate a COMPREHENSIVE BRIEFING for Andy Worford before he engages with vendor "${vendor}".
+
+This briefing should give Andy everything he needs to walk into a call, meeting, or email exchange and be fully prepared. Think of it as a pre-meeting intelligence packet.
+${aiInstructions}
+
+═══════════════════════════════════════
+COMPLETE VENDOR DOSSIER: ${vendor}
+═══════════════════════════════════════
+
+📊 PROFILE
+- Type: ${source}
+- Status: ${contactData.liveStatus || status || 'Unknown'}
+- Priority Zone: ${tranche}
+- Live Verticals: ${contactData.liveVerticals || '(none)'}
+- Other Verticals: ${contactData.otherVerticals || '(none)'}
+- Live Modalities: ${contactData.liveModalities || '(none)'}
+- States: ${contactData.states || '(none)'}
+- Dead States: ${contactData.deadStates || '(none)'}
+- Phonexa Link: ${contactData.phonexaLink || '(not set)'}
+- Other Name: ${contactData.otherName || '(none)'}
+
+👥 CONTACTS (${contactData.contacts.length})
+${contactsContext}
+
+📝 VENDOR NOTES (from monday.com)
+${contactData.notes || notes || '(no notes)'}
+
+🚧 BLOCKERS
+${blockerContext}
+
+💬 CHAT CONVERSATIONS
+${getChatContext_(vendor)}
+
+📧 OUTSTANDING EMAILS (${unsnoozed.length} active, ${overdue.length} overdue)
+${emailContext || '(no emails)'}
+
+📋 OPEN TASKS (${openTasks.length})
+${tasksContext}
+
+✅ RECENTLY COMPLETED (${completedTasks.length})
+${completedTasksContext}
+
+📄 CONTRACTS (Airtable) (${contracts.contracts.length})
+${contractsContext}
+
+🔗 HELPFUL LINKS (${helpfulLinks.length})
+${linksContext}
+
+📅 MEETINGS
+${meetingsContext}
+
+📁 DOCUMENTS
+${docsContext}
+${goalsContext}
+
+═══════════════════════════════════════
+BRIEFING INSTRUCTIONS
+═══════════════════════════════════════
+
+Generate a briefing with these sections. Be specific, reference actual data, and prioritize actionable intelligence:
+
+## 🏢 RELATIONSHIP SUMMARY
+[2-3 sentences on the overall relationship: How long have we worked with them? What's the trajectory - growing, stagnant, declining? What's the vibe from the emails? Are they a high-value partner or a low-priority vendor?]
+
+## 🔥 WHAT'S HOT RIGHT NOW
+[Bullet points of everything that needs IMMEDIATE attention: overdue emails, blockers, urgent tasks. For each item, say what it is and what Andy should do about it.]
+
+## 📧 OUTSTANDING EMAIL ACTIONS
+[For each outstanding email thread:
+- What is it about?
+- Who has the ball (us or them)?
+- What's the next action?
+Group by urgency: overdue first, then waiting-on-vendor, then waiting-on-us.]
+
+## 📄 OUTSTANDING DOCUMENTS & CONTRACTS
+[Any contracts pending, documents that need review, links that need attention. What's the status of each?]
+
+## 📋 TASK CHECKPOINT
+[What tasks are open? Which are blocking progress? What's the logical next step in the onboarding/project flow?]
+
+## 🚧 BLOCKERS & RESOLUTION PATH
+[For each blocker: What's blocking? Who needs to act? What's the fastest path to resolution? Cross-reference with emails - has the vendor maybe already done something about it?]
+
+## 💬 TALKING POINTS
+[5-8 bullet points Andy can use in a call or meeting. These should be specific, actionable things to bring up. Include:
+- Things to follow up on
+- Questions to ask
+- Updates to share
+- Asks to make
+- Relationship-building angles]
+
+## 🎯 ACTION PLAN
+[Numbered list of specific next steps Andy should take, in priority order. Each action should be concrete: "Reply to email about X with Y" not "Follow up on emails".]
+
+Be direct, concise, and strategic. Andy is busy - make every word count.`;
+
+  // Add previous action plan and notes for this vendor (truncated to avoid timeout)
+  const prevPlan = getPreviousActionPlan_(vendor);
+  if (prevPlan && prevPlan.actionPlan) {
+    prompt += `\n\n═══ PREVIOUS ACTION PLAN ═══\n${prevPlan.actionPlan.substring(0, 1500)}`;
+    if (prevPlan.userNotes) {
+      prompt += `\n\nANDY'S NOTES ON PREVIOUS PLAN:\n${prevPlan.userNotes.substring(0, 800)}`;
+    }
+    prompt += `\n\nCheck if any previous action items are still unresolved and carry them forward.`;
+  }
+
+  // Add general notes that apply across all vendors
+  const generalNotes = getGeneralNotes_();
+  if (generalNotes) {
+    prompt += `\n\n═══ GENERAL CONTEXT ═══\n${generalNotes.substring(0, 800)}`;
+  }
+
+  try {
+    const response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+    if (response.error) {
+      ui.alert(`Claude API Error: ${response.error}`);
+      return;
+    }
+
+    // Save the raw briefing to the Action Plans sheet
+    saveBriefingToSheet_(vendor, response.content);
+
+    // Store context for revision
+    const briefingContext = {
+      vendor: vendor,
+      source: source,
+      status: contactData.liveStatus || status,
+      rawContent: response.content,
+      listRow: listRow,
+      tranche: tranche
+    };
+    PropertiesService.getUserProperties().setProperty('vendorBriefingContext', JSON.stringify(briefingContext));
+
+    // Format the response for HTML display
+    let content = response.content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br>')
+      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+    // Build data summary badges
+    const badges = [];
+    badges.push(`${unsnoozed.length} emails`);
+    if (overdue.length > 0) badges.push(`<span style="color:#c62828">${overdue.length} overdue</span>`);
+    badges.push(`${openTasks.length} tasks`);
+    if (blockerTasks.length > 0) badges.push(`<span style="color:#e65100">${blockerTasks.length} blockers</span>`);
+    if (contracts.contracts.length > 0) badges.push(`${contracts.contracts.length} contracts`);
+    if (meetings.length > 0) badges.push(`${meetings.length} meetings`);
+    if (gDriveFiles.length + boxDocs.length > 0) badges.push(`${gDriveFiles.length + boxDocs.length} docs`);
+
+    const htmlContent = `
+      <style>
+        body { font-family: Arial, sans-serif; padding: 15px; line-height: 1.6; font-size: 13px; }
+        h2 { color: #1565c0; margin-top: 0; }
+        h3 { color: #1565c0; margin-top: 16px; margin-bottom: 8px; border-bottom: 2px solid #1a73e8; padding-bottom: 4px; }
+        strong { color: #333; }
+        .meta { color: #888; font-size: 11px; margin-bottom: 8px; }
+        .vendor-card { background: #e3f2fd; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #1a73e8; }
+        .vendor-card strong { color: #1565c0; }
+        .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+        .badge { background: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; border: 1px solid #ddd; }
+        .copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }
+        .copy-btn:hover { background: #1557b0; }
+        .copied { background: #4caf50 !important; }
+        .revise-section { margin-top: 12px; padding-top: 12px; border-top: 1px solid #e0e0e0; }
+        .revise-input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; box-sizing: border-box; min-height: 60px; }
+        .revise-label { font-size: 12px; color: #5f6368; margin-bottom: 4px; }
+        .btn-revise { background: #f57c00; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 6px; }
+        .btn-revise:hover { background: #e65100; }
+        .btn-revise:disabled { background: #ccc; cursor: not-allowed; }
+        .loading { color: #5f6368; font-style: italic; margin-top: 6px; display: none; }
+      </style>
+      <h2>📋 Vendor Briefing: ${escapeHtml_(vendor)}</h2>
+      <div class="vendor-card">
+        <strong>${escapeHtml_(source)}</strong> | ${escapeHtml_(contactData.liveStatus || status)}
+        <div class="badges">${badges.map(b => '<span class="badge">' + b + '</span>').join('')}</div>
+      </div>
+      <p class="meta">Generated ${new Date().toLocaleString()} | Data sources: monday.com, Gmail, Airtable, Calendar, GDrive, Box</p>
+      <button class="copy-btn" onclick="copyBriefing()">📋 Copy to Clipboard</button>
+      <hr style="margin: 12px 0; border: none; border-top: 1px solid #eee;">
+      <div id="briefing-content">${content}</div>
+      <div class="revise-section">
+        <div class="revise-label">Add notes or corrections to revise the action plan:</div>
+        <div style="background:#e8f5e9;padding:6px 10px;border-radius:4px;font-size:11px;margin-bottom:6px;color:#2e7d32;border:1px solid #c8e6c9;">
+          <strong>Tip:</strong> Start a line with <code>GENERAL:</code> to save a note that applies to <em>all</em> vendors (e.g., <code>GENERAL: Inbound calls program is on hold</code>). Regular notes only apply to this vendor.
+        </div>
+        <textarea id="reviseInput" class="revise-input" placeholder="e.g., Returns are already processed. NDA was already signed.&#10;GENERAL: Inbound calls program is on hold across all vendors."></textarea>
+        <button id="reviseBtn" class="btn-revise" onclick="doRevise()">Revise Action Plan</button>
+        <div id="reviseLoading" class="loading">Revising with Claude...</div>
+      </div>
+      <script>
+        function copyBriefing() {
+          var el = document.getElementById('briefing-content');
+          var text = el.innerText || el.textContent;
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          var btn = document.querySelector('.copy-btn');
+          btn.textContent = '✅ Copied!';
+          btn.classList.add('copied');
+          setTimeout(function() { btn.textContent = '📋 Copy to Clipboard'; btn.classList.remove('copied'); }, 2000);
+        }
+        function doRevise() {
+          var feedback = document.getElementById('reviseInput').value.trim();
+          if (!feedback) { alert('Please enter your notes or corrections.'); return; }
+          document.getElementById('reviseBtn').disabled = true;
+          document.getElementById('reviseLoading').style.display = 'block';
+          google.script.run
+            .withSuccessHandler(function(newContent) {
+              document.getElementById('briefing-content').innerHTML = newContent;
+              document.getElementById('reviseInput').value = '';
+              document.getElementById('reviseBtn').disabled = false;
+              document.getElementById('reviseLoading').style.display = 'none';
+            })
+            .withFailureHandler(function(err) {
+              alert('Error: ' + (err.message || err));
+              document.getElementById('reviseBtn').disabled = false;
+              document.getElementById('reviseLoading').style.display = 'none';
+            })
+            .reviseBriefingActionPlan(feedback);
+        }
+      </script>
+    `;
+
+    const html = HtmlService.createHtmlOutput(htmlContent).setWidth(850).setHeight(750);
+    // Re-acquire UI reference in case it went stale during long API calls
+    SpreadsheetApp.getUi().showModalDialog(html, `📋 Vendor Briefing: ${vendor}`);
+    SpreadsheetApp.getActive().toast('Briefing ready!', '✅ Done', 3);
+
+  } catch (e) {
+    SpreadsheetApp.getUi().alert(`Error generating briefing: ${e.message}`);
+  }
+}
+
+/************************************************************
+ * BULK ACTIONS
+ * Parse free-text input to identify and execute multiple
+ * vendor operations at once (status changes, URL updates, etc.)
+ ************************************************************/
+
+/**
+ * Entry point: prompt user for free-text, parse into actions, show confirmation dialog.
+ */
+function battleStationBulkActions() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  if (!listSh) {
+    ui.alert('Vendor list not found.');
+    return;
+  }
+
+  const claudeApiKey = getClaudeApiKey_();
+  if (!claudeApiKey || claudeApiKey === 'YOUR_ANTHROPIC_API_KEY_HERE') {
+    ui.alert('Please set your Anthropic API key in BS_CFG.CLAUDE_API_KEY');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex || isNaN(currentIndex)) {
+    ui.alert('No vendor currently loaded. Please load a vendor first.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  if (!vendor) {
+    ui.alert('Could not determine vendor name.');
+    return;
+  }
+
+  // Check for pre-extracted chat action items
+  var chatActions = '';
+  try {
+    chatActions = PropertiesService.getScriptProperties().getProperty('CHAT_ACTIONS_' + vendor) || '';
+  } catch (e) { /* ignore */ }
+
+  // Show input dialog
+  var escapedChatActions = chatActions.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '\\n');
+  const inputHtml = `
+    <style>
+      body { font-family: Arial, sans-serif; padding: 15px; }
+      h3 { color: #1a73e8; margin-top: 0; }
+      textarea { width: 100%; height: 200px; font-size: 13px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; resize: vertical; }
+      .hint { color: #888; font-size: 12px; margin-top: 8px; line-height: 1.5; }
+      .hint strong { color: #555; }
+      .chat-actions { background: #fff3e0; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 12px; border: 1px solid #ffe0b2; }
+      .chat-actions strong { color: #e65100; }
+      button { background: #1a73e8; color: white; border: none; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; margin-top: 12px; }
+      button:hover { background: #1557b0; }
+    </style>
+    <h3>⚡ Bulk Actions for ${escapeHtml_(vendor)}</h3>
+    ${chatActions ? '<div class="chat-actions"><strong>From chat:</strong> Action items from recent chat have been pre-loaded below. Edit or add to them.</div>' : ''}
+    <p style="font-size: 13px; color: #333;">Describe everything you want to do - I'll figure out the individual actions:</p>
+    <textarea id="input" placeholder="e.g. Change status to Live, update the phonexa link to https://example.com/report, add a note that they confirmed pricing, mark the Setup Tracking task as Done, update blockers to say waiting on IO signature"></textarea>
+    <div class="hint">
+      <strong>Supported actions:</strong> Change vendor status/group, update notes, update blockers,
+      update Phonexa link, change task statuses, add helpful links, and more.
+    </div>
+    <button onclick="submit()">🤖 Parse Actions</button>
+    <script>
+      // Pre-populate with chat action items if available
+      var chatActions = "${escapedChatActions}";
+      if (chatActions) {
+        document.getElementById('input').value = chatActions.replace(/\\\\n/g, '\\n');
+      }
+      function submit() {
+        var text = document.getElementById('input').value.trim();
+        if (!text) { alert('Please describe what you want to do.'); return; }
+        google.script.run
+          .withSuccessHandler(function() { google.script.host.close(); })
+          .withFailureHandler(function(e) { alert('Error: ' + e.message); })
+          .battleStationBulkActionsParse(text);
+      }
+      // Auto-focus
+      document.getElementById('input').focus();
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(inputHtml).setWidth(600).setHeight(400);
+  ui.showModalDialog(htmlOutput, '⚡ Bulk Actions');
+}
+
+/**
+ * Parse user's free-text input into structured actions using Claude,
+ * then show a confirmation dialog.
+ * @param {string} rawInput - The user's free-text description
+ */
+function battleStationBulkActionsParse(rawInput) {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  const currentIndex = getCurrentVendorIndex_();
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+
+  ss.toast('Parsing actions with Claude...', '🤖 Bulk Actions', 5);
+
+  // Gather current vendor state so Claude has context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const tasks = getTasksForVendor_(vendor, listRow);
+  const openTasks = tasks.filter(t => !t.isDone);
+
+  const taskList = openTasks.map(t => `- "${t.subject}" (Status: ${t.status})`).join('\n');
+
+  const prompt = `You are a vendor management assistant. A user has described actions they want to take for vendor "${vendor}" (${source}).
+
+CURRENT VENDOR STATE:
+- Vendor Status (group): ${contactData.liveStatus || 'Unknown'}
+- Notes: ${(contactData.notes || '(none)').substring(0, 300)}
+- Blockers: ${contactData.blockers || '(none)'}
+- Phonexa Link: ${contactData.phonexaLink || '(none)'}
+- Live Verticals: ${contactData.liveVerticals || '(none)'}
+- Other Verticals: ${contactData.otherVerticals || '(none)'}
+- Live Modalities: ${contactData.liveModalities || '(none)'}
+
+OPEN TASKS:
+${taskList || '(no open tasks)'}
+
+USER INPUT:
+"${rawInput}"
+
+Parse the user's input into individual actions. For each action, output a line in this EXACT format:
+
+ACTION: <type> | <details>
+
+Supported action types and their detail formats:
+- ACTION: UPDATE_NOTES | <new notes text to APPEND>
+- ACTION: REPLACE_NOTES | <complete new notes text to REPLACE existing>
+- ACTION: UPDATE_BLOCKERS | <new blockers text>
+- ACTION: CHANGE_TASK_STATUS | <task name> | <new status: Done, Waiting on Client, Waiting on Profitise, Waiting on Phonexa, Abandoned>
+- ACTION: UPDATE_PHONEXA_LINK | <url>
+- ACTION: ADD_HELPFUL_LINK | <link name> | <url>
+- ACTION: CHANGE_STATUS | <new status/group name, e.g. "Early Talks", "Live", "Onboarding", "Paused", "Dead">
+- ACTION: RESEARCH | <description of what needs to be researched - this is informational and will be shown as a reminder>
+
+IMPORTANT RULES:
+- Only output ACTION lines and UNMATCHED lines - no commentary or explanation
+- For notes, if the user says "add a note" or "note that" → use UPDATE_NOTES (appends). If they say "change notes to" or "set notes to" → use REPLACE_NOTES
+- For task statuses, match the task name as closely as possible to the open tasks listed above
+- If you cannot determine the action type, skip it
+- Output one ACTION line per action identified
+- For multi-line content (bullet points, lists), put ALL the content after the pipe. Continuation lines (without ACTION: prefix) will be merged into the preceding action. Example:
+  ACTION: UPDATE_NOTES | Notes with bullets:
+  - bullet 1
+  - bullet 2
+  - bullet 3
+
+CRITICAL: After all ACTION lines, output an UNMATCHED section for any parts of the user's input that you could NOT map to an action. Use this format:
+UNMATCHED: <original text from user input> | <reason it couldn't be matched, e.g. "no matching task found", "ambiguous instruction", "not a supported action type">
+
+This helps the user see what was missed so they can rephrase or handle it manually. If everything was matched, output:
+UNMATCHED: (none)`;
+
+  const response = callClaudeAPI_(prompt, getClaudeApiKey_(), { maxTokens: 1500 });
+
+  if (response.error) {
+    ui.alert(`Claude API Error: ${response.error}`);
+    return;
+  }
+
+  Logger.log(`Bulk actions Claude response: ${response.content}`);
+
+  // Parse Claude's response into structured actions + unmatched items
+  const parseResult = parseBulkActions_(response.content, openTasks, contactData);
+  const actions = parseResult.actions;
+  const unmatched = parseResult.unmatched;
+
+  if (actions.length === 0 && unmatched.length === 0) {
+    ui.alert('No actions identified', 'Claude could not identify any actionable operations from your input. Try being more specific.', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Store actions for the confirmation dialog to use
+  PropertiesService.getUserProperties().setProperty('bulkActionsData', JSON.stringify({
+    vendor: vendor,
+    source: source,
+    listRow: listRow,
+    actions: actions
+  }));
+
+  // Show confirmation dialog with match transparency
+  showBulkActionsDialog_(vendor, actions, unmatched);
+}
+
+/**
+ * Parse Claude's ACTION lines into structured action objects.
+ */
+function parseBulkActions_(claudeResponse, openTasks, contactData) {
+  const actions = [];
+  const unmatched = [];
+  const lines = claudeResponse.split('\n');
+
+  // First pass: merge continuation lines into their preceding ACTION line.
+  // Lines that don't start with "ACTION:" or "UNMATCHED:" are appended to the previous line's detail.
+  const mergedActionLines = [];
+  const unmatchedLines = [];
+  let currentTarget = null; // 'action' or 'unmatched'
+
+  for (const line of lines) {
+    const actionMatch = line.match(/^ACTION:\s*(.+)/i);
+    const unmatchedMatch = line.match(/^UNMATCHED:\s*(.+)/i);
+
+    if (actionMatch) {
+      mergedActionLines.push(actionMatch[1]);
+      currentTarget = 'action';
+    } else if (unmatchedMatch) {
+      const text = unmatchedMatch[1].trim();
+      if (text !== '(none)') {
+        unmatchedLines.push(text);
+      }
+      currentTarget = 'unmatched';
+    } else if (line.trim()) {
+      // Continuation line - append to the last entry of whichever type we're in
+      if (currentTarget === 'action' && mergedActionLines.length > 0) {
+        mergedActionLines[mergedActionLines.length - 1] += '\n' + line;
+      } else if (currentTarget === 'unmatched' && unmatchedLines.length > 0) {
+        unmatchedLines[unmatchedLines.length - 1] += '\n' + line;
+      }
+    }
+  }
+
+  // Parse UNMATCHED lines into structured objects
+  for (const raw of unmatchedLines) {
+    const parts = raw.split('|').map(s => s.trim());
+    unmatched.push({
+      text: parts[0] || raw,
+      reason: parts[1] || 'Could not map to a supported action'
+    });
+  }
+
+  for (const rawLine of mergedActionLines) {
+    // Split only on the first pipe(s) for type and structured fields,
+    // but keep the detail text intact (it may contain pipes in URLs etc.)
+    const parts = rawLine.split('|').map(s => s.trim());
+    const type = parts[0].toUpperCase();
+
+    switch (type) {
+      case 'UPDATE_NOTES': {
+        if (parts[1]) {
+          // Rejoin remaining parts in case the detail text contained pipe characters
+          const detail = parts.slice(1).join(' | ');
+          actions.push({
+            type: 'UPDATE_NOTES',
+            label: 'Append to Notes',
+            detail: detail,
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
+          });
+        }
+        break;
+      }
+      case 'REPLACE_NOTES': {
+        if (parts[1]) {
+          const detail = parts.slice(1).join(' | ');
+          actions.push({
+            type: 'REPLACE_NOTES',
+            label: 'Replace Notes',
+            detail: detail,
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
+          });
+        }
+        break;
+      }
+      case 'UPDATE_BLOCKERS': {
+        if (parts[1]) {
+          const detail = parts.slice(1).join(' | ');
+          actions.push({
+            type: 'UPDATE_BLOCKERS',
+            label: 'Update Blockers',
+            detail: detail,
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
+          });
+        }
+        break;
+      }
+      case 'CHANGE_TASK_STATUS': {
+        if (parts[1] && parts[2]) {
+          const taskName = parts[1];
+          const newStatus = parts[2];
+          // Match to an actual open task
+          const matchingTask = openTasks.find(t =>
+            t.subject.toLowerCase().includes(taskName.toLowerCase()) ||
+            taskName.toLowerCase().includes(t.subject.replace(/ - [^-]+$/, '').toLowerCase())
+          );
+          if (matchingTask) {
+            actions.push({
+              type: 'CHANGE_TASK_STATUS',
+              label: 'Change Task Status',
+              detail: newStatus,
+              taskName: matchingTask.subject,
+              taskItemId: matchingTask.itemId,
+              taskStatusColumnId: matchingTask.statusColumnId,
+              currentStatus: matchingTask.status,
+              preview: `"${matchingTask.subject}": ${matchingTask.status} → ${newStatus}`,
+              matchedFrom: `Task "${taskName}" → matched to "${matchingTask.subject}"`
+            });
+          } else {
+            // Task name didn't match - add to unmatched with available tasks for context
+            const availableTasks = openTasks.map(t => t.subject).join(', ');
+            unmatched.push({
+              text: `Change task "${taskName}" to ${newStatus}`,
+              reason: `No matching open task found. Available tasks: ${availableTasks || '(none)'}`
+            });
+          }
+        }
+        break;
+      }
+      case 'UPDATE_PHONEXA_LINK': {
+        if (parts[1]) {
+          actions.push({
+            type: 'UPDATE_PHONEXA_LINK',
+            label: 'Update Phonexa Link',
+            detail: parts[1],
+            preview: parts[1],
+            matchedFrom: parts[1]
+          });
+        }
+        break;
+      }
+      case 'ADD_HELPFUL_LINK': {
+        if (parts[1] && parts[2]) {
+          actions.push({
+            type: 'ADD_HELPFUL_LINK',
+            label: 'Add Helpful Link',
+            detail: parts[2],
+            linkName: parts[1],
+            preview: `${parts[1]} → ${parts[2]}`,
+            matchedFrom: `${parts[1]}: ${parts[2]}`
+          });
+        }
+        break;
+      }
+      case 'CHANGE_STATUS': {
+        if (parts[1]) {
+          const newStatus = parts.slice(1).join(' | ').trim();
+          const currentStatus = contactData.liveStatus || 'Unknown';
+          actions.push({
+            type: 'CHANGE_STATUS',
+            label: 'Change Vendor Status',
+            detail: newStatus,
+            currentStatus: currentStatus,
+            mondayItemId: contactData.mondayItemId,
+            boardId: contactData.boardId,
+            preview: `${currentStatus} → ${newStatus}`,
+            matchedFrom: `Status change to "${newStatus}"`
+          });
+        }
+        break;
+      }
+      case 'RESEARCH': {
+        if (parts[1]) {
+          const detail = parts.slice(1).join(' | ').trim();
+          actions.push({
+            type: 'RESEARCH',
+            label: 'Research Reminder',
+            detail: detail,
+            preview: detail,
+            matchedFrom: detail.substring(0, 80)
+          });
+        }
+        break;
+      }
+    }
+  }
+
+  return { actions: actions, unmatched: unmatched };
+}
+
+/**
+ * Show confirmation dialog with parsed actions.
+ */
+function showBulkActionsDialog_(vendor, actions, unmatched) {
+  const ui = SpreadsheetApp.getUi();
+  unmatched = unmatched || [];
+
+  const typeIcons = {
+    'UPDATE_NOTES': '📝',
+    'REPLACE_NOTES': '📝',
+    'UPDATE_BLOCKERS': '🚧',
+    'CHANGE_TASK_STATUS': '📋',
+    'UPDATE_PHONEXA_LINK': '🔗',
+    'ADD_HELPFUL_LINK': '🔗',
+    'CHANGE_STATUS': '🔄',
+    'RESEARCH': '🔍'
+  };
+
+  // Build matched actions HTML with match transparency
+  let actionsHtml = '';
+  actions.forEach((action, i) => {
+    const icon = typeIcons[action.type] || '⚡';
+    const matchInfo = action.matchedFrom ? `<div class="match-info">Matched from: "${escapeHtml_(action.matchedFrom)}"</div>` : '';
+    actionsHtml += `
+      <div class="action-row" id="action-${i}">
+        <label>
+          <input type="checkbox" class="action-cb" data-index="${i}" checked>
+          <span class="action-icon">${icon}</span>
+          <span class="action-label">${escapeHtml_(action.label)}</span>
+        </label>
+        <div class="action-preview">${escapeHtml_(action.preview)}</div>
+        ${matchInfo}
+      </div>
+    `;
+  });
+
+  // Build unmatched items HTML
+  let unmatchedHtml = '';
+  if (unmatched.length > 0) {
+    unmatchedHtml = `
+      <div class="unmatched-section">
+        <h3>⚠️ Didn't Make the Cut (${unmatched.length})</h3>
+        <p class="unmatched-subtitle">These parts of your input couldn't be mapped to actions. Review them so nothing falls through the cracks.</p>
+        ${unmatched.map((item, i) => `
+          <div class="unmatched-row">
+            <div class="unmatched-text">❌ ${escapeHtml_(item.text)}</div>
+            <div class="unmatched-reason">Reason: ${escapeHtml_(item.reason)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  // Summary badge
+  const summaryBadge = unmatched.length > 0
+    ? `<div class="summary-badge"><span class="badge-matched">✅ ${actions.length} matched</span> <span class="badge-unmatched">⚠️ ${unmatched.length} unmatched</span></div>`
+    : `<div class="summary-badge"><span class="badge-matched">✅ ${actions.length} matched - all input accounted for</span></div>`;
+
+  const html = `
+    <style>
+      body { font-family: Arial, sans-serif; font-size: 13px; padding: 15px; line-height: 1.6; }
+      h2 { color: #1a73e8; margin-bottom: 5px; }
+      h3 { color: #e65100; margin-bottom: 5px; margin-top: 16px; font-size: 14px; }
+      .subtitle { color: #666; font-size: 12px; margin-bottom: 10px; }
+      .summary-badge { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+      .badge-matched { background: #e8f5e9; color: #2e7d32; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+      .badge-unmatched { background: #fff3e0; color: #e65100; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+      .action-row { background: #fff; border: 1px solid #ddd; padding: 10px 12px; margin-bottom: 8px; border-radius: 5px; }
+      .action-row.applied { background: #e8f5e9; border-color: #4caf50; }
+      .action-row.failed { background: #ffebee; border-color: #e53935; }
+      .action-row.skipped { background: #f5f5f5; opacity: 0.5; }
+      .action-icon { font-size: 16px; margin-right: 4px; }
+      .action-label { font-weight: bold; color: #333; }
+      .action-preview { color: #666; font-size: 12px; margin-top: 4px; margin-left: 24px; word-break: break-word; white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
+      .match-info { color: #9e9e9e; font-size: 11px; margin-top: 2px; margin-left: 24px; font-style: italic; }
+      label { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+      .action-cb { width: 16px; height: 16px; }
+      .unmatched-section { margin-top: 16px; padding-top: 12px; border-top: 2px solid #ff9800; }
+      .unmatched-subtitle { color: #888; font-size: 11px; margin-bottom: 8px; }
+      .unmatched-row { background: #fff8e1; border: 1px solid #ffe0b2; padding: 8px 12px; margin-bottom: 6px; border-radius: 5px; border-left: 3px solid #ff9800; }
+      .unmatched-text { color: #333; font-weight: 500; font-size: 12px; }
+      .unmatched-reason { color: #999; font-size: 11px; margin-top: 2px; font-style: italic; }
+      .btn-bar { display: flex; gap: 10px; margin-top: 15px; padding-top: 12px; border-top: 1px solid #ddd; }
+      .btn-execute { background: #4caf50; color: white; border: none; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; flex: 1; }
+      .btn-execute:hover { background: #45a049; }
+      .btn-execute:disabled { background: #ccc; cursor: not-allowed; }
+      .btn-cancel { background: #f5f5f5; color: #666; border: 1px solid #ddd; padding: 10px 24px; border-radius: 5px; font-size: 14px; cursor: pointer; }
+      .btn-cancel:hover { background: #eee; }
+      .status-msg { padding: 8px; margin-top: 10px; border-radius: 4px; display: none; font-size: 12px; }
+      .status-msg.show { display: block; }
+      .status-msg.success { background: #e8f5e9; color: #2e7d32; }
+      .status-msg.error { background: #ffebee; color: #c62828; }
+      .status-msg.info { background: #e3f2fd; color: #1565c0; }
+    </style>
+
+    <h2>⚡ Bulk Actions</h2>
+    <p class="subtitle">Review and confirm actions for <strong>${escapeHtml_(vendor)}</strong>. Uncheck any you want to skip.</p>
+
+    ${summaryBadge}
+
+    <div id="status-message" class="status-msg"></div>
+
+    <div id="actions-list">
+      ${actionsHtml}
+    </div>
+
+    ${unmatchedHtml}
+
+    <div class="btn-bar">
+      <button class="btn-execute" id="execute-btn" onclick="executeAll()"${actions.length === 0 ? ' disabled' : ''}>✓ Execute Selected (${actions.length})</button>
+      <button class="btn-cancel" onclick="google.script.host.close()">Cancel</button>
+    </div>
+
+    <script>
+      // Update button count when checkboxes change
+      document.querySelectorAll('.action-cb').forEach(function(cb) {
+        cb.addEventListener('change', function() {
+          var count = document.querySelectorAll('.action-cb:checked').length;
+          document.getElementById('execute-btn').textContent = '✓ Execute Selected (' + count + ')';
+          if (cb.checked) {
+            document.getElementById('action-' + cb.dataset.index).classList.remove('skipped');
+          } else {
+            document.getElementById('action-' + cb.dataset.index).classList.add('skipped');
+          }
+        });
+      });
+
+      function showStatus(msg, type) {
+        var el = document.getElementById('status-message');
+        el.textContent = msg;
+        el.className = 'status-msg show ' + type;
+      }
+
+      function executeAll() {
+        var selected = [];
+        document.querySelectorAll('.action-cb:checked').forEach(function(cb) {
+          selected.push(parseInt(cb.dataset.index));
+        });
+        if (selected.length === 0) {
+          showStatus('No actions selected.', 'error');
+          return;
+        }
+
+        var btn = document.getElementById('execute-btn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Executing...';
+        showStatus('Executing ' + selected.length + ' action(s)...', 'info');
+
+        google.script.run
+          .withSuccessHandler(function(results) {
+            var successCount = 0;
+            var failCount = 0;
+            for (var i = 0; i < results.length; i++) {
+              var row = document.getElementById('action-' + results[i].index);
+              if (results[i].success) {
+                row.classList.add('applied');
+                successCount++;
+              } else {
+                row.classList.add('failed');
+                row.querySelector('.action-preview').textContent = 'Error: ' + results[i].error;
+                failCount++;
+              }
+            }
+            if (failCount === 0) {
+              showStatus('All ' + successCount + ' action(s) executed successfully!', 'success');
+              btn.textContent = '✓ Done - Refreshing...';
+              // Auto-refresh after success
+              google.script.run
+                .withSuccessHandler(function() { google.script.host.close(); })
+                .withFailureHandler(function() { google.script.host.close(); })
+                .battleStationHardRefresh();
+            } else {
+              showStatus(successCount + ' succeeded, ' + failCount + ' failed.', 'error');
+              btn.textContent = '⚠ Completed with errors';
+            }
+          })
+          .withFailureHandler(function(e) {
+            showStatus('Error: ' + e.message, 'error');
+            btn.disabled = false;
+            btn.textContent = '✓ Retry';
+          })
+          .executeBulkActions(JSON.stringify(selected));
+      }
+    </script>
+  `;
+
+  const htmlOutput = HtmlService.createHtmlOutput(html).setWidth(650).setHeight(500);
+  ui.showModalDialog(htmlOutput, '⚡ Bulk Actions - Confirm');
+}
+
+/**
+ * Execute selected bulk actions. Called from the confirmation dialog.
+ * @param {string} selectedIndicesJson - JSON array of action indices to execute
+ * @returns {Array} Array of { index, success, error? } results
+ */
+function executeBulkActions(selectedIndicesJson) {
+  const selectedIndices = JSON.parse(selectedIndicesJson);
+  const stored = JSON.parse(PropertiesService.getUserProperties().getProperty('bulkActionsData') || '{}');
+
+  if (!stored.actions || !stored.vendor) {
+    throw new Error('No bulk actions data found. Please try again.');
+  }
+
+  const { vendor, source, listRow, actions } = stored;
+  const results = [];
+
+  for (const idx of selectedIndices) {
+    const action = actions[idx];
+    if (!action) {
+      results.push({ index: idx, success: false, error: 'Action not found' });
+      continue;
+    }
+
+    try {
+      const result = executeSingleBulkAction_(action, vendor, source, listRow);
+      results.push({ index: idx, success: result.success, error: result.error || null });
+    } catch (e) {
+      results.push({ index: idx, success: false, error: e.message });
+    }
+  }
+
+  // Clean up stored data
+  PropertiesService.getUserProperties().deleteProperty('bulkActionsData');
+
+  return results;
+}
+
+/**
+ * Execute a single parsed bulk action against monday.com.
+ * @param {Object} action - The parsed action object
+ * @param {string} vendor - Vendor name
+ * @param {string} source - "Buyers" or "Affiliates"
+ * @param {number} listRow - Row in the List sheet
+ * @returns {{ success: boolean, error?: string }}
+ */
+function executeSingleBulkAction_(action, vendor, source, listRow) {
+  const apiToken = BS_CFG.MONDAY_API_TOKEN;
+
+  switch (action.type) {
+    case 'UPDATE_NOTES': {
+      // Append to existing notes
+      const contactData = getVendorContacts_(vendor, listRow);
+      const currentNotes = contactData.notes || '';
+      const separator = currentNotes ? '\n' : '';
+      const newNotes = currentNotes + separator + action.detail;
+      const result = updateMondayComNotesForVendor_(vendor, newNotes, listRow);
+      if (result.success) {
+        // Also update List sheet
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(newNotes);
+      }
+      return result;
+    }
+
+    case 'REPLACE_NOTES': {
+      const result = updateMondayComNotesForVendor_(vendor, action.detail, listRow);
+      if (result.success) {
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(listRow, BS_CFG.L_NOTES + 1).setValue(action.detail);
+      }
+      return result;
+    }
+
+    case 'UPDATE_BLOCKERS': {
+      return updateMondayBlockersForVendor_(vendor, action.detail, listRow);
+    }
+
+    case 'CHANGE_TASK_STATUS': {
+      return updateTaskStatus(action.taskItemId, action.taskStatusColumnId, action.detail);
+    }
+
+    case 'UPDATE_PHONEXA_LINK': {
+      const isBuyer = source.toLowerCase().includes('buyer');
+      const boardId = isBuyer ? BS_CFG.BUYERS_BOARD_ID : BS_CFG.AFFILIATES_BOARD_ID;
+      const phonexaColumnId = isBuyer ? BS_CFG.BUYERS_PHONEXA_COLUMN : BS_CFG.AFFILIATES_PHONEXA_COLUMN;
+      const itemId = findMondayItemIdByVendor_(vendor, boardId, apiToken);
+
+      if (!itemId) {
+        return { success: false, error: `Could not find monday.com item for ${vendor}` };
+      }
+
+      // Link columns expect JSON format: {"url": "...", "text": "..."}
+      const linkValue = JSON.stringify({ url: action.detail, text: action.detail });
+      const escapedValue = linkValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+      const mutation = `
+        mutation {
+          change_column_value (
+            board_id: ${boardId},
+            item_id: ${itemId},
+            column_id: "${phonexaColumnId}",
+            value: "${escapedValue}"
+          ) { id }
+        }
+      `;
+
+      const result = mondayApiRequest_(mutation, apiToken);
+      if (result.errors && result.errors.length > 0) {
+        return { success: false, error: result.errors[0].message };
+      }
+      if (result.data?.change_column_value?.id) {
+        return { success: true };
+      }
+      return { success: false, error: 'Unexpected API response' };
+    }
+
+    case 'ADD_HELPFUL_LINK': {
+      // Create a new item on the Helpful Links board and link it to the vendor
+      const boardId = BS_CFG.HELPFUL_LINKS_BOARD_ID;
+      const linkName = action.linkName || 'Link';
+
+      // Create the item
+      const escapedName = linkName.replace(/"/g, '\\"');
+      const createMutation = `
+        mutation {
+          create_item (
+            board_id: ${boardId},
+            item_name: "${escapedName}"
+          ) { id }
+        }
+      `;
+
+      const createResult = mondayApiRequest_(createMutation, apiToken);
+      if (createResult.errors && createResult.errors.length > 0) {
+        return { success: false, error: createResult.errors[0].message };
+      }
+
+      const newItemId = createResult.data?.create_item?.id;
+      if (!newItemId) {
+        return { success: false, error: 'Failed to create helpful link item' };
+      }
+
+      // Set the link URL
+      const linkValue = JSON.stringify({ url: action.detail, text: action.detail });
+      const escapedLinkValue = linkValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+      const linkMutation = `
+        mutation {
+          change_column_value (
+            board_id: ${boardId},
+            item_id: ${newItemId},
+            column_id: "${BS_CFG.HELPFUL_LINKS_LINK_COLUMN}",
+            value: "${escapedLinkValue}"
+          ) { id }
+        }
+      `;
+      mondayApiRequest_(linkMutation, apiToken);
+
+      // Link to the vendor via the appropriate board relation column
+      const isBuyer = source.toLowerCase().includes('buyer');
+      const vendorBoardId = isBuyer ? BS_CFG.BUYERS_BOARD_ID : BS_CFG.AFFILIATES_BOARD_ID;
+      const relationColumn = isBuyer ? BS_CFG.HELPFUL_LINKS_BUYERS_COLUMN : BS_CFG.HELPFUL_LINKS_AFFILIATES_COLUMN;
+      const vendorItemId = findMondayItemIdByVendor_(vendor, vendorBoardId, apiToken);
+
+      if (vendorItemId) {
+        const relValue = `{\\"item_ids\\": [${vendorItemId}]}`;
+        const relMutation = `
+          mutation {
+            change_column_value (
+              board_id: ${boardId},
+              item_id: ${newItemId},
+              column_id: "${relationColumn}",
+              value: "${relValue}"
+            ) { id }
+          }
+        `;
+        mondayApiRequest_(relMutation, apiToken);
+      }
+
+      return { success: true };
+    }
+
+    case 'CHANGE_STATUS': {
+      // Change vendor status by moving item to a different group on the monday.com board
+      const itemId = action.mondayItemId;
+      const boardId = action.boardId;
+      if (!itemId || !boardId) {
+        return { success: false, error: 'Missing monday.com item or board ID' };
+      }
+
+      // Fetch available groups from the board to find the matching group ID
+      const groupsQuery = `query { boards (ids: [${boardId}]) { groups { id title } } }`;
+      const groupsResult = mondayApiRequest_(groupsQuery, apiToken);
+      const groups = groupsResult.data?.boards?.[0]?.groups || [];
+
+      const targetTitle = action.detail.toLowerCase().trim();
+      const matchingGroup = groups.find(g => g.title.toLowerCase().trim() === targetTitle) ||
+                            groups.find(g => g.title.toLowerCase().includes(targetTitle) || targetTitle.includes(g.title.toLowerCase()));
+
+      if (!matchingGroup) {
+        const availableGroups = groups.map(g => g.title).join(', ');
+        return { success: false, error: `Group "${action.detail}" not found. Available: ${availableGroups}` };
+      }
+
+      const moveMutation = `
+        mutation {
+          move_item_to_group (
+            item_id: ${itemId},
+            group_id: "${matchingGroup.id}"
+          ) { id }
+        }
+      `;
+      const moveResult = mondayApiRequest_(moveMutation, apiToken);
+      if (moveResult.errors && moveResult.errors.length > 0) {
+        return { success: false, error: moveResult.errors[0].message };
+      }
+      if (moveResult.data?.move_item_to_group?.id) {
+        // Also update the List sheet status column
+        const ss = SpreadsheetApp.getActive();
+        const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+        listSh.getRange(action.listRow || listRow, BS_CFG.L_STATUS + 1).setValue(matchingGroup.title);
+        return { success: true };
+      }
+      return { success: false, error: 'Unexpected API response' };
+    }
+
+    case 'RESEARCH': {
+      // Research is informational-only - just mark as acknowledged
+      return { success: true };
+    }
+
+    default:
+      return { success: false, error: `Unknown action type: ${action.type}` };
+  }
+}
+/************************************************************
+ * INBOX REVIEW (Q&A + RECORD)
+ * Step-by-step vendor review with Claude analysis,
+ * Q&A dialog, notes/blocker suggestions, and Review Log
+ ************************************************************/
+
+/**
+ * Get or create the Vendor Review Log sheet
+ */
+function getOrCreateReviewLogSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('Vendor Review Log');
+  if (sh) return sh;
+
+  sh = ss.insertSheet('Vendor Review Log');
+  const headers = [
+    'Date', 'Vendor', 'Status', 'Blocker', 'Notes Updated',
+    'Todos Generated', 'AI Narrative', 'User Corrections', 'Reviewed By'
+  ];
+  sh.getRange(1, 1, 1, headers.length).setValues([headers])
+    .setFontWeight('bold').setBackground('#e8f0fe');
+  sh.setFrozenRows(1);
+  sh.setColumnWidth(1, 140);
+  sh.setColumnWidth(2, 180);
+  sh.setColumnWidth(3, 100);
+  sh.setColumnWidth(4, 250);
+  sh.setColumnWidth(5, 300);
+  sh.setColumnWidth(6, 300);
+  sh.setColumnWidth(7, 400);
+  sh.setColumnWidth(8, 300);
+  sh.setColumnWidth(9, 120);
+  return sh;
+}
+
+/**
+ * Main Inbox Review entry point - gathers vendor data, runs Claude analysis,
+ * shows a multi-step review dialog with Q&A, blocker/notes suggestions
+ */
+function inboxReviewStart() {
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  const ui = SpreadsheetApp.getUi();
+
+  const apiKey = getClaudeApiKey_();
+  if (!apiKey) {
+    ui.alert('No Claude API key configured.\n\nUse menu: ⚡ Battle Station → ⚙️ Set Claude API Key');
+    return;
+  }
+
+  const currentIndex = getCurrentVendorIndex_();
+  if (!currentIndex) {
+    ui.alert('No vendor currently loaded. Navigate to a vendor first.');
+    return;
+  }
+
+  const listRow = currentIndex + 1;
+  const vendor = String(listSh.getRange(listRow, BS_CFG.L_VENDOR + 1).getValue() || '').trim();
+  const status = String(listSh.getRange(listRow, BS_CFG.L_STATUS + 1).getValue() || '');
+  const currentNotes = String(listSh.getRange(listRow, BS_CFG.L_NOTES + 1).getValue() || '');
+
+  ss.toast(`Gathering data for ${vendor}...`, '📋 Inbox Review', 5);
+
+  // Gather all vendor context
+  const contactData = getVendorContacts_(vendor, listRow);
+  const emails = getEmailsForVendor_(vendor, listRow);
+  const tasks = getTasksForVendor_(vendor, listRow);
+  const unsnoozed = emails.filter(e => !e.isSnoozed);
+  const overdue = emails.filter(e => isEmailOverdue_(e));
+
+  // Get email content for top 3 unsnoozed (trimmed to keep prompt small for proxy)
+  let emailContext = '';
+  for (const email of unsnoozed.slice(0, 3)) {
+    try {
+      const thread = GmailApp.getThreadById(email.threadId);
+      if (thread) {
+        const msgs = thread.getMessages();
+        const latest = msgs[msgs.length - 1];
+        emailContext += `\nSubject: ${email.subject}\nDate: ${email.date}\nLabels: ${email.labels}\nContent: ${latest.getPlainBody().substring(0, 400)}\n---`;
+      }
+    } catch (e) {
+      emailContext += `\nSubject: ${email.subject} (${email.date}) [${email.labels}]\n---`;
+    }
+  }
+
+  // Categorize tasks
+  const openTasks = tasks.filter(t => {
+    const group = (t.group || '').toLowerCase();
+    return !group.includes('done') && !group.includes('complete');
+  });
+  const completedTasks = tasks.filter(t => {
+    const group = (t.group || '').toLowerCase();
+    return group.includes('done') || group.includes('complete');
+  });
+
+  // Build task summary
+  const taskSummary = openTasks.map(t => `- [OPEN] ${t.name} (${t.group || 'no group'})`).join('\n')
+    + '\n' + completedTasks.slice(0, 3).map(t => `- [DONE] ${t.name}`).join('\n');
+
+  // Contact summary
+  const contactSummary = (contactData.contacts || []).map(c =>
+    `${c.name || '(unnamed)'} - ${c.email || ''} ${c.phone || ''} (${c.status || 'unknown'})`
+  ).join('\n') || '(no contacts)';
+
+  ss.toast('Analyzing with Claude...', '🤖 Processing', 10);
+
+  // Fetch any stored hints from previous reviews
+  const allHints = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_HINTS') || '{}'
+  );
+  const vendorHints = allHints[vendor] || '';
+
+  // Phase 1: Quick analysis - just the summary for user to review/refute before generating questions
+  const phase1Prompt = `You are helping the user, a vendor relationship manager at a lead generation company (Home Services and Solar), do a quick assessment of a vendor.
+
+VENDOR: ${vendor}
+STATUS: ${status}
+CURRENT NOTES: ${currentNotes || '(none)'}
+
+CONTACTS:
+${contactSummary}
+
+LIVE VERTICALS: ${contactData.liveVerticals || '(none)'}
+LIVE MODALITIES: ${contactData.liveModalities || '(none)'}
+STATES: ${contactData.states || '(none)'}
+
+TASKS (${openTasks.length} open, ${completedTasks.length} completed):
+${taskSummary || '(no tasks)'}
+
+UNSNOOZED EMAILS (${unsnoozed.length} threads, ${overdue.length} overdue):
+${emailContext || '(no emails)'}
+${vendorHints ? '\nPREVIOUS CORRECTIONS FROM USER:\n' + vendorHints : ''}
+
+Provide your quick analysis in this EXACT JSON format (no markdown, just raw JSON):
+{
+  "vendorSummary": "2-3 sentence summary of overall vendor state and trajectory",
+  "keyAssumptions": [
+    "A specific factual assumption you are making based on the data (e.g. 'Vendor appears to be in active integration based on 2 open tasks')",
+    "Another assumption (e.g. 'Communication frequency seems healthy - 3 emails in the past week')",
+    "Another assumption about relationship state, blockers, or priorities"
+  ]
+}
+
+IMPORTANT:
+- Summary and assumptions should be specific to THIS vendor's actual data
+- Assumptions should be things the user can confirm or refute before you generate detailed questions
+- Surface assumptions that, if wrong, would significantly change your analysis`;
+
+  try {
+    const phase1Response = callClaudeAPI_(phase1Prompt, apiKey, { maxTokens: 600, model: 'claude-haiku-4-5-20251001' });
+
+    if (phase1Response.error) {
+      ui.alert(`Claude API Error: ${phase1Response.error}`);
+      return;
+    }
+
+    let quickAnalysis;
+    try {
+      let jsonStr = phase1Response.content.trim();
+      jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+      quickAnalysis = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      ui.alert(`Could not parse Claude's quick analysis.\n\nRaw response:\n${phase1Response.content.substring(0, 500)}`);
+      return;
+    }
+
+    // Store context for phase 2 callback
+    const previewData = {
+      vendor: vendor,
+      listRow: listRow,
+      status: status,
+      currentNotes: currentNotes,
+      contactSummary: contactSummary,
+      liveVerticals: contactData.liveVerticals || '(none)',
+      liveModalities: contactData.liveModalities || '(none)',
+      states: contactData.states || '(none)',
+      taskSummary: taskSummary || '(no tasks)',
+      openTaskCount: openTasks.length,
+      completedTaskCount: completedTasks.length,
+      emailContext: emailContext || '(no emails)',
+      unsnoozedCount: unsnoozed.length,
+      overdueCount: overdue.length,
+      vendorHints: vendorHints,
+      quickAnalysis: quickAnalysis,
+      timestamp: new Date().toISOString()
+    };
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_PREVIEW', JSON.stringify(previewData)
+    );
+
+    // Build Phase 1 preview dialog
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+    const assumptionsHtml = (quickAnalysis.keyAssumptions || []).map((a, i) => `
+      <div class="assumption">
+        <div class="assumption-text">${esc(a)}</div>
+        <div class="assumption-controls">
+          <label class="pill pill-ok"><input type="radio" name="a${i}" value="ok" checked> OK</label>
+          <label class="pill pill-wrong"><input type="radio" name="a${i}" value="wrong"> Wrong</label>
+          <input type="text" name="a${i}_correction" placeholder="What's actually the case?" class="correction-input" disabled>
+        </div>
+      </div>
+    `).join('');
+
+    const previewHtml = `<!DOCTYPE html>
+<html><head>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 0; margin: 0; font-size: 13px; color: #333; }
+  .container { padding: 16px; }
+  h2 { color: #1a73e8; margin: 0 0 4px; font-size: 18px; }
+  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; border-bottom: 2px solid #e8f0fe; padding-bottom: 4px; }
+  .vendor-badge { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #1a73e8; display: inline-block; margin-bottom: 8px; }
+  .summary { background: #f8f9fa; padding: 10px 14px; border-radius: 8px; border-left: 4px solid #1a73e8; margin: 8px 0 16px; line-height: 1.5; }
+  .phase-note { background: #fff8e1; padding: 8px 12px; border-radius: 6px; border-left: 4px solid #f9a825; margin: 8px 0; font-size: 12px; line-height: 1.5; }
+  .assumption { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .assumption-text { font-weight: 500; margin-bottom: 6px; line-height: 1.4; }
+  .assumption-controls { display: flex; gap: 10px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 12px; font-size: 12px; cursor: pointer; border: 1px solid #ddd; }
+  .pill input[type="radio"] { margin: 0; }
+  .pill-ok { background: #e8f5e9; border-color: #a5d6a7; }
+  .pill-wrong { background: #fce4ec; border-color: #ef9a9a; }
+  .correction-input { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .correction-input:disabled { background: #f5f5f5; opacity: 0.5; }
+  .extra-context { width: 100%; min-height: 50px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; margin-top: 4px; }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #1a73e8; color: white; }
+  .btn-primary:hover { background: #1557b0; }
+  .btn-secondary { background: #f1f3f4; color: #333; }
+  .btn-secondary:hover { background: #e0e0e0; }
+  .btn-accept { background: #34a853; color: white; }
+  .btn-accept:hover { background: #2d9249; }
+  .spinner { display: none; text-align: center; padding: 20px; }
+  .spinner.active { display: block; }
+  .form-content.hidden { display: none; }
+</style>
+</head><body>
+<div class="container">
+  <h2>📋 Quick Analysis Preview</h2>
+  <span class="vendor-badge">${esc(vendor)} - ${esc(status)}</span>
+
+  <div class="phase-note">
+    Review the AI's analysis below. If any assumptions are wrong, mark them and provide corrections - the full Q&A will be generated based on this.
+  </div>
+
+  <h3>AI Summary</h3>
+  <div class="summary">${esc(quickAnalysis.vendorSummary)}</div>
+
+  <h3>Key Assumptions - Confirm or Refute</h3>
+  <div class="form-content" id="formContent">
+    ${assumptionsHtml}
+
+    <h3>Additional Context (optional)</h3>
+    <textarea class="extra-context" id="extraContext" placeholder="Anything else the AI should know before generating questions..."></textarea>
+
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+      <button class="btn btn-accept" onclick="proceed('accept')">Looks Good - Continue</button>
+      <button class="btn btn-primary" onclick="proceed('refute')">Apply Corrections & Continue</button>
+    </div>
+  </div>
+
+  <div class="spinner" id="spinner">
+    <p>Regenerating with your corrections...</p>
+    <p style="font-size: 11px; color: #888;">This may take a few seconds</p>
+  </div>
+</div>
+
+<script>
+// Enable/disable correction input based on radio selection
+document.querySelectorAll('input[type="radio"]').forEach(function(radio) {
+  radio.addEventListener('change', function() {
+    var name = this.name;
+    var corrInput = document.getElementsByName(name + '_correction')[0];
+    if (corrInput) {
+      corrInput.disabled = (this.value === 'ok');
+      if (this.value === 'wrong') corrInput.focus();
+    }
+  });
+});
+
+function proceed(mode) {
+  var refutations = [];
+  var assumptionCount = ${(quickAnalysis.keyAssumptions || []).length};
+
+  for (var i = 0; i < assumptionCount; i++) {
+    var radios = document.getElementsByName('a' + i);
+    var status = 'ok';
+    for (var r = 0; r < radios.length; r++) {
+      if (radios[r].checked) { status = radios[r].value; break; }
+    }
+    var corrInput = document.getElementsByName('a' + i + '_correction')[0];
+    var correction = corrInput ? corrInput.value.trim() : '';
+    if (status === 'wrong') {
+      refutations.push({ index: i, correction: correction });
+    }
+  }
+
+  var extraContext = document.getElementById('extraContext').value.trim();
+
+  var payload = {
+    refutations: refutations,
+    extraContext: extraContext
+  };
+
+  // Show spinner, hide form
+  document.getElementById('formContent').classList.add('hidden');
+  document.getElementById('spinner').classList.add('active');
+
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) {
+      document.getElementById('formContent').classList.remove('hidden');
+      document.getElementById('spinner').classList.remove('active');
+      alert('Error: ' + e.message);
+    })
+    .inboxReviewProceedFromPreview(JSON.stringify(payload));
+}
+</script>
+</body></html>`;
+
+    const previewDialog = HtmlService.createHtmlOutput(previewHtml).setWidth(650).setHeight(550);
+    ui.showModalDialog(previewDialog, `📋 Quick Analysis - ${vendor}`);
+
+  } catch (e) {
+    ui.alert(`Error: ${e.message}`);
+  }
+}
+
+/**
+ * Called from the Phase 1 preview dialog - generates the full Q&A review,
+ * incorporating any refutations/corrections the user provided.
+ */
+function inboxReviewProceedFromPreview(payloadJson) {
+  const payload = JSON.parse(payloadJson);
+  const stored = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_PREVIEW') || '{}'
+  );
+  if (!stored.vendor) throw new Error('No preview data found. Please start a new review.');
+
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const apiKey = getClaudeApiKey_();
+
+  // Build refutation context for the full analysis prompt
+  let refutationBlock = '';
+  if (payload.refutations && payload.refutations.length > 0) {
+    const assumptions = stored.quickAnalysis.keyAssumptions || [];
+    const lines = payload.refutations.map(r => {
+      const original = assumptions[r.index] || '(unknown assumption)';
+      return `- AI assumed: "${original}" → USER CORRECTION: ${r.correction || '(marked as wrong, no detail given)'}`;
+    });
+    refutationBlock = `\nUSER CORRECTIONS TO AI ASSUMPTIONS:\n${lines.join('\n')}\nIMPORTANT: The assumptions above were WRONG. Adjust your analysis accordingly.\n`;
+  }
+  if (payload.extraContext) {
+    refutationBlock += `\nADDITIONAL USER CONTEXT:\n${payload.extraContext}\n`;
+  }
+
+  // Phase 2: Full analysis with corrections incorporated
+  const phase2Prompt = `You are helping the user, a vendor relationship manager at a lead generation company (Home Services and Solar), review a vendor.
+
+VENDOR: ${stored.vendor}
+STATUS: ${stored.status}
+CURRENT NOTES: ${stored.currentNotes || '(none)'}
+
+CONTACTS:
+${stored.contactSummary}
+
+LIVE VERTICALS: ${stored.liveVerticals}
+LIVE MODALITIES: ${stored.liveModalities}
+STATES: ${stored.states}
+
+TASKS (${stored.openTaskCount} open, ${stored.completedTaskCount} completed):
+${stored.taskSummary}
+
+UNSNOOZED EMAILS (${stored.unsnoozedCount} threads, ${stored.overdueCount} overdue):
+${stored.emailContext}
+${stored.vendorHints ? '\nPREVIOUS CORRECTIONS FROM USER (from past reviews):\n' + stored.vendorHints : ''}
+
+QUICK ANALYSIS SUMMARY (already reviewed by user):
+${stored.quickAnalysis.vendorSummary}
+${refutationBlock}
+Provide your analysis in this EXACT JSON format (no markdown, just raw JSON):
+{
+  "vendorSummary": "2-3 sentence summary of overall vendor state and trajectory (incorporate any user corrections)",
+  "questions": [
+    {"q": "A true/false question about the vendor relationship", "suggestedAnswer": true, "reasoning": "Why you think this"},
+    {"q": "Another true/false question", "suggestedAnswer": false, "reasoning": "Why you think this"},
+    {"q": "Another question about tasks/blockers/emails", "suggestedAnswer": true, "reasoning": "Why"},
+    {"q": "Another question about next steps", "suggestedAnswer": true, "reasoning": "Why"},
+    {"q": "Another question about relationship health", "suggestedAnswer": false, "reasoning": "Why"}
+  ],
+  "suggestedBlocker": "A specific blocker/next-action for this vendor (e.g. 'Follow up on February invoice IWL40-51') or null if no blocker needed",
+  "suggestedNotes": "2-3 sentence updated notes summarizing current state. Do NOT repeat old notes, write fresh.",
+  "todos": [
+    "Specific actionable todo item 1",
+    "Specific actionable todo item 2",
+    "Specific actionable todo item 3"
+  ],
+  "narrative": "A 3-4 sentence narrative paragraph about the vendor relationship: trajectory, current status, what's working, what needs attention."
+}
+
+IMPORTANT:
+- Questions should be specific to THIS vendor's data, not generic
+- If the user corrected any assumptions, make sure your questions and analysis reflect the CORRECTED understanding
+- Blocker should be the single most important next action
+- Todos should be concrete and actionable
+- Notes should be fresh, not repeating existing notes`;
+
+  ss.toast('Generating full review...', '🤖 Processing', 10);
+
+  const response = callClaudeAPI_(phase2Prompt, apiKey, { maxTokens: 1500, model: 'claude-haiku-4-5-20251001' });
+
+  if (response.error) throw new Error(`Claude API Error: ${response.error}`);
+
+  let analysis;
+  try {
+    let jsonStr = response.content.trim();
+    jsonStr = jsonStr.replace(/^```json?\s*/i, '').replace(/\s*```$/i, '');
+    analysis = JSON.parse(jsonStr);
+  } catch (parseErr) {
+    throw new Error(`Could not parse Claude's response as JSON: ${response.content.substring(0, 300)}`);
+  }
+
+  // Store analysis in script properties for the save callback
+  const reviewData = {
+    vendor: stored.vendor,
+    listRow: stored.listRow,
+    status: stored.status,
+    currentNotes: stored.currentNotes,
+    analysis: analysis,
+    refutations: refutationBlock,
+    timestamp: new Date().toISOString()
+  };
+  PropertiesService.getScriptProperties().setProperty(
+    'INBOX_REVIEW_DATA', JSON.stringify(reviewData)
+  );
+  PropertiesService.getScriptProperties().deleteProperty('INBOX_REVIEW_PREVIEW');
+
+  // Build the full review dialog HTML (Phase 2)
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  const questionsHtml = (analysis.questions || []).map((q, i) => `
+    <div class="question">
+      <div class="q-text">${esc(q.q)}</div>
+      <div class="q-reasoning"><em>AI thinks: ${esc(q.reasoning)}</em></div>
+      <div class="q-controls">
+        <label><input type="radio" name="q${i}" value="true" ${q.suggestedAnswer ? 'checked' : ''}> True</label>
+        <label><input type="radio" name="q${i}" value="false" ${!q.suggestedAnswer ? 'checked' : ''}> False</label>
+        <input type="text" name="q${i}_note" placeholder="Add a note (optional)" class="q-note">
+      </div>
+    </div>
+  `).join('');
+
+  const todosHtml = (analysis.todos || []).map((t, i) => `
+    <div class="todo-item">
+      <label><input type="checkbox" name="todo${i}" checked> ${esc(t)}</label>
+    </div>
+  `).join('');
+
+  const htmlContent = `<!DOCTYPE html>
+<html><head>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 0; margin: 0; font-size: 13px; color: #333; }
+  .container { padding: 16px; }
+  h2 { color: #1a73e8; margin: 0 0 4px; font-size: 18px; }
+  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; border-bottom: 2px solid #e8f0fe; padding-bottom: 4px; }
+  .vendor-badge { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #1a73e8; display: inline-block; margin-bottom: 8px; }
+  .summary { background: #f8f9fa; padding: 10px 14px; border-radius: 8px; border-left: 4px solid #1a73e8; margin: 8px 0 16px; line-height: 1.5; }
+  .question { background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .q-text { font-weight: 600; margin-bottom: 4px; }
+  .q-reasoning { color: #888; font-size: 11px; margin-bottom: 6px; }
+  .q-controls { display: flex; gap: 16px; align-items: center; }
+  .q-controls label { cursor: pointer; font-size: 12px; }
+  .q-note { flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 4px 8px; font-size: 12px; }
+  .section-box { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+  .editable { width: 100%; min-height: 60px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; }
+  .todo-item { padding: 4px 0; }
+  .todo-item label { cursor: pointer; }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #1a73e8; color: white; }
+  .btn-primary:hover { background: #1557b0; }
+  .btn-secondary { background: #f1f3f4; color: #333; }
+  .btn-secondary:hover { background: #e0e0e0; }
+  .narrative { background: #e8f0fe; padding: 10px 14px; border-radius: 8px; line-height: 1.6; margin: 8px 0; }
+  .corrections { width: 100%; min-height: 40px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; font-size: 12px; font-family: inherit; resize: vertical; margin-top: 4px; }
+</style>
+</head><body>
+<div class="container">
+  <h2>📋 Inbox Review</h2>
+  <span class="vendor-badge">${esc(stored.vendor)} - ${esc(stored.status)}</span>
+
+  <div class="summary">${esc(analysis.vendorSummary)}</div>
+
+  <h3>📝 Q&A - Confirm or Correct</h3>
+  ${questionsHtml}
+
+  <h3>🚧 Suggested Blocker</h3>
+  <div class="section-box">
+    <textarea class="editable" id="blocker">${esc(analysis.suggestedBlocker || '(none)')}</textarea>
+  </div>
+
+  <h3>📝 Suggested Notes Update</h3>
+  <div class="section-box">
+    <textarea class="editable" id="notes">${esc(analysis.suggestedNotes)}</textarea>
+  </div>
+
+  <h3>✅ Todos</h3>
+  <div class="section-box">
+    ${todosHtml}
+    <input type="text" id="extraTodo" placeholder="Add another todo..." style="width:100%; margin-top:8px; padding:4px 8px; border:1px solid #ddd; border-radius:4px; font-size:12px;">
+  </div>
+
+  <h3>📖 AI Narrative</h3>
+  <div class="narrative">${esc(analysis.narrative)}</div>
+
+  <h3>✏️ Corrections / Additional Context</h3>
+  <textarea class="corrections" id="corrections" placeholder="Anything the AI got wrong? Add context for future reviews..."></textarea>
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    <button class="btn btn-primary" onclick="submitReview()">Save & Record ✓</button>
+  </div>
+</div>
+
+<script>
+function submitReview() {
+  var answers = {};
+  var qCount = ${(analysis.questions || []).length};
+  for (var i = 0; i < qCount; i++) {
+    var radios = document.getElementsByName('q' + i);
+    var val = true;
+    for (var r = 0; r < radios.length; r++) {
+      if (radios[r].checked) { val = radios[r].value === 'true'; break; }
+    }
+    var noteEl = document.getElementsByName('q' + i + '_note')[0];
+    answers['q' + i] = { answer: val, note: noteEl ? noteEl.value : '' };
+  }
+
+  var todos = [];
+  for (var j = 0; j < 20; j++) {
+    var cb = document.getElementsByName('todo' + j)[0];
+    if (!cb) break;
+    if (cb.checked) todos.push(cb.parentElement.textContent.trim());
+  }
+  var extra = document.getElementById('extraTodo').value.trim();
+  if (extra) todos.push(extra);
+
+  var result = {
+    answers: answers,
+    blocker: document.getElementById('blocker').value,
+    notes: document.getElementById('notes').value,
+    todos: todos,
+    corrections: document.getElementById('corrections').value
+  };
+
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) { alert('Error saving: ' + e.message); })
+    .inboxReviewSave(JSON.stringify(result));
+}
+</script>
+</body></html>`;
+
+  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(700).setHeight(750);
+  ui.showModalDialog(html, `📋 Inbox Review - ${stored.vendor}`);
+}
+
+/**
+ * Called from the dialog when user clicks "Save & Record"
+ */
+function inboxReviewSave(resultJson) {
+  const result = JSON.parse(resultJson);
+  const stored = JSON.parse(PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_DATA') || '{}');
+
+  if (!stored.vendor) throw new Error('No review data found. Please start a new review.');
+
+  const ss = SpreadsheetApp.getActive();
+  const listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+
+  // 1. Update notes on List sheet and monday.com
+  if (result.notes && result.notes !== '(none)') {
+    listSh.getRange(stored.listRow, BS_CFG.L_NOTES + 1).setValue(result.notes);
+    try {
+      updateMondayComNotesForVendor_(stored.vendor, result.notes, stored.listRow);
+    } catch (e) {
+      Logger.log(`Failed to update monday.com notes: ${e.message}`);
+    }
+  }
+
+  // 2. Log to Review Log sheet
+  const logSh = getOrCreateReviewLogSheet_();
+  const todosStr = (result.todos || []).join('\n• ');
+  const answersStr = Object.keys(result.answers || {}).map(k => {
+    const a = result.answers[k];
+    return `${k}: ${a.answer}${a.note ? ' - ' + a.note : ''}`;
+  }).join('; ');
+
+  logSh.appendRow([
+    new Date(),
+    stored.vendor,
+    stored.status,
+    result.blocker || '',
+    result.notes || '',
+    todosStr ? '• ' + todosStr : '',
+    stored.analysis ? stored.analysis.narrative || '' : '',
+    (result.corrections || '') + (answersStr ? '\nQ&A: ' + answersStr : ''),
+    Session.getActiveUser().getEmail() || 'Andy'
+  ]);
+
+  // 3. Store pending todos in script properties for tracking
+  if (result.todos && result.todos.length > 0) {
+    const existingTodos = JSON.parse(
+      PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+    );
+    const newTodos = result.todos.map(t => ({
+      vendor: stored.vendor,
+      todo: t,
+      created: new Date().toISOString(),
+      done: false
+    }));
+    existingTodos.push(...newTodos);
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_TODOS', JSON.stringify(existingTodos)
+    );
+  }
+
+  // 4. Store user corrections for future reference
+  if (result.corrections) {
+    const hints = JSON.parse(
+      PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_HINTS') || '{}'
+    );
+    hints[stored.vendor] = (hints[stored.vendor] || '') + '\n' + result.corrections;
+    PropertiesService.getScriptProperties().setProperty(
+      'INBOX_REVIEW_HINTS', JSON.stringify(hints)
+    );
+  }
+
+  // Clean up
+  PropertiesService.getScriptProperties().deleteProperty('INBOX_REVIEW_DATA');
+
+  ss.toast(`Review saved for ${stored.vendor}`, '✅ Recorded', 3);
+}
+
+/**
+ * Weekly Recap - aggregates this week's review entries into a summary dialog
+ */
+function inboxReviewWeeklyRecap() {
+  const ss = SpreadsheetApp.getActive();
+  const ui = SpreadsheetApp.getUi();
+  const logSh = ss.getSheetByName('Vendor Review Log');
+
+  if (!logSh || logSh.getLastRow() <= 1) {
+    ui.alert('No review entries found.\n\nUse 📋 Inbox Review (Q&A + Record) to review vendors first.');
+    return;
+  }
+
+  // Get entries from this week
+  const now = new Date();
+  const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const data = logSh.getRange(2, 1, logSh.getLastRow() - 1, 9).getValues();
+
+  const thisWeek = data.filter(row => {
+    const d = new Date(row[0]);
+    return d >= weekAgo;
+  });
+
+  if (thisWeek.length === 0) {
+    ui.alert('No reviews this week.\n\nUse 📋 Inbox Review (Q&A + Record) to start reviewing vendors.');
+    return;
+  }
+
+  // Get pending todos
+  const allTodos = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+  );
+  const pendingTodos = allTodos.filter(t => !t.done);
+
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Build recap HTML
+  let vendorRows = thisWeek.map(row => {
+    const date = new Date(row[0]);
+    const dateStr = `${date.getMonth() + 1}/${date.getDate()}`;
+    return `<tr>
+      <td>${dateStr}</td>
+      <td><strong>${esc(row[1])}</strong></td>
+      <td>${esc(row[2])}</td>
+      <td>${esc(row[3])}</td>
+      <td style="font-size:11px">${esc(String(row[4]).substring(0, 100))}</td>
+    </tr>`;
+  }).join('');
+
+  let todosList = pendingTodos.map(t => {
+    const created = new Date(t.created);
+    const age = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+    const ageLabel = age === 0 ? 'today' : age === 1 ? 'yesterday' : `${age}d ago`;
+    return `<li><strong>${esc(t.vendor)}</strong>: ${esc(t.todo)} <span style="color:#888;font-size:11px">(${ageLabel})</span></li>`;
+  }).join('');
+
+  const htmlContent = `<!DOCTYPE html>
+<html><head>
+<style>
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 16px; font-size: 13px; }
+  h2 { color: #1a73e8; margin: 0 0 12px; }
+  .stat { display: inline-block; background: #e8f0fe; padding: 6px 14px; border-radius: 12px; margin: 2px 4px; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #f5f5f5; text-align: left; padding: 6px 10px; font-size: 12px; border-bottom: 2px solid #e0e0e0; }
+  td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; font-size: 12px; }
+  h3 { color: #1a73e8; margin: 16px 0 8px; font-size: 14px; }
+  ul { padding-left: 20px; }
+  li { margin: 4px 0; line-height: 1.5; }
+  .empty { color: #888; font-style: italic; }
+</style>
+</head><body>
+  <h2>📊 Weekly Recap</h2>
+  <span class="stat">📋 ${thisWeek.length} vendors reviewed</span>
+  <span class="stat">✅ ${pendingTodos.length} pending todos</span>
+  <span class="stat">📅 ${weekAgo.getMonth() + 1}/${weekAgo.getDate()} - ${now.getMonth() + 1}/${now.getDate()}</span>
+
+  <h3>Reviews This Week</h3>
+  <table>
+    <tr><th>Date</th><th>Vendor</th><th>Status</th><th>Blocker</th><th>Notes</th></tr>
+    ${vendorRows}
+  </table>
+
+  <h3>Pending Todos (${pendingTodos.length})</h3>
+  ${pendingTodos.length > 0
+    ? '<ul>' + todosList + '</ul>'
+    : '<p class="empty">All caught up! No pending todos.</p>'}
+</body></html>`;
+
+  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(750).setHeight(550);
+  ui.showModalDialog(html, '📊 Weekly Recap');
+}
+
+/**
+ * Update Review Todos - shows pending todos and lets user mark done or skip
+ */
+function inboxReviewUpdateTodos() {
+  const ui = SpreadsheetApp.getUi();
+  const allTodos = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+  );
+  const pending = allTodos.filter(t => !t.done);
+
+  if (pending.length === 0) {
+    ui.alert('No pending todos!\n\nUse 📋 Inbox Review (Q&A + Record) to generate todos from vendor reviews.');
+    return;
+  }
+
+  const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  const todoRows = pending.map((t, i) => {
+    const created = new Date(t.created);
+    const age = Math.floor((new Date() - created) / (1000 * 60 * 60 * 24));
+    const ageLabel = age === 0 ? 'today' : age === 1 ? 'yesterday' : `${age}d ago`;
+    return `<tr>
+      <td><input type="checkbox" name="done" value="${i}"></td>
+      <td><strong>${esc(t.vendor)}</strong></td>
+      <td>${esc(t.todo)}</td>
+      <td style="color:#888;font-size:11px">${ageLabel}</td>
+    </tr>`;
+  }).join('');
+
+  const htmlContent = `<!DOCTYPE html>
+<html><head>
+<style>
+  body { font-family: 'Google Sans', Arial, sans-serif; padding: 16px; font-size: 13px; }
+  h2 { color: #1a73e8; margin: 0 0 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #f5f5f5; text-align: left; padding: 6px 10px; font-size: 12px; border-bottom: 2px solid #e0e0e0; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+  .btn-row { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-end; }
+  .btn { padding: 8px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-primary { background: #1a73e8; color: white; }
+  .btn-danger { background: #ea4335; color: white; }
+  .btn-secondary { background: #f1f3f4; color: #333; }
+  .count { background: #e8f0fe; padding: 4px 12px; border-radius: 12px; font-size: 12px; }
+</style>
+</head><body>
+  <h2>✅ Review Todos</h2>
+  <span class="count">${pending.length} pending</span>
+
+  <table>
+    <tr><th>Done</th><th>Vendor</th><th>Todo</th><th>Age</th></tr>
+    ${todoRows}
+  </table>
+
+  <div class="btn-row">
+    <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+    <button class="btn btn-danger" onclick="clearAll()">Clear All Done</button>
+    <button class="btn btn-primary" onclick="save()">Mark Checked as Done</button>
+  </div>
+
+<script>
+function save() {
+  var checked = [];
+  var boxes = document.getElementsByName('done');
+  for (var i = 0; i < boxes.length; i++) {
+    if (boxes[i].checked) checked.push(parseInt(boxes[i].value));
+  }
+  if (checked.length === 0) { alert('No items checked.'); return; }
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) { alert('Error: ' + e.message); })
+    .inboxReviewMarkTodosDone(JSON.stringify(checked));
+}
+function clearAll() {
+  if (!confirm('Mark ALL ${pending.length} todos as done?')) return;
+  var all = [];
+  for (var i = 0; i < ${pending.length}; i++) all.push(i);
+  google.script.run
+    .withSuccessHandler(function() { google.script.host.close(); })
+    .withFailureHandler(function(e) { alert('Error: ' + e.message); })
+    .inboxReviewMarkTodosDone(JSON.stringify(all));
+}
+</script>
+</body></html>`;
+
+  const html = HtmlService.createHtmlOutput(htmlContent).setWidth(650).setHeight(500);
+  ui.showModalDialog(html, '✅ Update Review Todos');
+}
+
+/**
+ * Called from the todos dialog to mark selected items as done
+ */
+function inboxReviewMarkTodosDone(indicesJson) {
+  const indices = new Set(JSON.parse(indicesJson));
+  const allTodos = JSON.parse(
+    PropertiesService.getScriptProperties().getProperty('INBOX_REVIEW_TODOS') || '[]'
+  );
+
+  // Map pending indices back to allTodos indices
+  let pendingIdx = 0;
+  for (let i = 0; i < allTodos.length; i++) {
+    if (!allTodos[i].done) {
+      if (indices.has(pendingIdx)) {
+        allTodos[i].done = true;
+        allTodos[i].completedAt = new Date().toISOString();
+      }
+      pendingIdx++;
+    }
+  }
+
+  PropertiesService.getScriptProperties().setProperty(
+    'INBOX_REVIEW_TODOS', JSON.stringify(allTodos)
+  );
+
+  const remaining = allTodos.filter(t => !t.done).length;
+  SpreadsheetApp.getActive().toast(
+    `Marked ${indices.size} todo(s) as done. ${remaining} remaining.`, '✅ Updated', 3
+  );
+}
+
+
+/************************************************************
+ * VENDOR WORKFLOW - Full proactive loop
+ *
+ * Steps:
+ *   1. Sync monday.com data
+ *   2. Build List (refresh vendor list from Gmail)
+ *   3. Smart Briefing (priority order for vendors)
+ *   4. Setup A(I)DEN on vendor #1 (oldest inbox email)
+ *   5. Vendor Briefing (full intel on current vendor)
+ *   6. Auto-fix with Bulk Actions where possible
+ *   7. Create monday.com tasks for manual items
+ *   8. Settle emails (draft/send replies)
+ *   9. Move to next vendor, repeat from step 4
+ ************************************************************/
+
+var VW_STEPS = [
+  { id: 'setup',      label: 'Sync + Build List',              fn: 'vw_setup_' },
+  { id: 'loadVendor', label: 'Load Next Vendor',              fn: 'vw_loadVendor_' },
+  { id: 'chatUpload', label: 'Chat Screenshot Upload',         fn: 'vw_chatUpload_' },
+  { id: 'vendorBrief',label: 'Vendor Briefing (Full Intel)',   fn: 'vw_vendorBriefing_' },
+  { id: 'settleEmail',label: 'Settle Emails',                  fn: 'vw_settleEmails_' },
+  { id: 'bulkFix',    label: 'Bulk Actions + Tasks',           fn: 'vw_bulkAndTasks_' },
+  { id: 'updateNotes',label: 'Update Notes & Blockers',        fn: 'vw_updateNotes_' },
+  { id: 'fillFields', label: 'Fill Empty Monday.com Fields',   fn: 'vw_fillEmptyFields_' },
+  { id: 'preload',    label: 'Preload Next Vendor',            fn: 'vw_preloadNext_' },
+  { id: 'nextVendor', label: 'Next Vendor (Loop)',             fn: 'vw_nextVendor_' }
+];
+
+function vwGetState_() {
+  var raw = PropertiesService.getScriptProperties().getProperty('VENDOR_WORKFLOW_STATE');
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch(e) { return null; }
+}
+
+function vwSetState_(state) {
+  PropertiesService.getScriptProperties().setProperty(
+    'VENDOR_WORKFLOW_STATE', JSON.stringify(state)
+  );
+}
+
+function vwClearState_() {
+  PropertiesService.getScriptProperties().deleteProperty('VENDOR_WORKFLOW_STATE');
+}
+
+function vendorWorkflowStart() {
+  var ui = SpreadsheetApp.getUi();
+  var existing = vwGetState_();
+  if (existing) {
+    var resp = ui.alert(
+      'Workflow Already Running',
+      'You are on step "' + VW_STEPS[existing.stepIdx].label + '" for vendor "' + (existing.currentVendor || '(none yet)') + '".\n\nRestart from scratch?',
+      ui.ButtonSet.YES_NO
+    );
+    if (resp !== ui.Button.YES) return;
+  }
+
+  vwSetState_({
+    stepIdx: 0,
+    currentVendor: null,
+    vendorQueue: [],
+    vendorsCompleted: [],
+    tasksPending: [],
+    startedAt: new Date().toISOString()
+  });
+
+  SpreadsheetApp.getActive().toast('Starting Vendor Workflow...', 'Workflow', 3);
+  vendorWorkflowNextStep();
+}
+
+function vendorWorkflowNextStep() {
+  var state = vwGetState_();
+  if (!state) {
+    SpreadsheetApp.getActive().toast('No active workflow. Use "Vendor Workflow (Full Loop)" to start.', 'Warning', 5);
+    return;
+  }
+
+  var step = VW_STEPS[state.stepIdx];
+  if (!step) {
+    SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', 'Done', 5);
+    vwClearState_();
+    return;
+  }
+
+  SpreadsheetApp.getActive().toast('Running: ' + step.label + '...', 'Workflow', 3);
+
+  try {
+    var stepFunctions = {
+      'vw_setup_': vw_setup_,
+      'vw_loadVendor_': vw_loadVendor_,
+      'vw_chatUpload_': vw_chatUpload_,
+      'vw_vendorBriefing_': vw_vendorBriefing_,
+      'vw_settleEmails_': vw_settleEmails_,
+      'vw_bulkAndTasks_': vw_bulkAndTasks_,
+      'vw_updateNotes_': vw_updateNotes_,
+      'vw_fillEmptyFields_': vw_fillEmptyFields_,
+      'vw_preloadNext_': vw_preloadNext_,
+      'vw_nextVendor_': vw_nextVendor_
+    };
+
+    var fn = stepFunctions[step.fn];
+    var result = fn(state);
+
+    if (result === null) {
+      SpreadsheetApp.getActive().toast('Workflow paused.', 'Paused', 5);
+      return;
+    }
+
+    vwSetState_(result);
+
+    var nextStep = VW_STEPS[result.stepIdx];
+    if (nextStep) {
+      // Auto-advance to next step - no confirmation dialog
+      vendorWorkflowNextStep();
+    } else {
+      SpreadsheetApp.getActive().toast('Workflow complete! All vendors processed.', 'Done', 5);
+      vwClearState_();
+    }
+  } catch (e) {
+    Logger.log('Workflow error: ' + e.message + '\n' + e.stack);
+    SpreadsheetApp.getActive().toast('Error in ' + step.label + ': ' + e.message + '. Use "Next Step" to retry.', 'Error', 10);
+  }
+}
+
+function vendorWorkflowCancel() {
+  var state = vwGetState_();
+  if (!state) {
+    SpreadsheetApp.getActive().toast('No active workflow.', 'Warning', 3);
+    return;
+  }
+  var ui = SpreadsheetApp.getUi();
+  var resp = ui.alert(
+    'Cancel Workflow?',
+    'You have completed ' + state.vendorsCompleted.length + ' vendor(s). Cancel?',
+    ui.ButtonSet.YES_NO
+  );
+  if (resp === ui.Button.YES) {
+    vwClearState_();
+    SpreadsheetApp.getActive().toast('Workflow cancelled.', 'Cancelled', 3);
+  }
+}
+
+/** Step 0: Sync + Build List + Smart Briefing - all automatic, no user input */
+function vw_setup_(state) {
+  var ss = SpreadsheetApp.getActive();
+
+  ss.toast('Syncing monday.com boards...', 'Workflow', 5);
+  syncMondayComBoards();
+
+  ss.toast('Building vendor list...', 'Workflow', 5);
+  buildListWithGmailAndNotes();
+
+  // Smart Briefing removed - Build List already sorts by priority + oldest email
+
+  // Build vendor queue directly from the List sheet in its existing order.
+  // buildListWithGmailAndNotes already sorts vendors into priority zones:
+  // Inbox > Chat > Monthly Returns > Hot > Normal
+  // So the List sheet order IS the priority order.
+  var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  if (!listSheet) throw new Error('List sheet not found');
+
+  var data = listSheet.getDataRange().getValues();
+  var queue = [];
+  for (var i = 1; i < data.length; i++) {
+    var vendor = data[i][BS_CFG.L_VENDOR];
+    var status = String(data[i][BS_CFG.L_STATUS] || '').toLowerCase();
+    if (!vendor || status === 'complete' || status === 'snoozed') continue;
+    queue.push(vendor);
+  }
+
+  state.vendorQueue = queue;
+  state.stepIdx = 1;
+  ss.toast('Setup complete. ' + queue.length + ' vendors queued. First: ' + (queue[0] || '(none)'), 'Workflow', 5);
+  return state;
+}
+
+/** Step 1: Load next vendor - no dialog, just load oldest email vendor */
+function vw_loadVendor_(state) {
+  if (state.vendorQueue.length === 0) {
+    SpreadsheetApp.getActive().toast(
+      'Workflow complete! Processed ' + state.vendorsCompleted.length + ' vendor(s).', 'Done', 10
+    );
+    return null;
+  }
+
+  var vendorName = state.vendorQueue.shift();
+  state.currentVendor = vendorName;
+
+  var ss = SpreadsheetApp.getActive();
+  var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  var data = listSheet.getDataRange().getValues();
+
+  var vendorIdx = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase() === vendorName.toLowerCase()) {
+      vendorIdx = i;
+      break;
+    }
+  }
+
+  if (vendorIdx === -1) {
+    SpreadsheetApp.getActive().toast('Vendor "' + vendorName + '" not found. Skipping...', 'Warning', 3);
+    state.stepIdx = 1; // Loop back to loadVendor
+    return state;
+  }
+
+  loadVendorData(vendorIdx, { loadMode: 'fast' });
+  state.stepIdx = 2;
+  return state;
+}
+
+/** Step 2: Chat Screenshot Upload - if vendor uses Teams/Telegram, prompt for screenshots */
+function vw_chatUpload_(state) {
+  var vendor = state.currentVendor || '';
+  if (!vendor) {
+    state.stepIdx = 3;
+    return state;
+  }
+
+  // Check if this vendor has a Teams or Telegram chat link
+  var chatInfo = null;
+  try {
+    chatInfo = getVendorChatInfo_(vendor);
+  } catch (e) {
+    Logger.log('Error checking chat info: ' + e.message);
+  }
+
+  if (!chatInfo || !chatInfo.label) {
+    // No chat link - skip this step
+    state.stepIdx = 3;
+    return state;
+  }
+
+  var label = String(chatInfo.label).toLowerCase();
+  var isTeams = label.indexOf('teams') !== -1 || label.indexOf('microsoft') !== -1;
+  var isTelegram = label.indexOf('telegram') !== -1;
+
+  if (!isTeams && !isTelegram) {
+    // Chat link exists but it's not Teams or Telegram (e.g., email) - skip
+    state.stepIdx = 3;
+    return state;
+  }
+
+  var platform = isTeams ? 'Microsoft Teams' : 'Telegram';
+
+  // Store vendor context for the OCR callback
+  PropertiesService.getUserProperties().setProperty('chatUploadVendor', vendor);
+  PropertiesService.getUserProperties().setProperty('chatUploadPlatform', platform);
+
+  // Show upload dialog with context about which platform to screenshot
+  var chatLink = chatInfo.clickableLink || '';
+  var html = HtmlService.createHtmlOutput(getChatUploadHtml_(vendor, platform, chatLink))
+    .setWidth(700)
+    .setHeight(550);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Chat Screenshot: ' + vendor + ' (' + platform + ')');
+
+  state.stepIdx = 3;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Upload ' + platform + ' screenshots for ' + vendor + ', then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/**
+ * Build the HTML for the chat screenshot upload dialog.
+ * Reuses the existing OCR infrastructure but with vendor-specific context.
+ */
+function getChatUploadHtml_(vendor, platform, chatLink) {
+  var escapedVendor = vendor.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return '<!DOCTYPE html>' +
+  '<html><head><style>' +
+  'body { font-family: Arial, sans-serif; padding: 15px; }' +
+  '.header { font-size: 16px; color: #1565c0; margin-bottom: 10px; }' +
+  '.platform { background: #e3f2fd; padding: 10px 14px; border-radius: 6px; margin-bottom: 12px; border-left: 4px solid #1a73e8; }' +
+  '.drop-zone { border: 2px dashed #ccc; border-radius: 8px; padding: 30px; text-align: center; margin: 10px 0; cursor: pointer; transition: border-color 0.3s; }' +
+  '.drop-zone:hover, .drop-zone.dragover { border-color: #1a73e8; background: #f0f7ff; }' +
+  '.btn { background: #1a73e8; color: white; border: none; padding: 10px 20px; border-radius: 4px; font-size: 14px; cursor: pointer; margin-top: 10px; }' +
+  '.btn:hover { background: #1557b0; }' +
+  '.btn:disabled { background: #ccc; cursor: not-allowed; }' +
+  '.btn-skip { background: #f1f3f4; color: #5f6368; margin-left: 10px; }' +
+  '.status { margin-top: 10px; font-size: 13px; color: #5f6368; }' +
+  '.result { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-top: 10px; font-size: 12px; max-height: 150px; overflow-y: auto; }' +
+  '.copy-btn { background: #1a73e8; color: white; border: none; padding: 6px 16px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 10px; }' +
+  '.copy-btn:hover { background: #1557b0; }' +
+  '.copied { background: #4caf50 !important; }' +
+  '</style></head><body>' +
+  '<div class="header">Upload ' + platform + ' Screenshot</div>' +
+  '<div class="platform">' +
+  '<strong>' + escapedVendor + '</strong> communicates via <strong>' + platform + '</strong>' +
+  (chatLink ? '<br><a href="' + chatLink + '" target="_blank" style="font-size:12px;">Open ' + platform + ' chat</a>' : '') +
+  '</div>' +
+  '<p style="font-size:13px;color:#333;">Screenshot the latest conversation and upload it here. The text will be OCR\'d and used to inform the vendor briefing, notes, and blockers.</p>' +
+  '<div id="dropZone" class="drop-zone" onclick="document.getElementById(\'fileInput\').click()">' +
+  'Drop screenshot here or click to upload<br><span style="font-size:11px;color:#999;">Supports PNG, JPG, or paste from clipboard (Ctrl+V)</span>' +
+  '</div>' +
+  '<input type="file" id="fileInput" accept="image/*" style="display:none" onchange="handleFile(this.files[0])">' +
+  '<div id="status" class="status" style="display:none;"></div>' +
+  '<div id="result" class="result" style="display:none;"></div>' +
+  '<div style="margin-top:10px;">' +
+  '<button class="btn" id="processBtn" onclick="processImage()" disabled>Process Screenshot</button>' +
+  '<button class="btn btn-skip" onclick="google.script.host.close()">Skip</button>' +
+  '</div>' +
+  '<script>' +
+  'var imageData = null;' +
+  'var dropZone = document.getElementById("dropZone");' +
+  '' +
+  'dropZone.addEventListener("dragover", function(e) { e.preventDefault(); dropZone.classList.add("dragover"); });' +
+  'dropZone.addEventListener("dragleave", function() { dropZone.classList.remove("dragover"); });' +
+  'dropZone.addEventListener("drop", function(e) { e.preventDefault(); dropZone.classList.remove("dragover"); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });' +
+  '' +
+  'document.addEventListener("paste", function(e) {' +
+  '  var items = e.clipboardData.items;' +
+  '  for (var i = 0; i < items.length; i++) {' +
+  '    if (items[i].type.indexOf("image") !== -1) { handleFile(items[i].getAsFile()); break; }' +
+  '  }' +
+  '});' +
+  '' +
+  'function handleFile(file) {' +
+  '  if (!file || file.type.indexOf("image") === -1) { alert("Please upload an image file."); return; }' +
+  '  var reader = new FileReader();' +
+  '  reader.onload = function(e) {' +
+  '    imageData = e.target.result;' +
+  '    dropZone.innerHTML = "Image loaded: " + file.name + "<br><img src=\'" + imageData + "\' style=\'max-width:300px;max-height:150px;margin-top:8px;\'>";' +
+  '    document.getElementById("processBtn").disabled = false;' +
+  '  };' +
+  '  reader.readAsDataURL(file);' +
+  '}' +
+  '' +
+  'function processImage() {' +
+  '  if (!imageData) return;' +
+  '  document.getElementById("processBtn").disabled = true;' +
+  '  document.getElementById("status").textContent = "Processing with Claude Vision OCR...";' +
+  '  document.getElementById("status").style.display = "block";' +
+  '' +
+  '  google.script.run' +
+  '    .withSuccessHandler(function(res) {' +
+  '      if (res.success) {' +
+  '        var resultHtml = "<strong>Extracted text:</strong><br>" + res.extractedText.replace(/\\n/g, "<br>");' +
+  '        if (res.actionItems && res.actionItems !== "(no action items)") {' +
+  '          resultHtml += "<br><br><strong style=\'color:#e65100;\'>Action Items (will pre-load in Bulk Actions):</strong><br>" + res.actionItems.replace(/\\n/g, "<br>");' +
+  '        }' +
+  '        document.getElementById("result").innerHTML = resultHtml;' +
+  '        document.getElementById("result").style.display = "block";' +
+  '        document.getElementById("status").innerHTML = "OCR complete. Text saved for vendor briefing.<br><button class=\'copy-btn\' onclick=\'copyText()\'>Copy to Clipboard</button>";' +
+  '      } else {' +
+  '        document.getElementById("status").textContent = "Error: " + res.error;' +
+  '        document.getElementById("processBtn").disabled = false;' +
+  '      }' +
+  '    })' +
+  '    .withFailureHandler(function(err) {' +
+  '      document.getElementById("status").textContent = "Error: " + (err.message || err);' +
+  '      document.getElementById("processBtn").disabled = false;' +
+  '    })' +
+  '    .processChatScreenshot(imageData, "' + platform + '");' +
+  '}' +
+  '' +
+  'function copyText() {' +
+  '  var el = document.getElementById("result");' +
+  '  var text = el.innerText || el.textContent;' +
+  '  var ta = document.createElement("textarea");' +
+  '  ta.value = text;' +
+  '  document.body.appendChild(ta);' +
+  '  ta.select();' +
+  '  document.execCommand("copy");' +
+  '  document.body.removeChild(ta);' +
+  '  var btns = document.querySelectorAll(".copy-btn");' +
+  '  if (btns.length) { btns[0].textContent = "Copied!"; btns[0].classList.add("copied"); setTimeout(function() { btns[0].textContent = "Copy to Clipboard"; btns[0].classList.remove("copied"); }, 2000); }' +
+  '}' +
+  '</script></body></html>';
+}
+
+/**
+ * Process a chat screenshot: OCR it and save the extracted text
+ * for the current vendor so the briefing can use it.
+ */
+function processChatScreenshot(imageData, platform) {
+  var vendor = PropertiesService.getUserProperties().getProperty('chatUploadVendor') || '';
+
+  // Use Claude Vision to extract text
+  var mediaType = 'image/png';
+  var mediaMatch = imageData.match(/^data:(image\/[a-z]+);base64,/);
+  if (mediaMatch) mediaType = mediaMatch[1];
+  var base64Data = imageData.replace(/^data:image\/[a-z]+;base64,/, '');
+
+  var apiKey = getClaudeApiKey_();
+  var result = callClaudeAPI_(
+    'Extract all text from this ' + platform + ' chat screenshot exactly as it appears. Preserve the conversation structure (who said what). Return only the extracted text.',
+    apiKey,
+    {
+      image: { base64: base64Data, mediaType: mediaType },
+      maxTokens: 4000
+    }
+  );
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  var extractedText = result.content || '';
+
+  // Save the extracted text to Script Properties so the Vendor Briefing can pick it up
+  var existingChat = PropertiesService.getScriptProperties().getProperty('CHAT_CONTEXT_' + vendor) || '';
+  var combined = existingChat
+    ? existingChat + '\n\n--- ' + platform + ' Screenshot (' + new Date().toLocaleString() + ') ---\n' + extractedText
+    : '--- ' + platform + ' Screenshot (' + new Date().toLocaleString() + ') ---\n' + extractedText;
+  PropertiesService.getScriptProperties().setProperty('CHAT_CONTEXT_' + vendor, combined);
+
+  // Extract action items from the chat for Bulk Actions
+  var actionItems = '';
+  try {
+    var actionResult = callClaudeAPI_(
+      'You are analyzing a ' + platform + ' chat conversation about vendor "' + vendor + '" at a lead generation company.\n\n' +
+      'Chat text:\n' + extractedText + '\n\n' +
+      'Extract any actionable items from this conversation. For each, write a one-line description of what needs to be done.\n' +
+      'Format as a simple list, one item per line. Examples:\n' +
+      '- Create task: Follow up on integration issue\n' +
+      '- Update blocker: Waiting on API credentials from vendor\n' +
+      '- Update notes: Vendor confirmed pricing at $X per lead\n' +
+      '- Change status to Paused\n\n' +
+      'If there are no clear action items, just output: (no action items)\n' +
+      'Output ONLY the list, nothing else.',
+      apiKey,
+      { maxTokens: 1000 }
+    );
+    if (!actionResult.error) {
+      actionItems = actionResult.content.trim();
+      if (actionItems && actionItems !== '(no action items)') {
+        // Save action items for Bulk Actions to pick up
+        var existingActions = PropertiesService.getScriptProperties().getProperty('CHAT_ACTIONS_' + vendor) || '';
+        var combinedActions = existingActions
+          ? existingActions + '\n' + actionItems
+          : actionItems;
+        PropertiesService.getScriptProperties().setProperty('CHAT_ACTIONS_' + vendor, combinedActions);
+      }
+    }
+  } catch (e) {
+    Logger.log('Error extracting chat action items: ' + e.message);
+  }
+
+  Logger.log('Chat OCR saved for ' + vendor + ': ' + extractedText.length + ' chars, actions: ' + actionItems.length + ' chars');
+
+  return { success: true, extractedText: extractedText, actionItems: actionItems };
+}
+
+/** Step 3: Vendor Briefing - pause so user can read the analysis */
+function vw_vendorBriefing_(state) {
+  battleStationVendorBriefing();
+  state.stepIdx = 4;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Vendor Briefing loaded for ' + (state.currentVendor || 'vendor') + '. Review, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/** Step 3: Settle Emails - pause if drafting */
+function vw_settleEmails_(state) {
+  var ui = SpreadsheetApp.getUi();
+  var vendor = state.currentVendor || '(unknown)';
+
+  var resp = ui.alert(
+    'Settle Emails for ' + vendor,
+    'Draft email replies now?\n\nYES = Open Draft Reply\nNO = Skip',
+    ui.ButtonSet.YES_NO
+  );
+
+  state.stepIdx = 5;
+
+  if (resp === ui.Button.YES) {
+    battleStationDraftReply();
+    vwSetState_(state);
+    SpreadsheetApp.getActive().toast('Draft Reply loaded. Compose, then "Workflow: Next Step".', 'Paused', 10);
+    return null;
+  }
+
+  return state;
+}
+
+/** Step 4: Bulk Actions + Tasks - runs bulk actions, pauses for review */
+function vw_bulkAndTasks_(state) {
+  battleStationBulkActions();
+  state.stepIdx = 6;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Bulk Actions loaded. Review and act, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/** Step 5: Update Notes & Blockers - no dialog, just run it and pause for review */
+function vw_updateNotes_(state) {
+  battleStationSummarizeToNotes();
+  state.stepIdx = 7;
+  vwSetState_(state);
+  SpreadsheetApp.getActive().toast('Notes & Blockers preview loaded. Review/save, then "Workflow: Next Step".', 'Paused', 10);
+  return null;
+}
+
+/** Step 6: Fill empty monday.com fields - check for missing data and auto-open monday.com */
+function vw_fillEmptyFields_(state) {
+  var ss = SpreadsheetApp.getActive();
+  var bsSh = ss.getSheetByName(BS_CFG.BATTLE_SHEET);
+  var vendor = state.currentVendor || '(unknown)';
+
+  // Scan the A(I)DEN sheet for cells with "Add in monday.com" warnings
+  var values = bsSh.getDataRange().getValues();
+  var formulas = bsSh.getDataRange().getFormulas();
+  var emptyFields = [];
+
+  for (var i = 0; i < formulas.length; i++) {
+    for (var j = 0; j < formulas[i].length; j++) {
+      var formula = String(formulas[i][j] || '');
+      var value = String(values[i][j] || '');
+      // Check both formulas and cell values for monday.com warnings
+      if (formula.indexOf('Add in monday') !== -1 || formula.indexOf('Add notes in monday') !== -1 ||
+          value.indexOf('Add in monday') !== -1 || value.indexOf('NO PHONEXA LINK') !== -1) {
+        // Figure out the field name by looking at labels in the same row
+        var label = '';
+        // Check all columns in this row for a label (text ending with ":" or bold text)
+        for (var k = 0; k < values[i].length; k++) {
+          var cellVal = String(values[i][k] || '').trim();
+          if (cellVal && k < j && (cellVal.indexOf(':') !== -1 || cellVal.indexOf('PHONEXA') !== -1)) {
+            label = cellVal.replace(/:/g, '').replace(/⚠️/g, '').replace(/NO /g, '').trim();
+          }
+        }
+        if (!label) {
+          label = 'Row ' + (i + 1);
+        }
+        // Avoid duplicate labels
+        var isDupe = false;
+        for (var d = 0; d < emptyFields.length; d++) {
+          if (emptyFields[d].label === label) { isDupe = true; break; }
+        }
+        if (!isDupe) {
+          emptyFields.push({ row: i + 1, col: j + 1, label: label });
+        }
+      }
+    }
+  }
+
+  if (emptyFields.length === 0) {
+    SpreadsheetApp.getActive().toast('No empty monday.com fields for ' + vendor + '.', 'All Good', 5);
+    state.stepIdx = 8;
+    return state;
+  }
+
+  // Show a dialog so it's unmissable
+  var fieldList = emptyFields.map(function(f) { return '- ' + f.label; }).join('\n');
+  var listSh = ss.getSheetByName(BS_CFG.LIST_SHEET);
+  var currentIndex = getCurrentVendorIndex_();
+  var listRow = currentIndex + 1;
+  var source = String(listSh.getRange(listRow, BS_CFG.L_SOURCE + 1).getValue() || '');
+  var boardId = source.toLowerCase().includes('affiliate') ? BS_CFG.AFFILIATES_BOARD_ID : BS_CFG.BUYERS_BOARD_ID;
+  var mondayUrl = 'https://profitise-company.monday.com/boards/' + boardId + '?term=' + encodeURIComponent(vendor);
+
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:10px;">' +
+    '<h3 style="color:#e65100;margin-top:0;">Empty Fields for ' + vendor.replace(/</g,'&lt;') + '</h3>' +
+    '<p>The following fields need data in monday.com:</p>' +
+    '<ul style="font-size:14px;line-height:1.8;">' + emptyFields.map(function(f) { return '<li><strong>' + f.label.replace(/</g,'&lt;') + '</strong></li>'; }).join('') + '</ul>' +
+    '<p><a href="' + mondayUrl + '" target="_blank" style="color:#1a73e8;font-size:14px;">Open in monday.com</a></p>' +
+    '</div>'
+  ).setWidth(450).setHeight(250);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Empty Fields (' + emptyFields.length + ')');
+
+  state.stepIdx = 8;
+  return state;
+}
+
+/** Step 8: Preload next vendor's data (pre-cache API calls) */
+function vw_preloadNext_(state) {
+  if (state.vendorQueue.length === 0) {
+    state.stepIdx = 9;
+    return state;
+  }
+
+  var nextVendor = state.vendorQueue[0]; // Peek, don't shift
+  var ss = SpreadsheetApp.getActive();
+
+  ss.toast('Preloading data for ' + nextVendor + '...', 'Preload', 5);
+
+  try {
+    var listSheet = ss.getSheetByName(BS_CFG.LIST_SHEET);
+    var data = listSheet.getDataRange().getValues();
+    var vendorIdx = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][BS_CFG.L_VENDOR] || '').toLowerCase() === nextVendor.toLowerCase()) {
+        vendorIdx = i;
+        break;
+      }
+    }
+
+    if (vendorIdx !== -1) {
+      var listRow = vendorIdx + 1;
+      var vendor = String(data[vendorIdx][BS_CFG.L_VENDOR] || '').trim();
+
+      // Pre-cache expensive API calls so they're instant on next load
+      try { getVendorContacts_(vendor, listRow); } catch(e) { Logger.log('Preload contacts: ' + e.message); }
+      try { getEmailsForVendor_(vendor, listRow); } catch(e) { Logger.log('Preload emails: ' + e.message); }
+      try { getTasksForVendor_(vendor, listRow); } catch(e) { Logger.log('Preload tasks: ' + e.message); }
+      try { getVendorChatInfo_(vendor); } catch(e) { Logger.log('Preload chat: ' + e.message); }
+
+      Logger.log('Preloaded caches for: ' + vendor);
+      ss.toast('Preloaded ' + nextVendor, 'Done', 3);
+    }
+  } catch (e) {
+    Logger.log('Preload error: ' + e.message);
+  }
+
+  state.stepIdx = 9;
+  return state;
+}
+
+/** Step 9: Next vendor - loop back to loadVendor */
+function vw_nextVendor_(state) {
+  var vendor = state.currentVendor;
+  if (vendor) {
+    state.vendorsCompleted.push(vendor);
+  }
+
+  var remaining = state.vendorQueue.length;
+  SpreadsheetApp.getActive().toast(
+    vendor + ' done! ' + remaining + ' vendor(s) remaining.',
+    'Next Vendor', 5
+  );
+
+  if (remaining === 0) {
+    SpreadsheetApp.getUi().alert(
+      'Workflow Complete!',
+      'All vendors processed!\n\nCompleted: ' + state.vendorsCompleted.length + '\nTasks created: ' + state.tasksPending.length,
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return null;
+  }
+
+  state.stepIdx = 1; // Back to loadVendor
+  state.currentVendor = null;
+  return state;
+}
+
+/************************************************************
+ * VENDOR BRIEFING - Action Plan persistence and revision
+ ************************************************************/
+
+/**
+ * Get or create the hidden Action Plans sheet
+ */
+function getOrCreateActionPlansSheet_() {
+  var ss = SpreadsheetApp.getActive();
+  var sheet = ss.getSheetByName('Action Plans');
+  if (!sheet) {
+    sheet = ss.insertSheet('Action Plans');
+    sheet.getRange(1, 1).setValue('Vendor');
+    sheet.getRange(1, 2).setValue('Timestamp');
+    sheet.getRange(1, 3).setValue('Action Plan');
+    sheet.getRange(1, 4).setValue('Full Briefing');
+    sheet.getRange(1, 5).setValue('User Notes');
+    sheet.getRange(1, 1, 1, 5).setFontWeight('bold');
+    sheet.hideSheet();
+  }
+  return sheet;
+}
+
+/**
+ * Save a vendor briefing to the Action Plans sheet.
+ * Keeps history - each briefing is a new row.
+ */
+function saveBriefingToSheet_(vendor, rawContent) {
+  var sheet = getOrCreateActionPlansSheet_();
+
+  // Extract action plan section
+  var actionPlan = '';
+  var planMatch = rawContent.match(/## 🎯 ACTION PLAN[\s\S]*/);
+  if (planMatch) {
+    actionPlan = planMatch[0].replace(/## 🎯 ACTION PLAN\s*\n?/, '').trim();
+  }
+
+  sheet.appendRow([
+    vendor,
+    new Date().toISOString(),
+    actionPlan,
+    rawContent,
+    ''
+  ]);
+}
+
+/**
+ * Get the previous action plan for a vendor (most recent entry)
+ */
+function getPreviousActionPlan_(vendor) {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+
+  var data = sheet.getDataRange().getValues();
+  // Search from bottom up for most recent match
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).toLowerCase() === vendor.toLowerCase()) {
+      return {
+        timestamp: data[i][1],
+        actionPlan: data[i][2],
+        fullBriefing: data[i][3],
+        userNotes: data[i][4],
+        row: i + 1
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Get general notes (vendor = "_GENERAL") - most recent entry
+ */
+function getGeneralNotes_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return '';
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === '_GENERAL') {
+      return String(data[i][4] || '');
+    }
+  }
+  return '';
+}
+
+/**
+ * Save or update general notes
+ */
+function saveGeneralNotes_(notes) {
+  var sheet = getOrCreateActionPlansSheet_();
+  var data = sheet.getDataRange().getValues();
+
+  // Find existing _GENERAL row
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === '_GENERAL') {
+      sheet.getRange(i + 1, 5).setValue(notes);
+      sheet.getRange(i + 1, 2).setValue(new Date().toISOString());
+      return;
+    }
+  }
+
+  // No existing row - create one
+  sheet.appendRow(['_GENERAL', new Date().toISOString(), '', '', notes]);
+}
+
+/**
+ * Collect all recent user notes across vendors for general context.
+ * Returns the last note from each vendor (up to 20 vendors).
+ */
+function getRecentVendorNotes_() {
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (!sheet || sheet.getLastRow() <= 1) return '';
+
+  var data = sheet.getDataRange().getValues();
+  var seen = {};
+  var notes = [];
+
+  // Walk backwards to get most recent note per vendor
+  for (var i = data.length - 1; i >= 1; i--) {
+    var vendor = String(data[i][0]);
+    var userNote = String(data[i][4] || '').trim();
+    if (vendor === '_GENERAL' || !userNote || seen[vendor]) continue;
+    seen[vendor] = true;
+    notes.push(vendor + ': ' + userNote);
+    if (notes.length >= 20) break;
+  }
+
+  return notes.join('\n');
+}
+
+/**
+ * Revise the briefing action plan based on user feedback.
+ * Compares against the previous action plan to track what's changed/closed.
+ * Called from the briefing dialog.
+ */
+function reviseBriefingActionPlan(feedback) {
+  var contextRaw = PropertiesService.getUserProperties().getProperty('vendorBriefingContext');
+  if (!contextRaw) throw new Error('No briefing context found. Please regenerate the briefing.');
+
+  var context = JSON.parse(contextRaw);
+  var apiKey = getClaudeApiKey_();
+  if (!apiKey) throw new Error('No Claude API key configured.');
+
+  // Get previous action plan for comparison
+  var prev = getPreviousActionPlan_(context.vendor);
+  var prevPlanContext = '';
+  if (prev && prev.actionPlan) {
+    prevPlanContext = '\n\nPREVIOUS ACTION PLAN (from ' + prev.timestamp + '):\n' + prev.actionPlan;
+    if (prev.userNotes) {
+      prevPlanContext += '\n\nUSER NOTES ON PREVIOUS PLAN:\n' + prev.userNotes;
+    }
+  }
+
+  // Get general notes that apply across all vendors
+  var generalNotes = getGeneralNotes_();
+  var generalContext = '';
+  if (generalNotes) {
+    generalContext = '\n\nGENERAL NOTES (apply across all vendors):\n' + generalNotes;
+  }
+
+  var prompt = 'You previously generated this vendor briefing for ' + context.vendor + ':\n\n' +
+    context.rawContent +
+    prevPlanContext +
+    generalContext +
+    '\n\nAndy has these corrections and notes about the current action plan:\n"' + feedback + '"' +
+    '\n\nPlease revise the ENTIRE briefing incorporating Andy\'s corrections. Key rules:' +
+    '\n- Remove or mark as DONE any items Andy says are already handled' +
+    '\n- Update items based on Andy\'s new information' +
+    '\n- Factor in the general notes - these are standing facts/context Andy has shared across all vendors' +
+    '\n- If there was a previous action plan, check for items that were on it but missing from the current one - re-add if still relevant' +
+    '\n- Keep the same section format (## headers)' +
+    '\n- Be factual - use Andy\'s corrections as ground truth' +
+    '\n- Output ONLY the revised briefing content, same format as before';
+
+  var response = callClaudeAPI_(prompt, apiKey, { maxTokens: 4000 });
+
+  if (response.error) {
+    throw new Error('Claude API Error: ' + response.error);
+  }
+
+  var revised = response.content.trim();
+
+  // Update stored context with revised content
+  context.rawContent = revised;
+  PropertiesService.getUserProperties().setProperty('vendorBriefingContext', JSON.stringify(context));
+
+  // Save revised version and user notes to Action Plans sheet
+  saveBriefingToSheet_(context.vendor, revised);
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Action Plans');
+  if (sheet && sheet.getLastRow() > 1) {
+    sheet.getRange(sheet.getLastRow(), 5).setValue(feedback);
+  }
+
+  // Extract general notes from feedback (lines starting with "GENERAL:" or "ALL:")
+  // and save them separately
+  var lines = feedback.split('\n');
+  var generalLines = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim();
+    if (/^(GENERAL|ALL|GLOBAL):/i.test(line)) {
+      generalLines.push(line.replace(/^(GENERAL|ALL|GLOBAL):\s*/i, ''));
+    }
+  }
+  if (generalLines.length > 0) {
+    var existing = getGeneralNotes_();
+    var updated = existing ? existing + '\n' + generalLines.join('\n') : generalLines.join('\n');
+    saveGeneralNotes_(updated);
+  }
+
+  // Format for HTML display
+  var content = revised
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\n/g, '<br>')
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/## (.*?)<br>/g, '<h3>$1</h3>');
+
+  return content;
+}
+
+/**
+ * Clean a subject line for use in MIME headers.
+ * Strips emojis and normalizes smart quotes/dashes to ASCII.
+ */
+function cleanSubjectLine_(subject) {
+  if (!subject) return '';
+  return subject
+    // Smart quotes to ASCII
+    .replace(/[\u2018\u2019\u201A]/g, "'")
+    .replace(/[\u201C\u201D\u201E]/g, '"')
+    // Smart dashes to ASCII
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u2026/g, '...')
+    // Non-breaking spaces
+    .replace(/\u00A0/g, ' ')
+    // Strip emojis and other non-ASCII symbols (keep basic Latin + extended Latin)
+    .replace(/[^\x00-\x7F\u00C0-\u024F]/g, '')
+    // Clean up multiple spaces left by removed characters
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Get saved chat context for a vendor (from OCR screenshots).
+ * Returns the stored text or '(no chat data)'.
+ * Clears the stored context after reading so it doesn't persist across sessions.
+ */
+function getChatContext_(vendor) {
+  var key = 'CHAT_CONTEXT_' + vendor;
+  var text = PropertiesService.getScriptProperties().getProperty(key) || '';
+  return text || '(no chat data)';
+}
