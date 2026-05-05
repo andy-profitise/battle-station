@@ -2298,27 +2298,29 @@ function loadVendorData(vendorIndex, options) {
     bsSh.getRange(boxRow, 9).setValue('Matched').setFontWeight('bold').setBackground('#f3f3f3').setHorizontalAlignment('left');
     boxRow++;
 
-    // Check if there's a document in "Profitise > VENDOR_NAME" folder (the primary/final location)
+    // Check if there's a document in "<YourCompany> > VENDOR_NAME" folder (the primary/final location).
+    // Replace the company-folder root below to match your Box.com structure.
+    const VENDOR_FOLDER_ROOT = 'yourcompany/';
     // System folders to exclude from being considered "vendor folders"
     const systemFolders = ['w-9', 'w9', 'new publishers', 'my sign', 'my signed', 'templates'];
 
-    // Helper to check if a folder path is a vendor-specific Profitise folder
-    const isProfitiseVendorFolder = (path) => {
+    // Helper to check if a folder path is a vendor-specific company folder
+    const isVendorFolder = (path) => {
       const pathLower = (path || '').toLowerCase();
-      if (!pathLower.includes('profitise/')) return false;
+      if (!pathLower.includes(VENDOR_FOLDER_ROOT)) return false;
       // Check it's not a system folder
       return !systemFolders.some(sys => pathLower.includes(sys));
     };
 
-    // Find if any doc is in a Profitise vendor folder
-    const hasProfitiseVendorFolder = boxDocs.some(doc => isProfitiseVendorFolder(doc.folderPath));
+    // Find if any doc is in a vendor folder
+    const hasVendorFolder = boxDocs.some(doc => isVendorFolder(doc.folderPath));
 
     for (const doc of boxDocs.slice(0, 10)) {
       const folderPath = (doc.folderPath || '').toLowerCase();
-      const isInProfitiseVendorFolder = isProfitiseVendorFolder(doc.folderPath);
+      const isInVendorFolder = isVendorFolder(doc.folderPath);
       const isInW9Folder = folderPath.includes('w-9') || folderPath.includes('w9');
       // Gray out if: there's a vendor folder doc AND this isn't in vendor folder AND this isn't W-9
-      const shouldGrayOut = hasProfitiseVendorFolder && !isInProfitiseVendorFolder && !isInW9Folder;
+      const shouldGrayOut = hasVendorFolder && !isInVendorFolder && !isInW9Folder;
 
       // Document name - clickable link to Box (no truncation - user controls column width)
       const docCell = bsSh.getRange(boxRow, 6)
